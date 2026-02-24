@@ -11,6 +11,9 @@ from google.cloud import storage
 from PyPDF2 import PdfMerger 
 from google import genai 
 from google.genai import types 
+import time
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
 from total import TOTAL_SYSTEM_INSTRUCTION 
 from container import CONTAINER_SYSTEM_INSTRUCTION 
@@ -127,14 +130,74 @@ def _compress_pdf_if_needed(input_path, max_mb=45):
 # UPLOAD PDF TO GCS
 # ==============================
 
-def _upload_temp_pdf_to_gcs(local_path, invoice_name):
+def _upload_temp_pdf_to_gcs(local_path, invoice_name, tag="merged"):
     bucket = storage_client.bucket(BUCKET_NAME)
 
-    blob_path = f"tmp/gemini_input/{invoice_name}_merged.pdf"
+    # biar tidak overwrite
+    blob_path = f"tmp/gemini_input/{invoice_name}_{tag}.pdf"
     blob = bucket.blob(blob_path)
     blob.upload_from_filename(local_path)
 
     return f"gs://{BUCKET_NAME}/{blob_path}"
+
+def _call_gemini_uri(file_uri: str, prompt: str):
+    parts = [
+        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
+        types.Part.from_text(text=prompt),
+    ]
+
+    response = genai_client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[types.Content(role="user", parts=parts)],
+        config=types.GenerateContentConfig(
+            temperature=0,
+            top_p=1,
+            max_output_tokens=65535,
+        ),
+    )
+
+    if not response:
+        raise Exception("Empty response from Gemini")
+
+    if hasattr(response, "text") and response.text:
+        return response.text.strip()
+
+    if getattr(response, "candidates", None):
+        content = response.candidates[0].content
+        parts_resp = getattr(content, "parts", None) or []
+        text_output = ""
+        for p in parts_resp:
+            if hasattr(p, "text") and p.text:
+                text_output += p.text
+        if text_output.strip():
+            return text_output.strip()
+
+    raise Exception("Gemini response tidak mengandung text")
+
+def _run_one_detail_batch(file_uri_detail: str, invoice_name: str, batch_no: int, prompt: str):
+    # retry khusus kasus transient / rate limit
+    for attempt in range(1, 4):
+        try:
+            raw = _call_gemini_uri(file_uri_detail, prompt)
+            json_array = _parse_json_safe(raw)
+            if isinstance(json_array, dict):
+                json_array = [json_array]
+            if not isinstance(json_array, list):
+                raise Exception("Batch result bukan array")
+
+            # tetap simpan batch ke GCS (biar Report bisa deteksi RUNNING)
+            _save_batch_tmp(invoice_name, batch_no, json_array)
+
+            return (batch_no, json_array)
+
+        except Exception as e:
+            msg = str(e).lower()
+            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
+                time.sleep((2 ** attempt) + random.random())
+                continue
+            raise
+
+    raise Exception(f"Batch {batch_no} gagal setelah retry")
 
 # ==============================
 # GEMINI CALL
@@ -236,6 +299,7 @@ def _merge_all_batches(invoice_name):
 
     bucket = storage_client.bucket(BUCKET_NAME)
     blobs = list(bucket.list_blobs(prefix=f"{TMP_PREFIX}/{invoice_name}_batch_"))
+    blobs.sort(key=lambda b: b.name)
 
     all_rows = []
 
@@ -611,19 +675,35 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
     bucket = storage_client.bucket(BUCKET_NAME)
 
-    # MERGE & COMPRESS PDF
-    merged_pdf = _merge_pdfs(uploaded_pdf_paths)
-    merged_pdf = _compress_pdf_if_needed(merged_pdf)
+    # DETAIL: invoice+packing saja (2 file pertama dari UI)
+    merged_pdf_detail = _merge_pdfs(uploaded_pdf_paths[:2])
+    merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
+
+    # FULL: semua dokumen yang diupload (untuk total/container)
+    merged_pdf_full = _merge_pdfs(uploaded_pdf_paths)
+    merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
+
+    file_uri_detail = _upload_temp_pdf_to_gcs(merged_pdf_detail, invoice_name, tag="detail")
+    file_uri_full   = _upload_temp_pdf_to_gcs(merged_pdf_full, invoice_name, tag="full")
 
     # GET TOTAL ROW FROM GEMINI
-    total_row = _get_total_row(merged_pdf, invoice_name)
+    raw_row = _call_gemini_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION)
+    data_row = _parse_json_safe(raw_row)
+
+    if isinstance(data_row, dict) and "total_row" in data_row:
+        total_row = int(data_row["total_row"])
+    else:
+        raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
     # BATCH DETAIL EXTRACTION
     first_index = 1
     batch_no = 1
 
-    while first_index <= total_row:
+    jobs = []
+    first_index = 1
+    batch_no = 1
 
+    while first_index <= total_row:
         last_index = min(first_index + BATCH_SIZE - 1, total_row)
 
         prompt = build_detail_prompt(
@@ -632,27 +712,28 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             last_index=last_index
         )
 
-        raw = _call_gemini(merged_pdf, prompt, invoice_name)
-        
-        print("========== RAW GEMINI DETAIL ==========")
-        print(raw)
-        print("========================================")
-        
-        json_array = _parse_json_safe(raw)
-        if isinstance(json_array, dict):
-            json_array = [json_array]
-
-        print("========== PARSED TYPE ==========")
-        print(type(json_array))
-        print("==================================")
-
-        _save_batch_tmp(invoice_name, batch_no, json_array)
-
+        jobs.append((batch_no, prompt))
         first_index = last_index + 1
         batch_no += 1
 
-    # MERGE ALL GEMINI BATCHES
-    all_rows = _merge_all_batches(invoice_name)
+    # default 2 worker (aman untuk 2 CPU & mengurangi risiko 429)
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+    MAX_WORKERS = max(1, min(MAX_WORKERS, len(jobs)))
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [
+            ex.submit(_run_one_detail_batch, file_uri_detail, invoice_name, bn, prm)
+            for (bn, prm) in jobs
+        ]
+        for f in as_completed(futures):
+            bn, arr = f.result()
+            results[bn] = arr
+
+    # gabungkan hasil batch sesuai urutan batch_no (tanpa download ulang dari GCS)
+    all_rows = []
+    for bn in sorted(results.keys()):
+        all_rows.extend(results[bn])
 
     if not all_rows:
         raise Exception("Tidak ada data detail hasil Gemini")
@@ -673,14 +754,12 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
     container_data = None
 
     if with_total_container:
-        # OCR TOTAL
-        raw_total = _call_gemini(merged_pdf, TOTAL_SYSTEM_INSTRUCTION, invoice_name)
+        raw_total = _call_gemini_uri(file_uri_full, TOTAL_SYSTEM_INSTRUCTION)
         total_data = _parse_json_safe(raw_total)
         if isinstance(total_data, dict):
             total_data = [total_data]
 
-        # OCR CONTAINER
-        raw_container = _call_gemini(merged_pdf, CONTAINER_SYSTEM_INSTRUCTION, invoice_name)
+        raw_container = _call_gemini_uri(file_uri_full, CONTAINER_SYSTEM_INSTRUCTION)
         container_data = _parse_json_safe(raw_container)
         if isinstance(container_data, dict):
             container_data = [container_data]
@@ -719,7 +798,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
 
     # CLEAN TEMP FILES
-    for blob in bucket.list_blobs(prefix=TMP_PREFIX):
+    for blob in bucket.list_blobs(prefix=f"{TMP_PREFIX}/{invoice_name}_batch_"):
         blob.delete()
 
     return {

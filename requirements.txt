@@ -6,3 +6,4 @@ reportlab
 vertexai
 google-genai
 ijson
+concurrent
