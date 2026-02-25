@@ -6,6 +6,7 @@ from config import BUCKET_NAME, TMP_PREFIX
 import os
 import re
 from datetime import timezone, timedelta
+import json
 
 st.set_page_config(layout="wide")
 
@@ -94,13 +95,28 @@ if menu == "Report":
         ["detail", "total", "container"]
     )
 
+    # ... di menu Report ...
+
     result_prefix = f"output/{report_type}/"
-    tmp_prefix = f"{TMP_PREFIX}/"
 
     result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
-    tmp_prefix = f"{TMP_PREFIX.rstrip('/')}/"
-    tmp_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=tmp_prefix))
+    tmp_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=f"{TMP_PREFIX.rstrip('/')}/"))
 
+    files_data = []  # <-- WAJIB ADA
+
+    # DONE list dari output CSV
+    for blob in result_blobs:
+        if blob.name.endswith("/"):
+            continue
+
+        files_data.append({
+            "invoice": os.path.basename(blob.name),
+            "status": "DONE",
+            "updated": blob.updated,
+            "path": blob.name
+        })
+
+    # RUNNING list dari meta.json
     meta_blobs = [b for b in tmp_blobs if b.name.endswith("/meta.json")]
     running_invoices = set()
 
@@ -109,28 +125,29 @@ if menu == "Report":
         inv = meta.get("invoice_name")
         wtc = bool(meta.get("with_total_container"))
 
-        # kalau user sedang lihat report total/container tapi run ini tidak generate itu -> skip
+        # kalau user pilih total/container tapi run tsb tidak generate itu -> skip
         if report_type in ("total", "container") and not wtc:
             continue
 
         if inv:
             running_invoices.add(inv)
 
-
-    for invoice in running_invoices:
-        # check if already marked done
-        already_done = any(f["invoice"] == f"{invoice}_{report_type}.csv" for f in files_data)
-
+    for inv in running_invoices:
+        already_done = any(f["invoice"] == f"{inv}_{report_type}.csv" for f in files_data)
         if not already_done:
             files_data.append({
-                "invoice": invoice,
+                "invoice": f"{inv}_{report_type}.csv",
                 "status": "RUNNING",
                 "updated": None,
                 "path": None
             })
 
+    # setelah ini baru aman:
     if not files_data:
         st.warning("Belum ada file result.")
+    else:
+        # render table/cards seperti punyamu
+        ...
     else:
         # Sort by updated time (DONE first newest)
         files_data = sorted(
