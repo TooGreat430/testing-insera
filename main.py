@@ -146,9 +146,6 @@ if menu == "Report":
     if not files_data:
         st.warning("Belum ada file result.")
     else:
-        # render table/cards seperti punyamu
-        ...
-    else:
         # Sort by updated time (DONE first newest)
         files_data = sorted(
             files_data,
