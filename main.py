@@ -51,27 +51,36 @@ if menu == "Upload":
         if not invoice or not packing:
             st.warning("Invoice dan Packing List wajib diupload")
 
-        elif (bl and not coo) or (coo and not bl):
-            st.warning("BL dan COO harus diupload bersamaan")
-
         else:
+            # optional hanya dipakai kalau lengkap
+            with_total_container = bool(bl and coo)
+
+            # file wajib
+            files_to_process = [invoice, packing]
+
+            # file optional hanya kalau lengkap
+            if with_total_container:
+                files_to_process.extend([bl, coo])
+            else:
+                if bl or coo:
+                    st.info("BL/COO tidak lengkap, sistem hanya akan menghasilkan output DETAIL.")
+
             pdf_paths = []
 
-            for f in [invoice, packing, bl, coo]:
-                if f:
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                    tmp.write(f.read())
-                    tmp.close()
-                    pdf_paths.append(tmp.name)
+            for f in files_to_process:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                tmp.write(f.read())
+                tmp.close()
+                pdf_paths.append(tmp.name)
 
-                    # upload ke GCS tmp
-                    bucket.blob(f"{TMP_PREFIX}/{f.name}") \
-                        .upload_from_filename(tmp.name)
+                # upload ke GCS tmp
+                bucket.blob(f"{TMP_PREFIX}/{f.name}") \
+                    .upload_from_filename(tmp.name)
 
             run_ocr(
                 invoice_name=output_name or invoice.name.replace('.pdf',''),
                 uploaded_pdf_paths=pdf_paths,
-                with_total_container=bool(bl and coo)
+                with_total_container=with_total_container
             )
 
             st.success("OCR selesai diproses")
@@ -89,30 +98,23 @@ if menu == "Report":
     tmp_prefix = f"{TMP_PREFIX}/"
 
     result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
+    tmp_prefix = f"{TMP_PREFIX.rstrip('/')}/"
     tmp_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=tmp_prefix))
 
-    files_data = []
-
-    for blob in result_blobs:
-        if blob.name.endswith("/"):
-            continue
-
-        files_data.append({
-            "invoice": os.path.basename(blob.name),
-            "status": "DONE",
-            "updated": blob.updated,
-            "path": blob.name
-        })
-
+    meta_blobs = [b for b in tmp_blobs if b.name.endswith("/meta.json")]
     running_invoices = set()
 
-    batch_re = re.compile(r"^(?P<inv>.+)_batch_\d+\.json$")
+    for mb in meta_blobs:
+        meta = json.loads(mb.download_as_text())
+        inv = meta.get("invoice_name")
+        wtc = bool(meta.get("with_total_container"))
 
-    for blob in tmp_blobs:
-        name = os.path.basename(blob.name)
-        m = batch_re.match(name)
-        if m:
-            running_invoices.add(m.group("inv"))
+        # kalau user sedang lihat report total/container tapi run ini tidak generate itu -> skip
+        if report_type in ("total", "container") and not wtc:
+            continue
+
+        if inv:
+            running_invoices.add(inv)
 
 
     for invoice in running_invoices:
