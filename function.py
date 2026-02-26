@@ -930,6 +930,13 @@ def _convert_to_csv_path(blob_path, rows):
                     seen.add(k)
                     keys.append(k)
 
+    priority = ["match_score", "match_description"]
+    # ambil yang ada dulu
+    front = [k for k in priority if k in keys]
+    # sisanya
+    rest = [k for k in keys if k not in priority]
+    keys = front + re
+
     if not keys:
         raise Exception("Row CSV tidak memiliki kolom")
 
@@ -1000,6 +1007,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
             file_uri_full = _upload_temp_pdf_to_gcs(merged_pdf_full, run_prefix, name="full")
 
+        detail_input_uri = file_uri_full if with_total_container else file_uri_detail
+
         # GET TOTAL ROW FROM GEMINI
         raw_row = _call_gemini_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION)
         data_row = _parse_json_safe(raw_row)
@@ -1034,7 +1043,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         results = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = [
-                ex.submit(_run_one_detail_batch, file_uri_detail, run_prefix, bn, prm)
+                ex.submit(_run_one_detail_batch, detail_input_uri, run_prefix, bn, prm)
                 for (bn, prm) in jobs
             ]
             for f in as_completed(futures):
