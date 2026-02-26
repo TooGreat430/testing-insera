@@ -74,10 +74,6 @@ if menu == "Upload":
                 tmp.close()
                 pdf_paths.append(tmp.name)
 
-                # upload ke GCS tmp
-                bucket.blob(f"{TMP_PREFIX}/{f.name}") \
-                    .upload_from_filename(tmp.name)
-
             run_ocr(
                 invoice_name=output_name or invoice.name.replace('.pdf',''),
                 uploaded_pdf_paths=pdf_paths,
