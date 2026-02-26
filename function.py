@@ -171,11 +171,54 @@ def _call_gemini_uri(file_uri: str, prompt: str):
 
     raise Exception("Gemini response tidak mengandung text")
 
+def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3):
+    """
+    Wrapper: panggil Gemini -> pastikan output JSON valid.
+    - expect_array=True  : kalau Gemini balikin dict, kita bungkus jadi [dict]
+    - retries: retry jika output bukan JSON / quota
+    """
+    p = prompt
+    for attempt in range(1, retries + 1):
+        try:
+            raw = _call_gemini_uri(file_uri, p)
+            obj = _parse_json_safe(raw)
+
+            if expect_array and isinstance(obj, dict):
+                obj = [obj]
+
+            return obj
+
+        except Exception as e:
+            msg = str(e).lower()
+
+            # retry kalau output bukan JSON
+            if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
+                p = prompt + """
+                PENTING:
+                - Output HANYA JSON valid, tanpa teks lain.
+                - Jika ARRAY: WAJIB mulai '[' dan akhir ']'
+                - Jika OBJECT: WAJIB mulai '{' dan akhir '}'
+                - Jika data tidak ditemukan: isi "null" / 0 sesuai skema
+                """
+                time.sleep(0.5)
+                continue
+
+            # retry quota
+            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
+                time.sleep((2 ** attempt) + random.random())
+                continue
+
+            raise
+
+    raise Exception("Gemini gagal menghasilkan JSON setelah retry")
+
 def _run_one_detail_batch(file_uri_detail: str, run_prefix: str, batch_no: int, prompt: str):
+    p = prompt
     for attempt in range(1, 4):
         try:
-            raw = _call_gemini_uri(file_uri_detail, prompt)
+            raw = _call_gemini_uri(file_uri_detail, p)
             json_array = _parse_json_safe(raw)
+
             if isinstance(json_array, dict):
                 json_array = [json_array]
             if not isinstance(json_array, list):
@@ -186,9 +229,23 @@ def _run_one_detail_batch(file_uri_detail: str, run_prefix: str, batch_no: int, 
 
         except Exception as e:
             msg = str(e).lower()
+
+            # ✅ retry kalau output bukan JSON
+            if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
+                p = prompt + """
+                PENTING SEKALI:
+                - Output WAJIB dimulai dengan '[' dan diakhiri dengan ']'
+                - Output HANYA JSON ARRAY (tanpa teks lain)
+                - Jika data tidak ditemukan, isi string "null" / angka 0 sesuai skema
+                """
+                time.sleep(0.5)
+                continue
+
+            # retry quota
             if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
                 time.sleep((2 ** attempt) + random.random())
                 continue
+
             raise
 
     raise Exception(f"Batch {batch_no} gagal setelah retry")
@@ -935,7 +992,7 @@ def _convert_to_csv_path(blob_path, rows):
     front = [k for k in priority if k in keys]
     # sisanya
     rest = [k for k in keys if k not in priority]
-    keys = front + re
+    keys = front + rest
 
     if not keys:
         raise Exception("Row CSV tidak memiliki kolom")
@@ -1007,11 +1064,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
             file_uri_full = _upload_temp_pdf_to_gcs(merged_pdf_full, run_prefix, name="full")
 
-        detail_input_uri = file_uri_full if with_total_container else file_uri_detail
+        detail_input_uri = file_uri_full if (with_total_container and file_uri_full) else file_uri_detail
 
         # GET TOTAL ROW FROM GEMINI
-        raw_row = _call_gemini_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION)
-        data_row = _parse_json_safe(raw_row)
+        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -1090,15 +1146,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         total_data = None
         container_data = None
         if with_total_container:
-            raw_total = _call_gemini_uri(file_uri_full, TOTAL_SYSTEM_INSTRUCTION)
-            total_data = _parse_json_safe(raw_total)
-            if isinstance(total_data, dict):
-                total_data = [total_data]
+            total_data = _call_gemini_json_uri(file_uri_full, TOTAL_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
 
-            raw_container = _call_gemini_uri(file_uri_full, CONTAINER_SYSTEM_INSTRUCTION)
-            container_data = _parse_json_safe(raw_container)
-            if isinstance(container_data, dict):
-                container_data = [container_data]
+            container_data = _call_gemini_json_uri(file_uri_full, CONTAINER_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
 
         # =========================
         # VALIDASI (python-based)

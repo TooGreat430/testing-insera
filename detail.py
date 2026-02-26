@@ -220,7 +220,10 @@ GENERAL KNOWLEDGE DETAIL
 OUTPUT RESTRICTION
 ============================================
 
-- Output HANYA JSON ARRAY.
+- Output HARUS dimulai dengan '[' dan diakhiri dengan ']'.
+- DILARANG ada teks lain sebelum/ sesudah JSON (termasuk "plan", "here's", dll).
+- Jika melanggar, perbaiki dulu sebelum mengirim.
+- OUTPUT HANYA JSON FORMAT. TIDAK ADA OUTPUT LAIN SELAIN JSON FORMAT!
 - DILARANG:
   - Markdown
   - Penjelasan tambahan
