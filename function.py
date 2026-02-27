@@ -1061,12 +1061,14 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         file_uri_detail = _upload_temp_pdf_to_gcs(merged_pdf_detail, run_prefix, name="detail")
 
         file_uri_full = None
-        if with_total_container:
+
+        has_extra_docs = len(uploaded_pdf_paths) > 2
+        if has_extra_docs:
             merged_pdf_full = _merge_pdfs(uploaded_pdf_paths)
             merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
             file_uri_full = _upload_temp_pdf_to_gcs(merged_pdf_full, run_prefix, name="full")
 
-        detail_input_uri = file_uri_full if (with_total_container and file_uri_full) else file_uri_detail
+        detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
         # GET TOTAL ROW FROM GEMINI
         data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
@@ -1161,9 +1163,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         _validate_packing_rows(all_rows)
         _validate_invoice_vs_packing_extra(all_rows)
 
-        if with_total_container:
-            _validate_bl_rows(all_rows)
-            _validate_coo_rows(all_rows)
+        _validate_bl_rows(all_rows)
+        _validate_coo_rows(all_rows)
 
         _finalize_match_fields(all_rows)
         _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])

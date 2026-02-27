@@ -60,11 +60,12 @@ if menu == "Upload":
             files_to_process = [invoice, packing]
 
             # file optional hanya kalau lengkap
-            if with_total_container:
-                files_to_process.extend([bl, coo])
-            else:
-                if bl or coo:
-                    st.info("BL/COO tidak lengkap, sistem hanya akan menghasilkan output DETAIL.")
+            if bl:
+                files_to_process.append(bl)
+            if coo:
+                files_to_process.append(coo)
+            if (bl or coo) and not with_total_container:
+                st.info("BL/COO tidak lengkap, sistem tetap menghasilkan DETAIL (Invoice+PL+dokumen yang ada). Total/Container tidak dibuat.")
 
             pdf_paths = []
 
