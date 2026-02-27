@@ -535,6 +535,8 @@ def _validate_po(detail_rows):
         row["po_unit"] = po_data.get("po_unit", "null")
         row["po_price"] = po_data.get("po_price", "null")
         row["po_currency"] = po_data.get("po_currency", "null")
+        row["po_info_record_price"] = po_data.get("po_info_record_price", "null")
+        row["po_info_record_currency"] = po_data.get("po_info_record_currency", "null")
 
         inv_price = _to_num(row.get("inv_unit_price"))
         po_price  = _to_num(po_data.get("po_price"))
