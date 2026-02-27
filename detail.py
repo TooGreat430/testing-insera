@@ -28,12 +28,30 @@ ATURAN UMUM EKSTRAKSI
 3. Semua angka HARUS numeric murni.
 4. DILARANG menggunakan JSON literal null.
 5. Format tanggal: YYYY-MM-DD.
-6. Boolean dan null HARUS string:
+6. Boolean dan null HARUS STRING:
    "true" | "false" | "null"
 
 7. Total line item pada dokumen adalah {total_row}.
 8. Kerjakan HANYA line item dari index {first_index} sampai {last_index}.
-9. Walaupun output dibatasi index, SEMUA validasi total WAJIB dihitung dari SELURUH dokumen.
+9. Jika suatu dokumen TIDAK TERSEDIA:
+- Seluruh field dengan prefix dokumen tersebut WAJIB diisi dengan string "null".
+10. Jika pada dokumen terdapat value total seperti total net weight, gross weight, volume, amount, quantity, package yang berbentuk huruf:
+- Ekstrak nilai numeriknya.
+
+============================================
+LOGIKA MAPPING
+============================================
+
+1. Invoice line item adalah BASELINE.
+   Seluruh proses mapping dilakukan berdasarkan setiap baris di invoice
+2. Setiap invoice line item dipetakan ke packing list line item.
+3. BL dimapping ke invoice line berdasarkan:
+   - bl_description
+   - bl_hs_code
+   (maksimal 5 item, hanya yang tertulis di BL)
+4. COO dimapping ke invoice line berdasarkan:
+   - coo_invoice_no
+   - kemiripan antara coo_description dan inv_description (bukan similarity).
 
 ============================================
 OUTPUT
@@ -203,18 +221,17 @@ GENERAL KNOWLEDGE DETAIL
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.
 
-10. inv_coo_commodity_origin
-   -SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
+10. Jika pada dokumen Bill of Lading (BL) bertipe LC:
+    - bl_consignee_name diambil dari notify party
+    - bl_consignee_address diambil dari notify party
 
-11. coo_seq:
-   - coo_seq wajib numeric murni dan tidak boleh "null".
-   - coo_seq dihitung GLOBAL berdasarkan inv_customer_po_no yang sama untuk seluruh line item (index 1 sampai total_row), bukan dihitung ulang per batch.
-   - Definisi coo_seq per baris: coo_seq = hitung berapa kali inv_customer_po_no yang sama sudah muncul dari index 1 sampai index baris ini (termasuk baris ini).
-   Contoh: PO=112 muncul di index 2,5,6 → coo_seq untuk index 2=1, index 5=2, index 6=3.
-   - Untuk baris yang kamu keluarkan (index {first_index}..{last_index}), coo_seq tetap harus mengikuti hitungan global dari index 1..total_row.
+11. inv_coo_commodity_origin
+   - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-12. coo_description
-   -COO dimapping ke invoice line berdasarkan kemiripan antara coo_description dan inv_description (bukan similarity).
+12. coo_seq:
+    - coo_seq adalah nomor urut line item pada dokumen Certificate of Origin (COO).
+    - Jika terdapat nomor urut eksplisit pada dokumen, gunakan nomor tersebut.
+    - Jika tidak terdapat nomor urut, hitung berdasarkan urutan kemunculan line item (dimulai dari 1).
 
 ============================================
 OUTPUT RESTRICTION
