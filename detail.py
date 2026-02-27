@@ -203,6 +203,7 @@ GENERAL KNOWLEDGE DETAIL
 5. inv_spart_item_no:
    - Jika tidak eksplisit → cek kolom ke-2 tabel item.
    - Jika tetap tidak ada → "null".
+   - SEBUTKAN KODE NOMOR PART ITEMNYA SAJA, JANGAN SERTAKAN LABEL SEPERTI "PART#", "PART NO", "P/N", "ITEM", atau sejenisnya, yang penting kode partnya saja dalam bentuk alfanumerik dan huruf besar semua.
 
 6. pl_messrs pada Packing List (PL):
    - SELALU PT Insera Sena.
