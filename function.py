@@ -1139,7 +1139,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         # 3) recompute seq global
         _recompute_seq_by_key(all_rows, "inv_customer_po_no", "inv_seq")
-        _recompute_seq_by_key(all_rows, "inv_customer_po_no", "coo_seq")
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
