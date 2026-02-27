@@ -229,9 +229,11 @@ GENERAL KNOWLEDGE DETAIL
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
 12. coo_seq:
-    - coo_seq adalah nomor urut line item pada dokumen Certificate of Origin (COO).
-    - Jika terdapat nomor urut eksplisit pada dokumen, gunakan nomor tersebut.
-    - Jika tidak terdapat nomor urut, hitung berdasarkan urutan kemunculan line item (dimulai dari 1).
+   - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
+   - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
+   - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
+   - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
+   - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
 
 ============================================
 OUTPUT RESTRICTION
