@@ -17,7 +17,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
 from total import TOTAL_SYSTEM_INSTRUCTION 
 from container import CONTAINER_SYSTEM_INSTRUCTION 
-from detail import build_detail_prompt 
+from detail import (
+    build_detail_prompt,  # kalau masih kepake
+    build_index_prompt,
+    build_header_prompt,
+    build_detail_prompt_from_index,
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
+    DETAIL_LINE_FIELDS,
+    DETAIL_LINE_NUM_FIELDS,
+)
 from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
 
@@ -512,6 +520,55 @@ def _drop_columns(rows: list, cols: list):
             for c in cols:
                 r.pop(c, None)
 
+# ==============================
+# ENSURE ALL KEYS EXIST (ANTI HILANG KOLOM)
+# ==============================
+
+ALL_DETAIL_FIELDS = list(HEADER_FIELDS) + list(DETAIL_LINE_FIELDS) + ["match_score", "match_description"]
+
+def _ensure_all_detail_keys(rows: list):
+    """
+    Pastikan setiap row punya SEMUA kolom (header + content + match fields).
+    - string missing => "null"
+    - number missing => 0
+    """
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+
+        for k in ALL_DETAIL_FIELDS:
+            if k in r and r[k] is not None:
+                continue
+
+            if k in DETAIL_LINE_NUM_FIELDS:
+                r[k] = 0
+            else:
+                r[k] = "null"
+
+def _is_missing_num(v) -> bool:
+    """
+    Untuk field numeric wajib: treat 0 sebagai missing (biar tidak lolos palsu).
+    """
+    if v is None:
+        return True
+    if isinstance(v, str) and v.strip().lower() in ("", "null"):
+        return True
+    try:
+        return float(str(v).strip().replace(",", "")) == 0.0
+    except:
+        return True
+
+def _apply_header_to_rows(rows: list, header_obj: dict):
+    if not isinstance(header_obj, dict):
+        header_obj = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        for k in HEADER_FIELDS:
+            v = header_obj.get(k, "null")
+            # overwrite biar konsisten antar row
+            r[k] = v if v is not None else "null"
+
 def _validate_po(detail_rows):
     for row in detail_rows:
         if not row.get("_po_mapped"):
@@ -567,8 +624,19 @@ def _validate_invoice_rows(rows: list):
             continue
 
         # required fields
-        for k in required:
+        required_str = [
+            "inv_invoice_no","inv_invoice_date","inv_customer_po_no","inv_vendor_name",
+            "inv_vendor_address","inv_spart_item_no","inv_description",
+            "inv_quantity_unit","inv_price_unit","inv_amount_unit",
+        ]
+        required_num = ["inv_quantity","inv_unit_price","inv_amount"]
+
+        for k in required_str:
             if _is_null(r.get(k)):
+                _append_err(r, f"Invoice: missing {k}")
+
+        for k in required_num:
+            if _is_missing_num(r.get(k)):
                 _append_err(r, f"Invoice: missing {k}")
 
         # aritmatika: amount = qty * unit_price
@@ -628,8 +696,18 @@ def _validate_packing_rows(rows: list):
         if not isinstance(r, dict):
             continue
 
-        for k in required:
+        required_str = [
+            "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address",
+            "pl_package_unit","pl_weight_unit","pl_volume_unit",
+        ]
+        required_num = ["pl_item_no","pl_quantity","pl_package_count","pl_nw","pl_gw","pl_volume"]
+
+        for k in required_str:
             if _is_null(r.get(k)):
+                _append_err(r, f"PackingList: missing {k}")
+
+        for k in required_num:
+            if _is_missing_num(r.get(k)):
                 _append_err(r, f"PackingList: missing {k}")
 
         # PL harus match Invoice
@@ -1070,6 +1148,15 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
+        header_obj = _call_gemini_json_uri(
+            detail_input_uri,
+            build_header_prompt(),
+            expect_array=False,
+            retries=3
+        )
+        if not isinstance(header_obj, dict):
+            header_obj = {}
+
         # GET TOTAL ROW FROM GEMINI
         data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
 
@@ -1077,6 +1164,23 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             total_row = int(data_row["total_row"])
         else:
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
+
+        # NEW: INDEX extraction (anchor line item)
+        index_items = _call_gemini_json_uri(
+            file_uri_detail,
+            build_index_prompt(total_row),
+            expect_array=True,
+            retries=3
+        )
+
+        # fallback safety
+        if not isinstance(index_items, list) or not index_items:
+            raise Exception("INDEX line items kosong")
+
+        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
+        if len(index_items) != total_row:
+            print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
+            total_row = len(index_items)
 
         # BATCH DETAIL EXTRACTION
         jobs = []
@@ -1086,8 +1190,11 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         while first_index <= total_row:
             last_index = min(first_index + BATCH_SIZE - 1, total_row)
 
-            prompt = build_detail_prompt(
+            index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
+
+            prompt = build_detail_prompt_from_index(
                 total_row=total_row,
+                index_slice=index_slice,
                 first_index=first_index,
                 last_index=last_index
             )
@@ -1117,6 +1224,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         if not all_rows:
             raise Exception("Tidak ada data detail hasil Gemini")
+
+        _ensure_all_detail_keys(all_rows)
+
+        _apply_header_to_rows(all_rows, header_obj)
 
         # 0) reset match fields (Gemini tidak validasi)
         _reset_match_fields(all_rows)
