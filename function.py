@@ -476,6 +476,19 @@ def _first_non_null(rows: list, key: str):
             return r.get(key)
     return None
 
+def _first_non_null_nonzero(rows: list, key: str):
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        v = r.get(key)
+        if _is_null(v):
+            continue
+        # treat 0 sebagai missing untuk total fields
+        if _is_missing_num(v):
+            continue
+        return v
+    return None
+
 def _fill_forward(rows: list, key: str):
     """Rule: kalau 'null' pakai nilai terakhir yang valid dari row sebelumnya."""
     last = None
@@ -650,8 +663,8 @@ def _validate_invoice_rows(rows: list):
                 _append_err(r, f"Invoice: inv_amount != inv_quantity*inv_unit_price (exp {expected}, got {amt})")
 
     # validasi total (pakai declared total di dokumen yang diekstrak Gemini)
-    declared_qty = _to_float(_first_non_null(rows, "inv_total_quantity"))
-    declared_amt = _to_float(_first_non_null(rows, "inv_total_amount"))
+    declared_qty = _to_float(_first_non_null_nonzero(rows, "inv_total_quantity"))
+    declared_amt = _to_float(_first_non_null_nonzero(rows, "inv_total_amount"))
 
     sum_qty = 0.0
     sum_amt = 0.0
@@ -723,11 +736,11 @@ def _validate_packing_rows(rows: list):
             _append_err(r, "PackingList: pl_messrs bukan PT Insera Sena")
 
     # totals PL
-    declared_qty = _to_float(_first_non_null(rows, "pl_total_quantity"))
-    declared_nw  = _to_float(_first_non_null(rows, "pl_total_nw"))
-    declared_gw  = _to_float(_first_non_null(rows, "pl_total_gw"))
-    declared_vol = _to_float(_first_non_null(rows, "pl_total_volume"))
-    declared_pkg = _to_float(_first_non_null(rows, "pl_total_package"))
+    declared_qty = _to_float(_first_non_null_nonzero(rows, "pl_total_quantity"))
+    declared_nw  = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
+    declared_gw  = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
+    declared_vol = _to_float(_first_non_null_nonzero(rows, "pl_total_volume"))
+    declared_pkg = _to_float(_first_non_null_nonzero(rows, "pl_total_package"))
 
     sum_qty = sum(_to_float(r.get("pl_quantity")) or 0.0 for r in rows if isinstance(r, dict))
     sum_nw  = sum(_to_float(r.get("pl_nw")) or 0.0 for r in rows if isinstance(r, dict))
