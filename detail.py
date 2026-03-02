@@ -409,10 +409,11 @@ GENERAL KNOWLEDGE DETAIL:
 
 7. Field po_* WAJIB diisi dengan STRING "null".
 
-8. Package unit pada Packing List (PL):
+8. Package unit pada Packing List (PL) dan Invoice (INV):
+   - PAHAMI TERLEBIH DAHULU PACKAGE UNIT APA YANG DIGUNAKAN PADA DOKUMEN
    - Jika semua barang karton → CT
    - Jika semua barang pallet → PX
-   - Jika barang campuran → PX
+   - Jika barang campuran → PK, Contoh: PLTS dan Carton jadi PX
    - Jika barang Bal → BL
    - Selain itu → gunakan nilai asli.
 
