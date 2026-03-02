@@ -23,6 +23,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+/* wrapper pagination */
+.pager-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Target tombol Prev/Next dengan key: btn_prev / btn_next */
+div[data-testid="stButton"] button[kind="secondary"] {
+  height: 42px !important;
+  padding: 0 18px !important;
+  border-radius: 10px !important;
+  font-size: 16px !important;
+  white-space: nowrap !important;
+}
+
+/* selectbox lebar & tinggi konsisten */
+div.pager-select div[data-baseweb="select"] > div {
+  min-height: 42px !important;
+  border-radius: 10px !important;
+  font-size: 16px !important;
+}
+div.pager-select {
+  min-width: 110px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 col1, col2 = st.columns([1, 5])
 
 with col1:
@@ -263,7 +295,6 @@ if menu == "Report":
                         key=f"dl_{report_type}_{f['invoice']}"  # ✅ unik
                     )
 
-        # =========================
         # Pagination controls (BOTTOM + CENTER) => [Prev][Page][Next]
         # =========================
         def _prev_page():
@@ -272,21 +303,39 @@ if menu == "Report":
         def _next_page():
             st.session_state["report_page"] = min(total_pages, st.session_state["report_page"] + 1)
 
-        # spacer - center - spacer
-        s1, c1, c2, c3, s2 = st.columns([6, 1, 2, 1, 6])
+        # wrapper center
+        st.markdown('<div class="pager-wrap">', unsafe_allow_html=True)
+
+        c1, c2, c3 = st.columns([2, 1, 2])
 
         with c1:
-            st.button("Prev", on_click=_prev_page, disabled=(st.session_state["report_page"] <= 1), key="btn_prev")
+            st.button(
+                "Prev",
+                on_click=_prev_page,
+                disabled=(st.session_state["report_page"] <= 1),
+                key="btn_prev",
+                use_container_width=True
+            )
 
         with c2:
+            st.markdown('<div class="pager-select">', unsafe_allow_html=True)
             st.selectbox(
                 label="",
                 options=list(range(1, total_pages + 1)),
                 key="report_page",
                 label_visibility="collapsed"
             )
+            st.markdown('</div>', unsafe_allow_html=True)
 
         with c3:
-            st.button("Next", on_click=_next_page, disabled=(st.session_state["report_page"] >= total_pages), key="btn_next")
+            st.button(
+                "Next",
+                on_click=_next_page,
+                disabled=(st.session_state["report_page"] >= total_pages),
+                key="btn_next",
+                use_container_width=True
+            )
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
         st.caption(f"Halaman {st.session_state['report_page']} / {total_pages} | Total {total_items} item | {PAGE_SIZE}/halaman")
