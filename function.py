@@ -30,7 +30,7 @@ from detail import (
 from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
 
-BATCH_SIZE = 15
+BATCH_SIZE = 70
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, ) 
 
