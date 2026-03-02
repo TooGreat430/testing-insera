@@ -25,6 +25,7 @@ from detail import (
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
+    DETAIL_CSV_FIELD_ORDER_FINAL
 )
 from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
@@ -1059,7 +1060,7 @@ def _map_po_to_total(total_data, po_lines, po_numbers_from_detail):
 # ==============================
 # (NEW) CONVERT TO CSV -> CUSTOM FOLDER/PATH
 # ==============================
-def _convert_to_csv_path(blob_path, rows):
+def _convert_to_csv_path(blob_path, rows, field_order=None):
     if rows is None:
         raise Exception("Tidak ada data untuk CSV")
 
@@ -1070,29 +1071,40 @@ def _convert_to_csv_path(blob_path, rows):
     if not isinstance(rows, list) or not rows:
         raise Exception("Tidak ada data untuk CSV")
 
-    # union keys biar kolom lengkap
-    keys = []
+    # union keys (preserve insertion order)
+    union_keys = []
     seen = set()
     for r in rows:
         if isinstance(r, dict):
             for k in r.keys():
                 if k not in seen:
                     seen.add(k)
-                    keys.append(k)
+                    union_keys.append(k)
 
-    priority = ["match_score", "match_description"]
-    # ambil yang ada dulu
-    front = [k for k in priority if k in keys]
-    # sisanya
-    rest = [k for k in keys if k not in priority]
-    keys = front + rest
+    if field_order:
+        # 1) mulai dari order yang kamu mau
+        keys = []
+        used = set()
+        for k in field_order:
+            if k not in used:
+                keys.append(k)
+                used.add(k)
 
-    if not keys:
-        raise Exception("Row CSV tidak memiliki kolom")
+        # 2) append sisanya biar tidak error kalau ada kolom ekstra
+        for k in union_keys:
+            if k not in used:
+                keys.append(k)
+                used.add(k)
+    else:
+        # fallback logic lama (match_* di depan)
+        priority = ["match_score", "match_description"]
+        front = [k for k in priority if k in union_keys]
+        rest = [k for k in union_keys if k not in set(front)]
+        keys = front + rest
 
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     with open(tmp_file.name, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
+        writer = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
         writer.writeheader()
         for r in rows:
             writer.writerow(r if isinstance(r, dict) else {})
@@ -1303,7 +1315,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         # (NEW) OUTPUT PER FOLDER
         # ==============================
         detail_csv_uri = _convert_to_csv_path(
-            f"output/detail/{invoice_name}_detail.csv", all_rows
+            f"output/detail/{invoice_name}_detail.csv",
+            all_rows,
+            field_order=DETAIL_CSV_FIELD_ORDER_FINAL
         )
 
         total_csv_uri = None
