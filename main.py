@@ -118,9 +118,9 @@ if menu == "Report":
 
     fcol1, fcol2, fcol3 = st.columns([2, 2, 2])
     with fcol1:
-        start_date = st.date_input("Dari (WIB)", value=default_start)
+        start_date = st.date_input("FROM", value=default_start)
     with fcol2:
-        end_date = st.date_input("Sampai (WIB)", value=default_end)
+        end_date = st.date_input("TO", value=default_end)
     with fcol3:
         show_running = st.checkbox("Tampilkan RUNNING", value=True)
 
