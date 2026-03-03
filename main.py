@@ -2,7 +2,7 @@ import streamlit as st
 import tempfile
 from function import run_ocr
 from google.cloud import storage
-from config import BUCKET_NAME, TMP_PREFIX
+from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
 import re
 from datetime import datetime, timezone, timedelta
