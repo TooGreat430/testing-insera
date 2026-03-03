@@ -374,4 +374,5 @@ if menu == "Sync PO":
             #     bucket_name=BUCKET_NAME,
             #     po_prefix=PO_PREFIX
             # )
+            pass
         st.success(f"Berhasil upload {n} baris PO ke: {uri}")
