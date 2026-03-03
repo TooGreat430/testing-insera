@@ -63,7 +63,7 @@ with col1:
 with col2:
     st.markdown('<div class="main-title">OCR Gemini</div>', unsafe_allow_html=True)
 
-menu = st.sidebar.radio("Menu", ["Upload", "Report"])
+menu = st.sidebar.radio("Menu", ["Upload", "Report", "Sync PO"])
 
 storage_client = storage.Client()
 bucket = storage_client.bucket(BUCKET_NAME)
