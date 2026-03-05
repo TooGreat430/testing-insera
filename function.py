@@ -18,7 +18,6 @@ from config import *
 from total import TOTAL_SYSTEM_INSTRUCTION 
 from container import CONTAINER_SYSTEM_INSTRUCTION 
 from detail import (
-    build_detail_prompt,  # kalau masih kepake
     build_index_prompt,
     build_header_prompt,
     build_detail_prompt_from_index,
