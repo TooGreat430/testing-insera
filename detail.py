@@ -356,6 +356,8 @@ def build_detail_prompt_from_index(total_row: int, index_slice: list, first_inde
 ROLE:
 Anda adalah AI IDP professional yang fokus pada DATA DETAIL PER LINE ITEM.
 Rule-based, deterministik, anti-halusinasi.
+Tugas kamu adalah mengekstrak dokumen dan melakukan mappingan data berdasarkan line item daripada dokumen.
+Mappingan harus masuk akal sesuai dengan yang di ekstrak
 
 KONTEKS:
 Total line item invoice = {total_row}.
