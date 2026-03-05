@@ -417,12 +417,14 @@ GENERAL KNOWLEDGE DETAIL:
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
 
-8. pl_messrs pada Packing List (PL) dan invoice:
+8. Messrs pada Packing List (PL) dan invoice:
    - SELALU PT Insera Sena.
    - Jika terdapat beberapa nama → pilih PT Insera Sena.
+   
+9. Messrs address pada Packing List (PL) dan invoice:
    - Hanya ekstrak address dari perusahaannya tanpa kode posnya, contoh:
-   JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
-   Berarti yang diekstrak hanya JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
+      JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
+      Berarti yang diekstrak hanya JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
 
 9. Field po_* WAJIB diisi dengan STRING "null".
 
