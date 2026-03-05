@@ -420,11 +420,14 @@ GENERAL KNOWLEDGE DETAIL:
 8. Messrs pada Packing List (PL) dan invoice:
    - SELALU PT Insera Sena.
    - Jika terdapat beberapa nama → pilih PT Insera Sena.
+   - Jika ada variasi nama perusahaan PT Insera Sena seperti:
+     "PT. INSERA SENA", "PERSEROAN TERBATAS INSERA SENA", "PT INSERASENA", atau bentuk lainnya yang merujuk pada PT Insera Sena,
+     NORMALISASI menjadi: "PT Insera Sena"
    
 9. Messrs address pada Packing List (PL) dan invoice:
    - Hanya ekstrak address dari perusahaannya tanpa kode posnya, contoh:
       JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
-      Berarti yang diekstrak hanya JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
+      Berarti yang diekstrak hanya: JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR
 
 9. Field po_* WAJIB diisi dengan STRING "null".
 
@@ -436,8 +439,8 @@ GENERAL KNOWLEDGE DETAIL:
    - Jika barang Bal → BL
    - Selain itu → gunakan nilai asli.
    - Jika ada packing unit yang diisi oleh packing unit lainnnya contoh:
-   Package Detail: 1 PLT(S)  Number of Carton: 9
-   Berarti ambil yang secara garis besarnya yaitu PLT Yang artinya package unit adalah PX
+     Package Detail: 1 PLT(S)  Number of Carton: 9
+     Berarti ambil yang secara garis besarnya yaitu PLT Yang artinya package unit adalah PX.
 
 
 11. LC Logic pada Bill of Lading (BL):
@@ -472,10 +475,10 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
 
 16. pl_total_package:
-   - Untuk total package yang digunakan tolong liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
+   - Untuk total package yang digunakan, liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
    - Jika tidak secara eksplisit, contoh:
-   Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
-   Berarti total packagenya adalah 9 karena secara detail, ada 9 total package.
+     Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
+     Maka pl_total_package adalah 9 karena secara detail, ada 9 total package.
    
 
 OUTPUT RESTRICTION:

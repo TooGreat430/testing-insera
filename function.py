@@ -809,9 +809,11 @@ def _validate_invoice_vs_packing_extra(rows: list):
                 _append_err(r, "Invoice vs PL: inv_messrs != pl_messrs")
 
         # inv_messrs_address vs pl_messrs_address
-        if not _is_null(r.get("inv_messrs_address")) and not _is_null(r.get("pl_messrs_address")):
-            if norm(r.get("inv_messrs_address")) != norm(r.get("pl_messrs_address")):
-                _append_err(r, "Invoice vs PL: inv_messrs_address != pl_messrs_address")
+        inv_messrs_address = r.get("inv_messrs_address")
+        pl_messrs_address = r.get("pl_messrs_addres")
+        if not _is_null(inv_messrs_address) and not _is_null(pl_messrs_address):
+            if norm(inv_messrs_address) != norm(pl_messrs_address):
+                _append_err(r, f"Invoice vs PL: inv_messrs_address != pl_messrs_address (inv {inv_messrs_address}, pl {pl_messrs_address})")
 
         # inv_gw vs coo_gw (hanya jika COO ada nilainya)
         inv_gw = _to_float(r.get("inv_gw"))
