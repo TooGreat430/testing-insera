@@ -157,7 +157,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "inv_amount": "number",
   "inv_amount_unit": "string",
 
-  "pl_item_no": "number",
+  "pl_item_no": "string",
   "pl_description": "string",
   "pl_quantity": "number",
   "pl_package_unit": "string",
@@ -223,7 +223,7 @@ DETAIL_LINE_NUM_FIELDS = {
     "inv_seq","inv_quantity","inv_unit_price","inv_amount",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
-    "pl_item_no","pl_quantity","pl_package_count","pl_nw","pl_gw","pl_volume",
+    "pl_quantity","pl_package_count","pl_nw","pl_gw","pl_volume",
     "pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
 
     "po_line","po_quantity","po_price","po_info_record_price",
@@ -425,7 +425,7 @@ GENERAL KNOWLEDGE DETAIL:
    - PAHAMI TERLEBIH DAHULU PACKAGE UNIT APA YANG DIGUNAKAN PADA DOKUMEN
    - Jika semua barang karton (CTN) → CT
    - Jika semua barang pallet (PLT) → PX
-   - Jika barang campuran → PK, Contoh: ada dua unit, PLTS dan Carton, maka menjadi PX
+   - Jika barang campuran → PK, Contoh: ada dua unit, PLTS dan Carton, maka menjadi PK
    - Jika barang Bal → BL
    - Selain itu → gunakan nilai asli.
 

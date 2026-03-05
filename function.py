@@ -712,9 +712,9 @@ def _validate_packing_rows(rows: list):
 
         required_str = [
             "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address",
-            "pl_package_unit","pl_weight_unit","pl_volume_unit",
+            "pl_package_unit","pl_weight_unit","pl_volume_unit","pl_item_no"
         ]
-        required_num = ["pl_item_no","pl_quantity","pl_package_count","pl_nw","pl_gw","pl_volume"]
+        required_num = ["pl_quantity","pl_package_count","pl_nw","pl_gw","pl_volume"]
 
         for k in required_str:
             if _is_null(r.get(k)):
