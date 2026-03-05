@@ -713,8 +713,24 @@ def _validate_packing_rows(rows: list):
 
     # normalize PT Insera Sena
     def norm(s):
-        if _is_null(s): return ""
-        return re.sub(r"\s+", " ", str(s).strip().upper())
+        if _is_null(s): 
+            return ""
+        
+        s = str(s).upper().strip()
+        
+        # hapus punctuation
+        s = re.sub(r"[^\w\s]", "", s)
+
+        # normalisasi PERSEROAN TERBATAS -> PT
+        s = re.sub(r"\bPERSEROAN\s+TERBATAS\b", "PT", s)
+
+        # normalisasi INSERASENA -> INSERA SENA
+        s = re.sub(r"\bINSERASENA\b", "INSERA SENA", s)
+
+        # rapiin spasi
+        s = re.sub(r"\s+", " ", s)
+
+        return s
 
     for r in rows:
         if not isinstance(r, dict):
