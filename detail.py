@@ -457,8 +457,15 @@ GENERAL KNOWLEDGE DETAIL:
 
 7. pl_package_count:
    - Field ini merepresentasikan jumlah package untuk setiap line item.
-   - Telusuri dan ambil jumlah package yang tercantum pada dokumen Packing List untuk line item tersebut.
-   - Isi dengan jumlah package (angka) yang terkait dengan line item tersebut.
+   - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
+   - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
+   - Isi dengan jumlah package (angka).
+   - Contoh:
+     Jika item muncul pada:
+     Box#1
+     Box#2
+     Box#4
+     maka pl_package_count = 3.
 
 8. pl_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
