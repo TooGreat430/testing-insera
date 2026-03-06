@@ -492,16 +492,32 @@ GENERAL KNOWLEDGE DETAIL:
 
      Maka package unit adalah PK.
 
-9. Field po_* WAJIB diisi dengan STRING "null".
+9. pl_volume_unit:
+   - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
+   - Jika pada dokumen Packing List pl_volume_unit tidak tercantum, maka periksa dokumen lain seperti Bill of Lading (BL).
 
-10. coo_seq:
+   - Jika volume pada Packing List dan dokumen lain memiliki nilai yang sama, maka gunakan volume unit dari dokumen tersebut.
+
+   - Jika nilai volume berbeda, pahami kemungkinan perbedaan satuan dan lakukan konversi terlebih dahulu.
+   - Gunakan unit yang setelah dikonversi menghasilkan nilai volume yang sesuai dengan volume pada PL.
+     Contoh:
+     PL volume = 2326.8 (tanpa unit)
+     BL volume = 63.34 m3
+     Karena nilai berbeda, coba konversi m3 ke unit lain.
+     63.34 m3 ≈ 2236.8 cuft
+     Maka:
+     pl_volume_unit = CUF
+
+10. Field po_* WAJIB diisi dengan STRING "null".
+
+11. coo_seq:
    - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
    - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
    - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
    - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
    - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
 
-11. bl_description dan bl_hs_code:
+12. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - value bl_hs_code diisi sesuai dengan bl_descriptionnya
    - Contoh:
@@ -514,12 +530,6 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
 
-
-12. pl_volume_unit:
-   - jika pada dokumen, volume unit tidak di sertakan, maka cek pada dokumen lain apakah ada volume unit. Dan jika ada, check value terlebih dahulun dan di compare. Dan jika hasil sama, maka ambil langsung volume unit tersebut. Namun jika beda maka perlu dipahami dan diconvert ke dalam volume unit yang di convertkan
-   - Contoh:
-   pl_volume_unit tidak ada volume unit namun di bill of Lading volume unit itu m3 dan value volume pada kedua dokumen sama, maka pl_volume_unit = m3
-   pl_volume_unit tidak ada volume unit namun di bill of Lading volume unit itu m3 dan value volume pada kedua dokumen berbeda, maka dipahami dulu dari value volume dari BL itu berapa dan PL berapa dan satuan apa yang digunakan untuk diconvert menjadi yang ada di PL
 
 OUTPUT RESTRICTION:
 - Output HARUS dimulai '[' dan diakhiri ']'
