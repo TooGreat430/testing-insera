@@ -553,6 +553,7 @@ GENERAL KNOWLEDGE DETAIL:
 
 14. bl_description dan bl_hs_code:
    - HANYA mengutamakan BL Description pada dokumen BL terlebih dahulu sebelum melakukan mappingan.
+   - bl_decription HANYA DIMAPPING DENGAN DOKUMEN INVOICE SAJA TIDAK DENGAN DOKUMEN LAIN. JADI ANTARA BL DAN INVOICE.
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - value bl_hs_code diisi sesuai dengan bl_descriptionnya
    - Contoh:
@@ -565,6 +566,12 @@ GENERAL KNOWLEDGE DETAIL:
 
      pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
+
+15. coo_mark_number:
+   - Jika pada satu row mark_number berisi beberapa line item, maka line item tersebut memiliki mark_number yang sama (ada pembatas garis jika mark_number berbeda).
+
+16. coo_customer_po_no:
+   - jika pada dokumen COO tidak terdapat customer PO NO, maka null saja.
 
 
 OUTPUT RESTRICTION:
