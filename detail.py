@@ -446,8 +446,17 @@ GENERAL KNOWLEDGE DETAIL:
 
 5. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
-   - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
+   - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, JPY, EUR dan lain-lain.
+
    - Output harus menggunakan kode mata uang standar ISO 4217 (3 huruf).
+   - Jangan menggunakan simbol mata uang seperti $, US$, ¥, €, Rp, dll.
+     Contoh konversi:
+     US$ atau $ → USD
+     RMB atau ¥ → CNY
+     ¥ → JPY (jika konteks Jepang)
+     Rp → IDR
+     € → EUR
+     
    - Jika "null" gunakan currency dari dokumen tersebut, biasanya dapat ditemukan pada bagian Currency atau Currency Code.  
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD. 
