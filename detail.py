@@ -420,6 +420,9 @@ ATURAN:
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
 - Field po_* WAJIB "null"/0 (akan diisi Python dari master PO).
 
+- Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
+- Untuk merged total, identifikasi dulu seluruh row dalam group merge dan gunakan quantity seluruh row tersebut sebagai basis alokasi proporsional.
+
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
 
