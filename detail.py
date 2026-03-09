@@ -412,7 +412,12 @@ ATURAN:
 - Tidak boleh JSON literal null → gunakan "null".
 - Untuk FIELD BERTIPE NUMBER jika tidak ada → isi 0.
 - Output HANYA JSON ARRAY, tanpa teks tambahan.
-- Jika dokumen tidak tersedia → semua field dengan prefix dokuumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
+- Field hanya boleh diisi dari dokumen sesuai prefix-nya, TIDAK BOLEH dari dokumen lain:
+  inv_* → Invoice, tidak boleh dari dokumen lain
+  pl_* → Packing List, tidak boleh dari dokumen lain
+  bl_* → Bill of Lading, tidak boleh dari dokumen lain
+  coo_* → Certificate of Origin, tidak boleh dari dokumen lain
+- Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
 - Field po_* WAJIB "null"/0 (akan diisi Python dari master PO).
 
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
@@ -562,8 +567,8 @@ GENERAL KNOWLEDGE DETAIL:
 
 14. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
-   - value bl_hs_code diisi sesuai dengan bl_descriptionnya
-   - Contoh:
+   - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
+     Contoh:
      FRAME PART A-F3306-1 HS NUMBER: 8714.91
      FRAME PART A-HG009 HS NUMBER: 8714.91
      FRAME PART A-HG011 HS NUMBER: 8714.91
@@ -572,7 +577,7 @@ GENERAL KNOWLEDGE DETAIL:
 
      pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
-
+     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
 OUTPUT RESTRICTION:
 - Output HARUS dimulai '[' dan diakhiri ']'
