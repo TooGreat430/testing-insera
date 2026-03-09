@@ -428,7 +428,57 @@ GENERAL KNOWLEDGE DETAIL:
 
 1. Output DETAIL merepresentasikan DATA PER LINE ITEM.
 
-2. customer_po_no pada Invoice dan juga PL:
+2. Merged row / merged total pada tabel:
+   - Jika terdapat beberapa line item yang berbeda, lalu pada kolom total di sebelah kanan nilainya ditulis dalam 1 cell merge vertikal, maka line item tetap dianggap terpisah.
+   - Jangan menggabungkan beberapa line item menjadi 1 object hanya karena kolom totalnya merge.
+   - Setiap line item tetap harus diekstrak sebagai 1 object terpisah sesuai anchor row-nya.
+
+   - Jika nilai pada cell merge tersebut merupakan total gabungan dari beberapa line item, maka nilai total itu harus dibagi ke masing-masing line item secara proporsional berdasarkan quantity line item.
+
+   - Rumus alokasi:
+     nilai_line_item = total_merge × (qty_line_item / total_qty_dalam_group_merge)
+
+   - total_qty_dalam_group_merge adalah jumlah seluruh qty dari line item yang tercakup oleh merge tersebut.
+   - qty_line_item adalah qty milik line item yang sedang dihitung.
+
+   - Contoh:
+     terdapat 2 line item dalam 1 group merge:
+     - line item A qty = 2
+     - line item B qty = 1
+     - total merge = 6.51
+
+     Maka:
+     - total_qty_dalam_group_merge = 3
+     - line item A = 6.51 × (2/3) = 4.34
+     - line item B = 6.51 × (1/3) = 2.17
+
+   - Jangan menyalin full value 6.51 ke semua line item.
+   - Jangan membagi rata tanpa melihat quantity.
+   - Pembagian harus mengikuti proporsi quantity masing-masing line item.
+
+   - Jika hasil pembagian menghasilkan selisih karena pembulatan, maka sesuaikan line item terakhir dalam group merge agar total akhirnya tetap sama persis dengan nilai total merge pada dokumen.
+
+   - Aturan ini berlaku untuk field total line item yang berasal dari merged cell, seperti:
+     inv_total_quantity, inv_total_amount, inv_total_nw, inv_total_gw, inv_total_volume, inv_total_package,
+     pl_total_quantity, pl_total_amount, pl_total_nw, pl_total_gw, pl_total_volume, pl_total_package,
+     atau field line-level lain yang secara jelas ditulis sebagai total gabungan beberapa row dalam 1 merged cell.
+
+   - Jika pada masing-masing row sudah ada nilai eksplisit sendiri, maka gunakan nilai eksplisit tersebut dan jangan lakukan alokasi proporsional.
+
+   - Hanya lakukan alokasi proporsional jika benar-benar terlihat bahwa 1 nilai merge dipakai sebagai total gabungan untuk beberapa line item yang tercakup dalam merge tersebut.
+
+3. Identifikasi group merge:
+   - Group merge ditentukan dari line item yang secara visual berada dalam cakupan cell merge vertikal yang sama pada kolom total.
+   - Untuk menentukan line item yang termasuk dalam 1 group merge, gunakan anchor di sisi kiri tabel seperti nomor urut, PO No, code, quantity, unit, dan description.
+   - Kolom total yang merge tidak boleh dipakai untuk mengurangi jumlah line item.
+   - Jika anchor kiri menunjukkan 2 atau lebih line item berbeda, maka semua line item tersebut tetap harus keluar sebagai object terpisah.
+
+4. Prioritas pembacaan row:
+   - Penentuan line item harus mengikuti anchor di sisi kiri tabel, bukan berdasarkan apakah kolom total di kanan merge atau tidak.
+   - Jika ada row baru di sisi kiri tabel, maka itu adalah line item baru.
+   - Jika description hanya ter-wrap ke bawah tanpa anchor baru di sisi kiri, maka itu bukan line item baru, melainkan lanjutan description dari line item sebelumnya.
+
+5. customer_po_no pada Invoice dan juga PL:
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
    - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
       Contoh
@@ -438,18 +488,18 @@ GENERAL KNOWLEDGE DETAIL:
       - 45295893
       - 45297175
 
-3. inv_seq:
+6. inv_seq:
    - inv_seq wajib numeric murni dan tidak boleh "null".
    - inv_seq dihitung GLOBAL berdasarkan inv_customer_po_no yang sama untuk seluruh line item (index 1 sampai total_row), bukan dihitung ulang per batch.
    - Definisi inv_seq per baris: inv_seq = hitung berapa kali inv_customer_po_no yang sama sudah muncul dari index 1 sampai index baris ini (termasuk baris ini).
    Contoh: PO=112 muncul di index 2,5,6 → inv_seq untuk index 2=1, index 5=2, index 6=3.
    - Untuk baris yang kamu keluarkan (index {first_index}..{last_index}), inv_seq tetap harus mengikuti hitungan global dari index 1..total_row.
 
-4. inv_spart_item_no:
+7. inv_spart_item_no:
    - Jika tidak eksplisit → cek kolom ke-2 tabel item.
    - Jika tetap tidak ada → "null".
 
-5. inv_price_unit SAMA dengan inv_amount_unit:
+8. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
 
@@ -466,11 +516,11 @@ GENERAL KNOWLEDGE DETAIL:
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD. 
 
-6. pl_item_no
+9. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
 
-7. pl_package_count:
+10. pl_package_count:
    - Field ini merepresentasikan jumlah package untuk setiap line item.
    - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
    - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
@@ -483,7 +533,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-8. pl_package_unit:
+11. pl_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
 
@@ -507,7 +557,7 @@ GENERAL KNOWLEDGE DETAIL:
 
      Maka package unit adalah PK.
 
-9. pl_volume:
+12. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -526,7 +576,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-10. pl_volume_unit:
+13. pl_volume_unit:
    - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
    - Jika pada dokumen Packing List pl_volume_unit tidak tercantum, maka periksa dokumen lain seperti Bill of Lading (BL).
 
@@ -542,16 +592,16 @@ GENERAL KNOWLEDGE DETAIL:
      Maka:
      pl_volume_unit = CUF
 
-11. Field po_* WAJIB diisi dengan STRING "null".
+14. Field po_* WAJIB diisi dengan STRING "null".
 
-12. coo_seq:
+15. coo_seq:
    - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
    - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
    - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
    - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
    - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
 
-13. coo_gw_unit:
+16. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -565,7 +615,7 @@ GENERAL KNOWLEDGE DETAIL:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-14. bl_description dan bl_hs_code:
+17. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -579,7 +629,7 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-15. coo_customer_po_no:
+18. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:
