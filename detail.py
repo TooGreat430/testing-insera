@@ -420,8 +420,9 @@ ATURAN:
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
 - Field po_* WAJIB "null"/0 (akan diisi Python dari master PO).
 
-- Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
-- Untuk merged total, identifikasi dulu seluruh row dalam group merge dan gunakan quantity seluruh row tersebut sebagai basis alokasi proporsional.
+- Jika terdapat merged cell pada kolom total / combined yang mencakup beberapa line item, jangan langsung melakukan alokasi value.
+- WAJIB tentukan terlebih dahulu merge group yang benar untuk setiap line item.
+- Setelah merge group teridentifikasi dengan benar, barulah lakukan alokasi proporsional sesuai aturan pada GENERAL KNOWLEDGE DETAIL.
 
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
@@ -431,57 +432,94 @@ GENERAL KNOWLEDGE DETAIL:
 
 1. Output DETAIL merepresentasikan DATA PER LINE ITEM.
 
-2. Merged row / merged total pada tabel:
-   - Jika terdapat beberapa line item yang berbeda, lalu pada kolom total di sebelah kanan nilainya ditulis dalam 1 cell merge vertikal, maka line item tetap dianggap terpisah.
-   - Jangan menggabungkan beberapa line item menjadi 1 object hanya karena kolom totalnya merge.
-   - Setiap line item tetap harus diekstrak sebagai 1 object terpisah sesuai anchor row-nya.
+2. Penentuan merge group pada kolom total / combined:
+   - Kadang beberapa line item ditampilkan terpisah di sisi kiri tabel, tetapi kolom total atau combined di sisi kanan ditulis dalam 1 cell merge vertikal.
+   - Dalam kondisi seperti ini, setiap row tetap merupakan line item yang berbeda.
+   - Jangan menggabungkan beberapa row menjadi 1 object hanya karena value total ditulis dalam 1 cell merge.
 
-   - Jika nilai pada cell merge tersebut merupakan total gabungan dari beberapa line item, maka nilai total itu harus dibagi ke masing-masing line item secara proporsional berdasarkan quantity line item.
+   - Sebelum menghitung allocation, WAJIB tentukan dulu merge group yang benar.
+   - Merge group adalah kumpulan line item yang benar-benar berada dalam cakupan 1 merged cell vertikal yang sama pada kolom total / combined.
+   - 1 row hanya boleh masuk ke 1 merge group.
+   - Jika ada merged cell baru dimulai pada row berikutnya, maka row tersebut adalah awal merge group baru dan tidak boleh ikut group sebelumnya.
 
-   - Rumus alokasi:
-     nilai_line_item = total_merge × (qty_line_item / total_qty_dalam_group_merge)
+3. Cara identifikasi batas merge group:
+   - Gunakan anchor kiri tabel untuk menjaga bahwa setiap row tetap menjadi line item terpisah.
+   - Lalu gunakan area kolom kanan yang merge untuk menentukan row mana saja yang berada dalam 1 group.
+   - Jika terdapat batas visual / border horizontal yang menandakan merged cell sebelumnya berakhir, maka row setelah batas itu adalah group baru.
+   - Jangan memasukkan row berikutnya ke group sebelumnya hanya karena description, code, atau format row terlihat mirip.
+   - Fokus utama untuk grouping adalah cakupan merged cell di kolom kanan, bukan kemiripan isi row.
 
-   - total_qty_dalam_group_merge adalah jumlah seluruh qty dari line item yang tercakup oleh merge tersebut.
-   - qty_line_item adalah qty milik line item yang sedang dihitung.
+4. Validasi merge group dengan checksum quantity:
+   - Setelah kandidat merge group ditemukan, validasikan dengan total quantity group yang tertulis pada dokumen jika tersedia, seperti Combined QTY atau total qty group lainnya.
+   - Jumlah quantity dari seluruh row dalam candidate group harus sama dengan total quantity group yang tertulis pada merged cell tersebut.
+   - Jika tidak sama, berarti merge group salah dan harus diperbaiki.
 
    - Contoh:
-     terdapat 2 line item dalam 1 group merge:
-     - line item A qty = 2
-     - line item B qty = 1
-     - total merge = 6.51
+     Jika pada merged cell tertulis Combined QTY = 794, maka row-row dalam group itu harus memiliki jumlah quantity = 794.
+     Jika pada merged cell tertulis Combined QTY = 754, maka row-row dalam group itu harus memiliki jumlah quantity = 754.
 
-     Maka:
-     - total_qty_dalam_group_merge = 3
-     - line item A = 6.51 × (2/3) = 4.34
-     - line item B = 6.51 × (1/3) = 2.17
+   - Gunakan checksum ini untuk menentukan batas group dengan tepat.
+   - Jangan lanjut ke perhitungan allocation jika checksum quantity group belum cocok.
 
-   - Jangan menyalin full value 6.51 ke semua line item.
+5. Alokasi value merged total:
+   - Jika 1 value pada merged cell merepresentasikan total gabungan dari beberapa line item dalam 1 merge group yang sudah tervalidasi, maka value tersebut harus dialokasikan ke masing-masing line item secara proporsional berdasarkan quantity masing-masing row.
+
+   - Formula:
+     allocated_value = merged_total_value × (line_item_qty / total_qty_group)
+
+   - total_qty_group adalah penjumlahan quantity dari seluruh row yang berada dalam merge group yang sama.
+   - line_item_qty adalah quantity dari row yang sedang dihitung.
+
+   - Jangan copy full merged_total_value ke semua row.
    - Jangan membagi rata tanpa melihat quantity.
-   - Pembagian harus mengikuti proporsi quantity masing-masing line item.
+   - Jangan menggunakan row yang sebenarnya milik merge group lain.
 
-   - Jika hasil pembagian menghasilkan selisih karena pembulatan, maka sesuaikan line item terakhir dalam group merge agar total akhirnya tetap sama persis dengan nilai total merge pada dokumen.
+6. Contoh wajib penentuan merge group:
+   - Misal terdapat 5 line item berurutan dengan quantity:
+     row 1 = 48
+     row 2 = 746
+     row 3 = 320
+     row 4 = 354
+     row 5 = 80
 
-   - Aturan ini berlaku untuk field total line item yang berasal dari merged cell, seperti:
-     inv_total_quantity, inv_total_amount, inv_total_nw, inv_total_gw, inv_total_volume, inv_total_package,
-     pl_total_quantity, pl_total_amount, pl_total_nw, pl_total_gw, pl_total_volume, pl_total_package,
-     atau field line-level lain yang secara jelas ditulis sebagai total gabungan beberapa row dalam 1 merged cell.
+   - Lalu pada dokumen terlihat ada 2 merged group:
+     Group A memiliki Combined QTY = 794
+     Group B memiliki Combined QTY = 754
 
-   - Jika pada masing-masing row sudah ada nilai eksplisit sendiri, maka gunakan nilai eksplisit tersebut dan jangan lakukan alokasi proporsional.
+   - Maka:
+     Group A harus berisi row 1 + row 2, karena 48 + 746 = 794
+     Group B harus berisi row 3 + row 4 + row 5, karena 320 + 354 + 80 = 754
 
-   - Hanya lakukan alokasi proporsional jika benar-benar terlihat bahwa 1 nilai merge dipakai sebagai total gabungan untuk beberapa line item yang tercakup dalam merge tersebut.
+   - Row 3 tidak boleh ikut Group A, karena 48 + 746 + 320 = 1114, tidak cocok dengan Combined QTY = 794.
+   - Jadi checksum quantity wajib dipakai untuk memvalidasi merge group.
 
-3. Identifikasi group merge:
-   - Group merge ditentukan dari line item yang secara visual berada dalam cakupan cell merge vertikal yang sama pada kolom total.
-   - Untuk menentukan line item yang termasuk dalam 1 group merge, gunakan anchor di sisi kiri tabel seperti nomor urut, PO No, code, quantity, unit, dan description.
-   - Kolom total yang merge tidak boleh dipakai untuk mengurangi jumlah line item.
-   - Jika anchor kiri menunjukkan 2 atau lebih line item berbeda, maka semua line item tersebut tetap harus keluar sebagai object terpisah.
+7. Contoh wajib alokasi setelah group benar:
+   - Jika Group B memiliki merged total N.W = 4.52 dan quantity:
+     row 3 = 320
+     row 4 = 354
+     row 5 = 80
+     maka total_qty_group = 754
 
-4. Prioritas pembacaan row:
-   - Penentuan line item harus mengikuti anchor di sisi kiri tabel, bukan berdasarkan apakah kolom total di kanan merge atau tidak.
-   - Jika ada row baru di sisi kiri tabel, maka itu adalah line item baru.
-   - Jika description hanya ter-wrap ke bawah tanpa anchor baru di sisi kiri, maka itu bukan line item baru, melainkan lanjutan description dari line item sebelumnya.
+   - Alokasi:
+     row 3 = 4.52 × (320/754) = 1.918302...
+     row 4 = 4.52 × (354/754) = 2.122122...
+     row 5 = 4.52 × (80/754) = 0.479575...
 
-5. customer_po_no pada Invoice dan juga PL:
+   - Jadi jika merge group sudah benar, hasil alokasi tidak boleh menjadi 1.48, 1.67, 0.37 karena itu menunjukkan group atau basis hitungnya salah.
+
+8. Aturan pembulatan:
+   - Jika hasil alokasi memiliki banyak desimal, lakukan pembulatan di akhir.
+   - Jika ada selisih karena pembulatan, sesuaikan row terakhir dalam merge group agar total akhir seluruh row tetap sama persis dengan merged total pada dokumen.
+   - Tetapi pembulatan hanya boleh dilakukan setelah merge group benar dan total_qty_group benar.
+
+9. Prioritas:
+   - Prioritas pertama adalah line item row identification.
+   - Prioritas kedua adalah merge group identification.
+   - Prioritas ketiga adalah checksum quantity validation.
+   - Prioritas terakhir adalah proportional allocation.
+   - Jangan melakukan proportional allocation jika merge group belum benar.
+
+10. customer_po_no pada Invoice dan juga PL:
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
    - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
       Contoh
@@ -491,18 +529,18 @@ GENERAL KNOWLEDGE DETAIL:
       - 45295893
       - 45297175
 
-6. inv_seq:
+11. inv_seq:
    - inv_seq wajib numeric murni dan tidak boleh "null".
    - inv_seq dihitung GLOBAL berdasarkan inv_customer_po_no yang sama untuk seluruh line item (index 1 sampai total_row), bukan dihitung ulang per batch.
    - Definisi inv_seq per baris: inv_seq = hitung berapa kali inv_customer_po_no yang sama sudah muncul dari index 1 sampai index baris ini (termasuk baris ini).
    Contoh: PO=112 muncul di index 2,5,6 → inv_seq untuk index 2=1, index 5=2, index 6=3.
    - Untuk baris yang kamu keluarkan (index {first_index}..{last_index}), inv_seq tetap harus mengikuti hitungan global dari index 1..total_row.
 
-7. inv_spart_item_no:
+12. inv_spart_item_no:
    - Jika tidak eksplisit → cek kolom ke-2 tabel item.
    - Jika tetap tidak ada → "null".
 
-8. inv_price_unit SAMA dengan inv_amount_unit:
+13. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
 
@@ -519,11 +557,11 @@ GENERAL KNOWLEDGE DETAIL:
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD. 
 
-9. pl_item_no
+14. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
 
-10. pl_package_count:
+15. pl_package_count:
    - Field ini merepresentasikan jumlah package untuk setiap line item.
    - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
    - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
@@ -536,7 +574,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-11. pl_package_unit:
+16. pl_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
 
@@ -560,7 +598,7 @@ GENERAL KNOWLEDGE DETAIL:
 
      Maka package unit adalah PK.
 
-12. pl_volume:
+17. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -579,7 +617,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-13. pl_volume_unit:
+18. pl_volume_unit:
    - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
    - Jika pada dokumen Packing List pl_volume_unit tidak tercantum, maka periksa dokumen lain seperti Bill of Lading (BL).
 
@@ -595,16 +633,16 @@ GENERAL KNOWLEDGE DETAIL:
      Maka:
      pl_volume_unit = CUF
 
-14. Field po_* WAJIB diisi dengan STRING "null".
+19. Field po_* WAJIB diisi dengan STRING "null".
 
-15. coo_seq:
+20. coo_seq:
    - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
    - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
    - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
    - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
    - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
 
-16. coo_gw_unit:
+21. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -618,7 +656,7 @@ GENERAL KNOWLEDGE DETAIL:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-17. bl_description dan bl_hs_code:
+22. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -632,7 +670,7 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-18. coo_customer_po_no:
+23. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:
