@@ -428,6 +428,14 @@ GENERAL KNOWLEDGE DETAIL:
 
 1. Output DETAIL merepresentasikan DATA PER LINE ITEM.
 
+1A. Line item yang berlanjut di halaman lain:
+- Pada beberapa dokumen, line item dapat berlanjut di halaman lain karena keterbatasan ruang halaman.
+- Jika pada halaman berikutnya terdapat line item dengan struktur field yang sama atau penomoran item yang melanjutkan urutan sebelumnya, maka line item tersebut harus dianggap sebagai bagian dari daftar line item yang sama.
+- Halaman yang berada di antara dua bagian line item belum tentu berisi line item (misalnya halaman kosong, catatan, syarat, atau informasi tambahan). Halaman tersebut harus diabaikan dalam proses ekstraksi line item.
+- Semua line item yang muncul sebelum dan sesudah halaman tersebut tetap dianggap sebagai bagian dari satu rangkaian line item yang sama.
+
+Jangan memulai line item baru hanya karena terjadi pergantian halaman, jika urutan item menunjukkan bahwa line item tersebut masih merupakan kelanjutan dari bagian sebelumnya.
+
 2. customer_po_no pada Invoice dan juga PL:
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
    - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
