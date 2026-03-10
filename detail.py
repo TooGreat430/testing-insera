@@ -455,11 +455,6 @@ GENERAL KNOWLEDGE DETAIL:
    - jika pl_quantity, maka quantity pada dokumen Packing List yang akan di ekstrak.
    - JANGAN KEBALIK DAN AMBIL SESUAI DENGAN KEBUTUHAN KOLOM.
 
-5. inv_amount
-   - Dalam dokumen invoice, ada beberapa tipe invoice yang state jelas header dari amount dan juga valuenya.
-   - Jika tidak di state amountnya, maka gunakan rumus ini: inv_quantity * inv_unit_price.
-   - Jika amount di state, maka langsung ekstrak saja tanpa menggunakan rumus tersebut.
-
 5. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
