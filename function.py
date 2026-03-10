@@ -8,7 +8,7 @@ import subprocess
 import ijson 
 from urllib.parse import urlparse 
 from google.cloud import storage 
-from PyPDF2 import PdfMerger 
+from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 from google import genai 
 from google.genai import types 
 import time
@@ -95,6 +95,154 @@ def _parse_json_safe(raw_text):
 # MERGE PDF
 # ==============================
 
+# ==============================
+# REMOVE TRULY BLANK PAGES
+# ==============================
+
+def _safe_get_object(obj):
+    try:
+        return obj.get_object()
+    except Exception:
+        return obj
+
+def _page_has_text(page) -> bool:
+    """
+    Keep page kalau ada teks sekecil apa pun.
+    Kalau text extraction error, pilih aman: anggap ada isi.
+    """
+    try:
+        text = page.extract_text() or ""
+        return bool(text.strip())
+    except Exception:
+        return True  # conservative: jangan hapus kalau ragu
+
+def _page_has_annotations(page) -> bool:
+    """
+    Kalau ada annot/stamp/comment/form appearance, jangan dihapus.
+    """
+    try:
+        annots = page.get("/Annots")
+        return bool(annots)
+    except Exception:
+        return True  # conservative
+
+def _page_has_xobject_or_image(page) -> bool:
+    """
+    Jangan hapus page yang punya image atau form XObject.
+    Form XObject ikut dicek karena kadang image/isi page dibungkus di sana.
+    """
+    try:
+        resources = _safe_get_object(page.get("/Resources"))
+        if not resources:
+            return False
+
+        xobj = _safe_get_object(resources.get("/XObject"))
+        if not xobj:
+            return False
+
+        for _, ref in xobj.items():
+            obj = _safe_get_object(ref)
+            if not obj:
+                continue
+
+            subtype = obj.get("/Subtype")
+            if subtype in ("/Image", "/Form"):
+                return True
+
+        return False
+    except Exception:
+        return True  # conservative
+
+def _page_has_nonempty_content_stream(page) -> bool:
+    """
+    Pure blank page biasanya tidak punya /Contents atau stream-nya benar-benar kosong.
+    Kalau stream ada isinya sedikit pun, page dipertahankan.
+    """
+    try:
+        contents = page.get_contents()
+        if contents is None:
+            return False
+
+        # Bisa single stream atau list of streams
+        if isinstance(contents, list):
+            chunks = []
+            for c in contents:
+                c = _safe_get_object(c)
+                if c is None:
+                    continue
+                data = c.get_data()
+                if data:
+                    chunks.append(data)
+            raw = b"".join(chunks)
+        else:
+            contents = _safe_get_object(contents)
+            raw = contents.get_data() if contents else b""
+
+        if raw is None:
+            return False
+
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8", errors="ignore")
+
+        return bool(raw.strip())
+    except Exception:
+        return True  # conservative
+
+def _is_truly_blank_page(page) -> bool:
+    """
+    HANYA true kalau page benar-benar kosong.
+    - Ada teks 1-2 kata? => TIDAK blank
+    - Ada foto/image? => TIDAK blank
+    - Ada anotasi/stamp? => TIDAK blank
+    - Ada content stream sekecil apa pun? => TIDAK blank
+    """
+    if _page_has_text(page):
+        return False
+
+    if _page_has_annotations(page):
+        return False
+
+    if _page_has_xobject_or_image(page):
+        return False
+
+    if _page_has_nonempty_content_stream(page):
+        return False
+
+    return True
+
+def _remove_truly_blank_pages(input_path: str) -> str:
+    """
+    Hapus hanya halaman yang benar-benar kosong dari PDF hasil merge.
+    Jika tidak ada yang dihapus, return path asli.
+    Jika semua halaman terdeteksi kosong, return path asli (fail-safe).
+    """
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+
+    removed_count = 0
+
+    for page in reader.pages:
+        if _is_truly_blank_page(page):
+            removed_count += 1
+            continue
+        writer.add_page(page)
+
+    # tidak ada halaman yang dihapus
+    if removed_count == 0:
+        return input_path
+
+    # fail-safe: jangan hasilkan PDF kosong
+    if len(writer.pages) == 0:
+        return input_path
+
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    out.close()
+
+    with open(out.name, "wb") as f:
+        writer.write(f)
+
+    return out.name
+
 def _merge_pdfs(pdf_paths):
     merger = PdfMerger()
 
@@ -102,10 +250,21 @@ def _merge_pdfs(pdf_paths):
         merger.append(p)
 
     out = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    out.close()
+
     merger.write(out.name)
     merger.close()
 
-    return out.name
+    cleaned_path = _remove_truly_blank_pages(out.name)
+
+    # kalau hasil cleaning bikin file baru, hapus file merge mentah
+    if cleaned_path != out.name:
+        try:
+            os.remove(out.name)
+        except Exception:
+            pass
+
+    return cleaned_path
 
 # ==============================
 # COMPRESS PDF
@@ -825,7 +984,7 @@ def _validate_invoice_vs_packing_extra(rows: list):
 
         # inv_messrs_address vs pl_messrs_address
         inv_messrs_address = r.get("inv_messrs_address")
-        pl_messrs_address = r.get("pl_messrs_addres")
+        pl_messrs_address = r.get("pl_messrs_address")
         if not _is_null(inv_messrs_address) and not _is_null(pl_messrs_address):
             if norm(inv_messrs_address) != norm(pl_messrs_address):
                 _append_err(r, f"Invoice vs PL: inv_messrs_address != pl_messrs_address (inv {inv_messrs_address}, pl {pl_messrs_address})")
