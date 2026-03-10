@@ -449,6 +449,12 @@ GENERAL KNOWLEDGE DETAIL:
    - Jika tidak eksplisit → cek kolom ke-2 tabel item.
    - Jika tetap tidak ada → "null".
 
+5. inv_quantity dan pl_quantity:
+   - untuk membaca quantity harap pahami tipe dokumen yang akan di ekstrak.
+   - jika inv_quantity, maka quantity pada dokumen invoice yang akan di ekstrak
+   - jika pl_quantity, maka quantity pada dokumen Packing List yang akan di ekstrak.
+   - JANGAN KEBALIK DAN AMBIL SESUAI DENGAN KEBUTUHAN KOLOM.
+
 5. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
