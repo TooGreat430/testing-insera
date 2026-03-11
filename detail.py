@@ -474,11 +474,13 @@ GENERAL KNOWLEDGE DETAIL:
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD. 
 
-6. pl_item_no
+6. inv_total_quantity:
+   - Jika tidak tersedia isi dengan "null", JANGAN MENGARANG ATAU BERASUMSI     
+7. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
 
-7. pl_package_count:
+8. pl_package_count:
    - Field ini merepresentasikan jumlah package untuk setiap line item.
    - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
    - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
@@ -491,7 +493,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-8. pl_package_unit:
+9. pl_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
    - Ada beberapa penempatan Package Unit:
@@ -520,7 +522,7 @@ GENERAL KNOWLEDGE DETAIL:
 
      Maka package unit adalah PK.
 
-9. pl_volume:
+10. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -539,7 +541,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-10. pl_volume_unit:
+11. pl_volume_unit:
    - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
 
    - Identifikasi Header Tabel: Periksa baris header atau judul kolom pada tabel Packing List untuk menentukan unit dari volume yang digunakan. Jika terdapat teks seperti "TOTAL CBM", "MEASUREMENT", "VOL", atau "Cubic Meter", maka unitnya adalah CBM atau M3 (PAHAMI JIKA TOTAL CBM maka unit "CBM". Jika misal TOTAL M3, maka M3).
@@ -557,16 +559,16 @@ GENERAL KNOWLEDGE DETAIL:
      Maka:
      pl_volume_unit = CUF
 
-11. Field po_* WAJIB diisi dengan STRING "null".
+12. Field po_* WAJIB diisi dengan STRING "null".
 
-12. coo_seq:
+13. coo_seq:
    - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
    - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
    - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
    - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
    - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
 
-13. coo_gw_unit:
+14. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -580,7 +582,7 @@ GENERAL KNOWLEDGE DETAIL:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-14. bl_description dan bl_hs_code:
+15. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -594,7 +596,7 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-15. coo_customer_po_no:
+16. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:
@@ -605,7 +607,7 @@ GENERAL KNOWLEDGE DETAIL:
    - Ambil nilai Customer PO Number persis seperti yang tertulis pada dokumen tanpa mengubah formatnya.
    - Jika dokumen BUKAN berasal dari vendor Shimano → isi coo_customer_po_no dengan "null".
 
-16. Jika terdapat merged row pada kolom total:
+17. Jika terdapat merged row pada kolom total:
    - Kadang beberapa line item ditampilkan sebagai row terpisah di sisi kiri tabel, tetapi kolom total di sisi kanan ditulis dalam 1 cell merge vertikal.
    - Dalam kondisi seperti ini, setiap row tetap merupakan line item yang berbeda.
    - Jangan menggabungkan beberapa line item menjadi 1 object hanya karena value total ditulis dalam 1 cell merge.
