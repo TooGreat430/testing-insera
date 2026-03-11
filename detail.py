@@ -492,6 +492,11 @@ GENERAL KNOWLEDGE DETAIL:
 8. pl_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
+   - Ada beberapa penempatan Package Unit:
+      - Di Header dari package Unit
+      - Terdapat kolom tambahan untuk package unit
+      - Terdapat bersebelahan langsung dengan value dari package count.
+   - TOLONG PAHAMI penempatan dari package count.
 
    - Jika semua barang menggunakan karton (CTN / CARTON) → CT
    - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
