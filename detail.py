@@ -423,6 +423,8 @@ ATURAN:
 - Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
 - Untuk merged total, identifikasi dulu seluruh row dalam merge group berdasarkan cakupan visual merge vertikalnya, lalu validasi dengan total quantity group jika tersedia, dan gunakan quantity seluruh row dalam group tersebut sebagai basis alokasi proporsional.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
+- Saat membaca OCR, bedakan angka "0" dan huruf kapital "O" berdasarkan konteks field.
+- Untuk field code / part number / article number yang bersifat alfanumerik, tentukan "0" atau "O" berdasarkan pola code, posisi karakter, dan kemunculan berulang pada row lain.
 
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
@@ -450,8 +452,27 @@ GENERAL KNOWLEDGE DETAIL:
    - Untuk baris yang kamu keluarkan (index {first_index}..{last_index}), inv_seq tetap harus mengikuti hitungan global dari index 1..total_row.
 
 4. inv_spart_item_no:
-   - Jika tidak eksplisit → cek kolom ke-2 tabel item.
-   - Jika tetap tidak ada → "null".
+   - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
+   - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
+     - angka pendek tersebut biasanya adalah index / item number / nomor urut
+     - code alfanumerik adalah inv_spart_item_no yang benar
+
+   - Contoh:
+     1
+     CWSFSSH12001-R
+
+     Maka:
+     - "1" adalah index / nomor urut
+     - "CWSFSSH12001-R" adalah inv_spart_item_no
+
+   - Jadi untuk inv_spart_item_no, prioritaskan token yang berbentuk code part number, bukan angka urut pendek.
+
+   - Ciri umum inv_spart_item_no:
+     - biasanya berbentuk alfanumerik
+     - sering mengandung kombinasi huruf dan angka
+     - dapat mengandung dash / hyphen, slash, atau separator lain
+     - umumnya lebih panjang daripada index row
+     - biasanya terlihat seperti product code / part code
 
 5. inv_quantity dan pl_quantity:
    - untuk membaca quantity harap pahami tipe dokumen yang akan di ekstrak.
