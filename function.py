@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
 from total import TOTAL_SYSTEM_INSTRUCTION 
 from container import CONTAINER_SYSTEM_INSTRUCTION 
+from datetime import datetime, timezone
 from detail import (
     build_index_prompt,
     build_header_prompt,
@@ -32,6 +33,22 @@ import uuid
 BATCH_SIZE = 15
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, ) 
+
+def _save_status(invoice_name: str, status: str, with_total_container: bool, run_id: str = None, outputs: dict = None, error: str = None):
+    bucket = storage_client.bucket(BUCKET_NAME)
+    payload = {
+        "invoice_name": invoice_name,
+        "status": status,  # RUNNING / DONE / FAILED
+        "with_total_container": bool(with_total_container),
+        "run_id": run_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "outputs": outputs or {},
+        "error": error,
+    }
+    bucket.blob(f"status/{invoice_name}.json").upload_from_string(
+        json.dumps(payload),
+        content_type="application/json"
+    )
 
 # ============================== # JSON SAFE PARSER # ============================== 
 def _parse_json_safe(raw_text):
@@ -1334,24 +1351,30 @@ def _convert_to_csv(invoice_name, rows):
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
-    run_id = uuid.uuid4().hex  # atau [:8] kalau mau lebih pendek
+    run_id = uuid.uuid4().hex
     prefix = TMP_PREFIX.rstrip("/")
     run_prefix = f"{prefix}/{run_id}"
 
-    _save_run_meta(run_prefix, invoice_name, with_total_container)
-
     bucket = storage_client.bucket(BUCKET_NAME)
 
+    # status persisten
+    _save_status(
+        invoice_name=invoice_name,
+        status="RUNNING",
+        with_total_container=with_total_container,
+        run_id=run_id
+    )
+
+    _save_run_meta(run_prefix, invoice_name, with_total_container)
+
     try:
-        # DETAIL: invoice+packing saja (2 file pertama dari UI)
+        # DETAIL: invoice+packing saja
         merged_pdf_detail = _merge_pdfs(uploaded_pdf_paths[:2])
         merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
 
-        # FULL: semua dokumen yang diupload (untuk total/container)
         file_uri_detail = _upload_temp_pdf_to_gcs(merged_pdf_detail, run_prefix, name="detail")
 
         file_uri_full = None
-
         has_extra_docs = len(uploaded_pdf_paths) > 2
         if has_extra_docs:
             merged_pdf_full = _merge_pdfs(uploaded_pdf_paths)
@@ -1369,7 +1392,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         if not isinstance(header_obj, dict):
             header_obj = {}
 
-        # GET TOTAL ROW FROM GEMINI
         data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
@@ -1377,7 +1399,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         else:
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
-        # NEW: INDEX extraction (anchor line item)
         index_items = _call_gemini_json_uri(
             file_uri_detail,
             build_index_prompt(total_row),
@@ -1385,16 +1406,13 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             retries=3
         )
 
-        # fallback safety
         if not isinstance(index_items, list) or not index_items:
             raise Exception("INDEX line items kosong")
 
-        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
         if len(index_items) != total_row:
             print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
             total_row = len(index_items)
 
-        # BATCH DETAIL EXTRACTION
         jobs = []
         first_index = 1
         batch_no = 1
@@ -1402,7 +1420,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         while first_index <= total_row:
             last_index = min(first_index + BATCH_SIZE - 1, total_row)
 
-            index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
+            index_slice = index_items[first_index-1:last_index]
 
             prompt = build_detail_prompt_from_index(
                 total_row=total_row,
@@ -1415,7 +1433,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             first_index = last_index + 1
             batch_no += 1
 
-        # default 2 worker (aman untuk 2 CPU & mengurangi risiko 429)
         MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
         MAX_WORKERS = max(1, min(MAX_WORKERS, len(jobs)))
 
@@ -1429,7 +1446,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
                 bn, arr = f.result()
                 results[bn] = arr
 
-        # gabungkan hasil batch sesuai urutan batch_no (tanpa download ulang dari GCS)
         all_rows = []
         for bn in sorted(results.keys()):
             all_rows.extend(results[bn])
@@ -1438,19 +1454,11 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             raise Exception("Tidak ada data detail hasil Gemini")
 
         _ensure_all_detail_keys(all_rows)
-
         _apply_header_to_rows(all_rows, header_obj)
-
-        # 0) reset match fields (Gemini tidak validasi)
         _reset_match_fields(all_rows)
-
-        # 1) apply rule invoice po forward-fill sebelum ambil po_numbers
         _fill_forward(all_rows, "inv_customer_po_no")
-
-        #  FIX: kalau inv_price_unit null, samakan dengan inv_amount_unit
         _fill_inv_price_unit_from_amount_unit(all_rows)
 
-        # 2) ambil po_numbers setelah carry-forward
         po_numbers = {
             row.get("inv_customer_po_no")
             for row in all_rows
@@ -1463,47 +1471,28 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         print("PO NUMBERS:", po_numbers)
         print("PO LINES FOUND:", len(po_lines))
 
-        # 3) recompute seq global
         _recompute_seq_by_key(all_rows, "inv_customer_po_no", "inv_seq")
-
-        # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
 
-        # =========================
-        # OPTIONAL: total/container
-        # =========================
         total_data = None
         container_data = None
         if with_total_container:
             total_data = _call_gemini_json_uri(file_uri_full, TOTAL_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
-
             container_data = _call_gemini_json_uri(file_uri_full, CONTAINER_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
 
-        # =========================
-        # VALIDASI (python-based)
-        # =========================
         all_rows = _validate_po(all_rows)
-
         _validate_invoice_rows(all_rows)
         _validate_packing_rows(all_rows)
         _validate_invoice_vs_packing_extra(all_rows)
-
         _validate_bl_rows(all_rows)
         _validate_coo_rows(all_rows)
 
         _finalize_match_fields(all_rows)
         _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
 
-        # ==============================
-        # (NEW) MAP PO TO TOTAL (DETAIL tetap batch, TOTAL tidak batch)
-        # ==============================
         if total_data is not None:
             total_data = _map_po_to_total(total_data, po_lines, po_numbers)
 
-        # CONVERT TO CSV
-        # ==============================
-        # (NEW) OUTPUT PER FOLDER
-        # ==============================
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             all_rows,
@@ -1522,17 +1511,32 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
                 f"output/container/{invoice_name}_container.csv", container_data
             )
 
-
-        # CLEAN TEMP FILES
-        prefix = TMP_PREFIX.rstrip("/")
-        for blob in bucket.list_blobs(prefix=f"{run_prefix}/"):
-            blob.delete()
-
-        return {
+        result_payload = {
             "detail_csv": detail_csv_uri,
             "total_csv": total_csv_uri,
             "container_csv": container_csv_uri,
         }
+
+        # update status -> DONE
+        _save_status(
+            invoice_name=invoice_name,
+            status="DONE",
+            with_total_container=with_total_container,
+            run_id=run_id,
+            outputs=result_payload
+        )
+
+        return result_payload
+
+    except Exception as e:
+        _save_status(
+            invoice_name=invoice_name,
+            status="FAILED",
+            with_total_container=with_total_container,
+            run_id=run_id,
+            error=str(e)
+        )
+        raise
 
     finally:
         for blob in bucket.list_blobs(prefix=f"{run_prefix}/"):
