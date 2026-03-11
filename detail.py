@@ -495,9 +495,9 @@ GENERAL KNOWLEDGE DETAIL:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
    - Ada beberapa penempatan Package Unit:
-      - Di Header dari package Unit
-      - Terdapat kolom tambahan untuk package unit
-      - Terdapat bersebelahan langsung dengan value dari package count.
+      - Di Header dari package Unit contoh: Header mengatakan "PCS/CTN" Berarti unit yang digunakan yaitu "CTN"
+      - Terdapat kolom tambahan untuk package unit contoh terdapat 2 kolom Package count dan juga unitnya. Berarti value unit akan mengikuti kolom dari unitnya.
+      - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
    - TOLONG PAHAMI penempatan dari package count.
 
    - Jika semua barang menggunakan karton (CTN / CARTON) → CT
