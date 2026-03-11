@@ -408,6 +408,7 @@ ANCHOR INDEX (JSON):
 
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS. JANGAN MENGARANG.
+- PAHAMI DOKUMEN DAN EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA
 - Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
 - Tidak boleh JSON literal null → gunakan "null".
 - Untuk FIELD BERTIPE NUMBER jika tidak ada → isi 0.
@@ -421,6 +422,7 @@ ATURAN:
 - Field po_* WAJIB "null"/0 (akan diisi Python dari master PO).
 - Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
 - Untuk merged total, identifikasi dulu seluruh row dalam merge group berdasarkan cakupan visual merge vertikalnya, lalu validasi dengan total quantity group jika tersedia, dan gunakan quantity seluruh row dalam group tersebut sebagai basis alokasi proporsional.
+- TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
 
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
