@@ -503,13 +503,28 @@ GENERAL KNOWLEDGE DETAIL:
 6. inv_total_quantity:
    - Jika value tidak tersedia di dokumen, isi dengan "null", JANGAN MENGARANG ATAU BERASUMSI.     
 
-7. quantity dan package_count
+7. quantity dan package_count:
    - quantity dan package_count adalah dua field yang berbeda dan tidak boleh saling menggantikan.
-   - quantity adalah jumlah unit barang yang dikirim (jumlah item), biasanya memiliki satuan seperti PCS, UNIT, SET, PAIR, KG, atau satuan barang lainnya.
+   - quantity adalah jumlah unit barang yang dikirim atau total item quantity.
    - package_count adalah jumlah kemasan fisik yang digunakan untuk mengirim barang, seperti carton, box, pallet, crate, package, dan jenis kemasan lainnya.
-   - quantity tidak boleh diambil dari package_count, begitu juga package_count tidak boleh diambil dari quantity.
-   - Kedua nilai harus diekstrak hanya jika informasi tersebut secara eksplisit terdapat pada dokumen.
-   - Jika salah satu field tidak ditemukan secara jelas pada dokumen, maka field tersebut harus diisi "null" dan tidak boleh menyalin nilai dari field lainnya.
+
+   - Header kolom harus dipahami berdasarkan maknanya:
+     - Jika header menunjukkan "QTY", "QUANTITY", "PCS", "SETS", "UNITS", atau sejenisnya, maka itu mengarah ke quantity barang.
+     - Jika header menunjukkan "PKGS", "PACKING", "CARTON", "CTNS", "BOX", "PALLET", atau sejenisnya, maka itu mengarah ke package_count.
+     - Jika header menunjukkan format seperti "QTY/PKGS", "PCS/CTN", "SETS/BOX", "QTY/CARTON", atau pola "X per package", maka itu berarti quantity per package, BUKAN total quantity dan BUKAN package_count.
+
+   - Contoh:
+     Header:
+     QTY/PKGS | PACKING PKGS
+
+     Value:
+     10       | 20
+
+     Maka:
+     - 10 adalah quantity per package
+     - 20 adalah package count
+     - pl_package_count = 20
+     - pl_quantity = 10 × 20 = 200
 
 8. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
