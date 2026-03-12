@@ -187,45 +187,30 @@ if menu == "Report":
         })
 
     # RUNNING list dari meta.json
-    status_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix="status/"))
-    status_map = {}
+    meta_blobs = [b for b in tmp_blobs if b.name.endswith("/meta.json")]
+    running_invoices = set()
 
-    for sb in status_blobs:
-        if sb.name.endswith("/"):
-            continue
-        try:
-            s = json.loads(sb.download_as_text())
-        except Exception:
+    for mb in meta_blobs:
+        meta = json.loads(mb.download_as_text())
+        inv = meta.get("invoice_name")
+        wtc = bool(meta.get("with_total_container"))
+
+        # kalau user pilih total/container tapi run tsb tidak generate itu -> skip
+        if report_type in ("total", "container") and not wtc:
             continue
 
-        inv = s.get("invoice_name")
         if inv:
-            status_map[inv] = s
+            running_invoices.add(inv)
 
     if show_running:
-        for inv, s in status_map.items():
-            wtc = bool(s.get("with_total_container"))
-            if report_type in ("total", "container") and not wtc:
-                continue
-
-            if s.get("status") != "RUNNING":
-                continue
-
+        for inv in running_invoices:
             expected_name = f"{inv}_{report_type}.csv"
-
+            # penting: cek DONE berdasarkan semua output, bukan berdasarkan filter
             if expected_name not in done_filenames:
-                updated = None
-                raw_updated = s.get("updated_at")
-                if raw_updated:
-                    try:
-                        updated = datetime.fromisoformat(raw_updated)
-                    except Exception:
-                        updated = None
-
                 files_data.append({
                     "invoice": expected_name,
                     "status": "RUNNING",
-                    "updated": updated,
+                    "updated": None,
                     "path": None
                 })
 
