@@ -1,6 +1,6 @@
 import streamlit as st
 import tempfile
-from function import run_ocr
+from function import run_ocr, create_run_marker
 from google.cloud import storage
 from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
@@ -69,17 +69,17 @@ menu = st.sidebar.radio("Menu", ["Upload", "Report"])
 storage_client = storage.Client()
 bucket = storage_client.bucket(BUCKET_NAME)
 
-def _run_ocr_background(invoice_name, pdf_paths, with_total_container):
+def _run_ocr_background(invoice_name, pdf_paths, with_total_container, run_prefix):
     try:
         run_ocr(
             invoice_name=invoice_name,
             uploaded_pdf_paths=pdf_paths,
-            with_total_container=with_total_container
+            with_total_container=with_total_container,
+            run_prefix=run_prefix
         )
     except Exception as e:
         print(f"[OCR BACKGROUND ERROR] {e}")
     finally:
-        # cleanup file temp local
         for p in pdf_paths:
             try:
                 if os.path.exists(p):
@@ -128,22 +128,34 @@ if menu == "Upload":
 
             job_invoice_name = output_name or invoice.name.replace('.pdf', '')
 
+            # buat marker RUNNING lebih dulu di GCS
+            run_prefix = create_run_marker(
+                invoice_name=job_invoice_name,
+                with_total_container=with_total_container
+            )
+
             t = Thread(
                 target=_run_ocr_background,
                 kwargs={
                     "invoice_name": job_invoice_name,
                     "pdf_paths": pdf_paths,
                     "with_total_container": with_total_container,
+                    "run_prefix": run_prefix,
                 },
-                daemon=True,
+                daemon=False,
             )
             t.start()
 
-            st.success("OCR mulai diproses. Silakan buka halaman Report untuk melihat status RUNNING.")
+            st.success("OCR mulai diproses. Silakan buka halaman Report lalu klik Refresh untuk melihat status RUNNING.")
 
 if menu == "Report":
 
     st.subheader("Download OCR Result")
+    
+    r1, r2 = st.columns([1, 5])
+    with r1:
+        if st.button("Refresh"):
+            st.rerun()
 
     report_type = st.selectbox(
         "Pilih Report",
@@ -258,7 +270,7 @@ if menu == "Report":
         st.warning("Belum ada file result untuk range waktu tersebut.")
     else:
         # DONE first (newest), RUNNING below
-        rank = {"DONE": 2, "RUNNING": 1}
+        rank = {"RUNNING": 2, "DONE": 1}
         filtered.sort(
             key=lambda x: (rank.get(x["status"], 0), x["updated"] or datetime.min.replace(tzinfo=timezone.utc)),
             reverse=True

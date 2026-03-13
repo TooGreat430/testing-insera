@@ -33,6 +33,14 @@ BATCH_SIZE = 15
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, ) 
 
+
+def create_run_marker(invoice_name, with_total_container, run_id=None):
+    run_id = run_id or uuid.uuid4().hex
+    prefix = TMP_PREFIX.rstrip("/")
+    run_prefix = f"{prefix}/{run_id}"
+    _save_run_meta(run_prefix, invoice_name, with_total_container)
+    return run_prefix
+
 # ============================== # JSON SAFE PARSER # ============================== 
 def _parse_json_safe(raw_text):
     if not raw_text:
@@ -1363,11 +1371,11 @@ def _postprocess_inv_spart_item_no(rows: list):
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
-    run_id = uuid.uuid4().hex  # atau [:8] kalau mau lebih pendek
-    prefix = TMP_PREFIX.rstrip("/")
-    run_prefix = f"{prefix}/{run_id}"
-
-    _save_run_meta(run_prefix, invoice_name, with_total_container)
+    if not run_prefix:
+        run_id = uuid.uuid4().hex
+        prefix = TMP_PREFIX.rstrip("/")
+        run_prefix = f"{prefix}/{run_id}"
+        _save_run_meta(run_prefix, invoice_name, with_total_container)
 
     bucket = storage_client.bucket(BUCKET_NAME)
 
