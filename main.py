@@ -87,6 +87,21 @@ def _run_ocr_background(invoice_name, pdf_paths, with_total_container, run_prefi
             except Exception:
                 pass
 
+def _normalize_invoice_key(value, report_type):
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+    s = re.sub(r"\.pdf$", "", s, flags=re.IGNORECASE)
+    s = re.sub(
+        rf"_{re.escape(report_type)}\.csv$",
+        "",
+        s,
+        flags=re.IGNORECASE
+    )
+
+    return s.strip().lower()
+
 if menu == "Upload":
 
     st.subheader("Upload Documents")
@@ -151,7 +166,7 @@ if menu == "Upload":
 if menu == "Report":
 
     st.subheader("Download OCR Result")
-    
+
     r1, r2 = st.columns([1, 5])
     with r1:
         if st.button("Refresh"):
@@ -211,16 +226,20 @@ if menu == "Report":
 
     # DONE list dari output CSV
     done_filenames = set()
+    done_invoice_keys = set()
+
     for blob in result_blobs:
         if blob.name.endswith("/"):
             continue
+
         fname = os.path.basename(blob.name)
         done_filenames.add(fname)
+        done_invoice_keys.add(_normalize_invoice_key(fname, report_type))
 
         files_data.append({
             "invoice": fname,
             "status": "DONE",
-            "updated": blob.updated,   # tz-aware datetime
+            "updated": blob.updated,
             "path": blob.name
         })
 
@@ -241,16 +260,26 @@ if menu == "Report":
             running_invoices.add(inv)
 
     if show_running:
+        added_running_keys = set()
+
         for inv in running_invoices:
-            expected_name = f"{inv}_{report_type}.csv"
-            # penting: cek DONE berdasarkan semua output, bukan berdasarkan filter
-            if expected_name not in done_filenames:
-                files_data.append({
-                    "invoice": expected_name,
-                    "status": "RUNNING",
-                    "updated": None,
-                    "path": None
-                })
+            inv_key = _normalize_invoice_key(inv, report_type)
+            expected_name = f"{str(inv).strip()}_{report_type}.csv"
+
+            if inv_key in done_invoice_keys:
+                continue
+
+            if inv_key in added_running_keys:
+                continue
+
+            added_running_keys.add(inv_key)
+
+            files_data.append({
+                "invoice": expected_name,
+                "status": "RUNNING",
+                "updated": None,
+                "path": None
+            })
 
     # =========================
     # Apply time filter (DONE only)
