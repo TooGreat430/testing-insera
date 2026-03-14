@@ -1,6 +1,8 @@
 import streamlit as st
 import tempfile
-from function import run_ocr
+import subprocess
+import sys
+from function import create_running_markers, delete_running_markers
 from google.cloud import storage
 from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
@@ -68,6 +70,22 @@ menu = st.sidebar.radio("Menu", ["Upload", "Report"])
 storage_client = storage.Client()
 bucket = storage_client.bucket(BUCKET_NAME)
 
+def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
+    worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_worker.py")
+
+    cmd = [
+        sys.executable,
+        worker_path,
+        invoice_name,
+        "true" if with_total_container else "false",
+        json.dumps(pdf_paths),
+    ]
+
+    return subprocess.Popen(
+        cmd,
+        start_new_session=True
+    )
+
 if menu == "Upload":
 
     st.subheader("Upload Documents")
@@ -79,41 +97,61 @@ if menu == "Upload":
 
     output_name = st.text_input("Output file name (default invoice name)")
 
-    if st.button("Extract"):
+        if st.button("Extract"):
 
-        if not invoice or not packing:
-            st.warning("Invoice dan Packing List wajib diupload")
+            if not invoice or not packing:
+                st.warning("Invoice dan Packing List wajib diupload")
 
-        else:
-            # optional hanya dipakai kalau lengkap
-            with_total_container = bool(bl and coo)
+            else:
+                with_total_container = bool(bl and coo)
 
-            # file wajib
-            files_to_process = [invoice, packing]
+                files_to_process = [invoice, packing]
 
-            # file optional hanya kalau lengkap
-            if bl:
-                files_to_process.append(bl)
-            if coo:
-                files_to_process.append(coo)
-            if (bl or coo) and not with_total_container:
-                st.info("BL/COO tidak lengkap, sistem tetap menghasilkan DETAIL (Invoice+PL+dokumen yang ada). Total/Container tidak dibuat.")
+                if bl:
+                    files_to_process.append(bl)
+                if coo:
+                    files_to_process.append(coo)
 
-            pdf_paths = []
+                if (bl or coo) and not with_total_container:
+                    st.info("BL/COO tidak lengkap, sistem tetap menghasilkan DETAIL (Invoice+PL+dokumen yang ada). Total/Container tidak dibuat.")
 
-            for f in files_to_process:
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                tmp.write(f.read())
-                tmp.close()
-                pdf_paths.append(tmp.name)
+                pdf_paths = []
 
-            run_ocr(
-                invoice_name=output_name or invoice.name.replace('.pdf',''),
-                uploaded_pdf_paths=pdf_paths,
-                with_total_container=with_total_container
-            )
+                for f in files_to_process:
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                    tmp.write(f.read())
+                    tmp.close()
+                    pdf_paths.append(tmp.name)
 
-            st.success("OCR selesai diproses")
+                final_invoice_name = (output_name or invoice.name.replace(".pdf", "")).strip()
+
+                try:
+                    # bikin marker RUNNING lebih dulu supaya Report langsung bisa baca status
+                    create_running_markers(final_invoice_name, with_total_container)
+
+                    # jalankan OCR di process terpisah
+                    _launch_ocr_process(
+                        invoice_name=final_invoice_name,
+                        pdf_paths=pdf_paths,
+                        with_total_container=with_total_container
+                    )
+
+                    st.success("OCR sedang diproses. Silakan cek menu Report untuk status RUNNING / DONE.")
+
+                except Exception as e:
+                    try:
+                        delete_running_markers(final_invoice_name, with_total_container)
+                    except Exception:
+                        pass
+
+                    for p in pdf_paths:
+                        try:
+                            if os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
+
+                    st.error(f"Gagal memulai OCR: {e}")
 
 if menu == "Report":
 
@@ -132,7 +170,9 @@ if menu == "Report":
     # ambil semua blob dulu (nanti baru difilter)
     result_prefix = f"output/{report_type}/"
     result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
-    tmp_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=f"{TMP_PREFIX.rstrip('/')}/"))
+
+    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{report_type}/"
+    running_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=running_prefix))
 
     # cari min/max updated untuk default filter
     done_updates = [b.updated for b in result_blobs if b.name and (not b.name.endswith("/"))]
@@ -171,48 +211,54 @@ if menu == "Report":
     # =========================
     files_data = []
 
-    # DONE list dari output CSV
-    done_filenames = set()
+    done_files = {}
     for blob in result_blobs:
         if blob.name.endswith("/"):
             continue
-        fname = os.path.basename(blob.name)
-        done_filenames.add(fname)
 
-        files_data.append({
+        fname = os.path.basename(blob.name)
+        done_files[fname] = {
             "invoice": fname,
             "status": "DONE",
-            "updated": blob.updated,   # tz-aware datetime
+            "updated": blob.updated,
             "path": blob.name
-        })
+        }
 
-    # RUNNING list dari meta.json
-    meta_blobs = [b for b in tmp_blobs if b.name.endswith("/meta.json")]
-    running_invoices = set()
-
-    for mb in meta_blobs:
-        meta = json.loads(mb.download_as_text())
-        inv = meta.get("invoice_name")
-        wtc = bool(meta.get("with_total_container"))
-
-        # kalau user pilih total/container tapi run tsb tidak generate itu -> skip
-        if report_type in ("total", "container") and not wtc:
+    running_files = {}
+    for blob in running_blobs:
+        if blob.name.endswith("/") or not blob.name.endswith(".lock"):
             continue
 
-        if inv:
-            running_invoices.add(inv)
+        lock_name = os.path.basename(blob.name)  # contoh: INV123_detail.lock
+        expected_name = lock_name[:-5] + ".csv"  # -> INV123_detail.csv
 
+        running_files[expected_name] = {
+            "invoice": expected_name,
+            "status": "RUNNING",
+            "updated": blob.updated,
+            "path": None
+        }
+
+    all_names = set(done_files.keys())
     if show_running:
-        for inv in running_invoices:
-            expected_name = f"{inv}_{report_type}.csv"
-            # penting: cek DONE berdasarkan semua output, bukan berdasarkan filter
-            if expected_name not in done_filenames:
-                files_data.append({
-                    "invoice": expected_name,
-                    "status": "RUNNING",
-                    "updated": None,
-                    "path": None
-                })
+        all_names |= set(running_files.keys())
+
+    for name in all_names:
+        done_item = done_files.get(name)
+        running_item = running_files.get(name) if show_running else None
+
+        # kalau ada running lock yang lebih baru dari output, tampilkan RUNNING
+        if running_item and (
+            done_item is None
+            or (
+                running_item["updated"] is not None
+                and done_item["updated"] is not None
+                and running_item["updated"] > done_item["updated"]
+            )
+        ):
+            files_data.append(running_item)
+        elif done_item:
+            files_data.append(done_item)
 
     # =========================
     # Apply time filter (DONE only)
@@ -232,7 +278,7 @@ if menu == "Report":
         st.warning("Belum ada file result untuk range waktu tersebut.")
     else:
         # DONE first (newest), RUNNING below
-        rank = {"DONE": 2, "RUNNING": 1}
+        rank = {"RUNNING": 2, "DONE": 1}
         filtered.sort(
             key=lambda x: (rank.get(x["status"], 0), x["updated"] or datetime.min.replace(tzinfo=timezone.utc)),
             reverse=True

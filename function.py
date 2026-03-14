@@ -33,6 +33,42 @@ BATCH_SIZE = 15
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, ) 
 
+def _normalize_running_name(invoice_name: str) -> str:
+    return str(invoice_name).strip().replace("/", "_").replace("\\", "_")
+
+def _running_lock_path(invoice_name: str, report_type: str) -> str:
+    safe_name = _normalize_running_name(invoice_name)
+    return f"{TMP_PREFIX.rstrip('/')}/running/{report_type}/{safe_name}_{report_type}.lock"
+
+def create_running_markers(invoice_name: str, with_total_container: bool):
+    bucket = storage_client.bucket(BUCKET_NAME)
+
+    report_types = ["detail"]
+    if with_total_container:
+        report_types.extend(["total", "container"])
+
+    for report_type in report_types:
+        blob_path = _running_lock_path(invoice_name, report_type)
+        bucket.blob(blob_path).upload_from_string(
+            "RUNNING",
+            content_type="text/plain"
+        )
+
+def delete_running_markers(invoice_name: str, with_total_container: bool):
+    bucket = storage_client.bucket(BUCKET_NAME)
+
+    report_types = ["detail"]
+    if with_total_container:
+        report_types.extend(["total", "container"])
+
+    for report_type in report_types:
+        blob = bucket.blob(_running_lock_path(invoice_name, report_type))
+        try:
+            if blob.exists():
+                blob.delete()
+        except Exception:
+            pass
+
 # ============================== # JSON SAFE PARSER # ============================== 
 def _parse_json_safe(raw_text):
     if not raw_text:
@@ -1364,11 +1400,11 @@ def _postprocess_inv_spart_item_no(rows: list):
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
-    run_id = uuid.uuid4().hex  # atau [:8] kalau mau lebih pendek
+    run_id = uuid.uuid4().hex
     prefix = TMP_PREFIX.rstrip("/")
     run_prefix = f"{prefix}/{run_id}"
 
-    _save_run_meta(run_prefix, invoice_name, with_total_container)
+    create_running_markers(invoice_name, with_total_container)
 
     bucket = storage_client.bucket(BUCKET_NAME)
 
@@ -1567,5 +1603,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         }
 
     finally:
+        try:
+            delete_running_markers(invoice_name, with_total_container)
+        except Exception:
+            pass
+
         for blob in bucket.list_blobs(prefix=f"{run_prefix}/"):
             blob.delete()
