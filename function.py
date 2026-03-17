@@ -1400,6 +1400,12 @@ def _postprocess_inv_spart_item_no(rows: list):
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
+    # Guard backend supaya COO tidak pernah diproses tanpa Bill of Lading.
+    # Kontrak dari UI: jika ada 3 file tetapi with_total_container=False,
+    # maka file ke-3 adalah COO tanpa BL dan harus ditolak.
+    if len(uploaded_pdf_paths) == 3 and not with_total_container:
+        raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
+    
     run_id = uuid.uuid4().hex
     prefix = TMP_PREFIX.rstrip("/")
     run_prefix = f"{prefix}/{run_id}"
@@ -1540,6 +1546,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         # =========================
         # OPTIONAL: total/container
         # =========================
+        # Total dan container dibuat setiap Bill of Lading tersedia.
         total_data = None
         container_data = None
         if with_total_container:

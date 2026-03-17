@@ -98,7 +98,13 @@ if menu == "Upload":
             st.warning("Invoice dan Packing List wajib diupload")
 
         else:
-            with_total_container = bool(bl and coo)
+            has_bl = bool(bl)
+            has_coo = bool(coo)
+            with_total_container = has_bl
+
+            if has_coo and not has_bl:
+                st.error("COO hanya bisa diproses jika Bill of Lading juga diupload.")
+                st.stop()
 
             files_to_process = [invoice, packing]
 
@@ -107,8 +113,12 @@ if menu == "Upload":
             if coo:
                 files_to_process.append(coo)
 
-            if (bl or coo) and not with_total_container:
-                st.info("BL/COO tidak lengkap, sistem tetap menghasilkan DETAIL (Invoice+PL+dokumen yang ada). Total/Container tidak dibuat.")
+            if not has_bl and not has_coo:
+                st.info("Hanya Invoice dan Packing List yang diupload. Sistem akan menghasilkan DETAIL saja.")
+            elif has_bl and not has_coo:
+                st.info("Bill of Lading terdeteksi tanpa COO. Sistem akan tetap menghasilkan DETAIL, TOTAL, dan CONTAINER.")
+            elif has_bl and has_coo:
+                st.info("Dokumen lengkap terdeteksi. Sistem akan menghasilkan DETAIL, TOTAL, dan CONTAINER.")
 
             pdf_paths = []
 
