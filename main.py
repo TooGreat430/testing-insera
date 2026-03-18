@@ -169,6 +169,11 @@ if menu == "Report":
         st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
         if st.button("↻ Refresh", key="btn_refresh_report", use_container_width=True):
             st.rerun()
+            #Set hasil filter data sesuai value dropdown pilih report ketika tekan tombol refresh
+            sig = (report_type, start_date, end_date, show_running)
+        if st.session_state.get("report_sig") != sig:
+            st.session_state["report_sig"] = sig
+            st.session_state["report_page"] = 1
 
     report_type = st.selectbox(
         "Pilih Report",
