@@ -9,6 +9,7 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 import json
+import shutil
 
 st.set_page_config(layout="wide")
 
@@ -81,14 +82,99 @@ def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
         start_new_session=True
     )
 
+def _get_uploaded_extension(uploaded_file):
+    name = (uploaded_file.name or "").lower()
+    return os.path.splitext(name)[1]
+
+def _save_uploaded_file_to_temp(uploaded_file):
+    ext = _get_uploaded_extension(uploaded_file)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext if ext else ".tmp")
+    tmp.write(uploaded_file.read())
+    tmp.close()
+    return tmp.name
+
+def _convert_file_to_pdf(local_input_path):
+    """
+    Convert xls/xlsx/csv -> pdf via LibreOffice headless.
+    Jika file sudah pdf, return path asli.
+    """
+    ext = os.path.splitext(local_input_path)[1].lower()
+
+    if ext == ".pdf":
+        return local_input_path
+
+    if ext not in [".xls", ".xlsx", ".csv"]:
+        raise Exception(f"Format file tidak didukung untuk conversion ke PDF: {ext}")
+
+    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice_path:
+        raise Exception(
+            "LibreOffice headless tidak ditemukan di server. "
+            "Install libreoffice/soffice agar file xls/xlsx/csv bisa dikonversi ke PDF."
+        )
+
+    out_dir = tempfile.mkdtemp()
+
+    cmd = [
+        soffice_path,
+        "--headless",
+        "--convert-to", "pdf",
+        "--outdir", out_dir,
+        local_input_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise Exception(
+            f"Gagal convert file ke PDF. stdout={result.stdout} stderr={result.stderr}"
+        )
+
+    base_name = os.path.splitext(os.path.basename(local_input_path))[0]
+    pdf_path = os.path.join(out_dir, f"{base_name}.pdf")
+
+    if not os.path.exists(pdf_path):
+        # fallback: cari pdf pertama di output dir
+        pdf_files = [
+            os.path.join(out_dir, f)
+            for f in os.listdir(out_dir)
+            if f.lower().endswith(".pdf")
+        ]
+        if not pdf_files:
+            raise Exception("Konversi selesai tapi file PDF hasil convert tidak ditemukan.")
+        pdf_path = pdf_files[0]
+
+    return pdf_path
+
+def _prepare_uploaded_file_as_pdf(uploaded_file):
+    """
+    Simpan upload ke temp file sesuai extension asli.
+    Jika bukan PDF, convert ke PDF.
+    Return final PDF path dan list temp files yang perlu dibersihkan.
+    """
+    temp_paths = []
+
+    local_input_path = _save_uploaded_file_to_temp(uploaded_file)
+    temp_paths.append(local_input_path)
+
+    ext = os.path.splitext(local_input_path)[1].lower()
+
+    if ext == ".pdf":
+        return local_input_path, temp_paths
+
+    pdf_path = _convert_file_to_pdf(local_input_path)
+    temp_paths.append(pdf_path)
+
+    return pdf_path, temp_paths
+
 if menu == "Upload":
 
     st.subheader("Upload Documents")
 
-    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls"])
-    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls"])
-    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls"])
-    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls"])
+    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls", "csv"])
+    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls", "csv"])
+    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"])
+    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls", "csv"])
 
     output_name = st.text_input("Output file name (default invoice name)")
 
@@ -121,12 +207,12 @@ if menu == "Upload":
                 st.info("Dokumen lengkap terdeteksi. Sistem akan menghasilkan DETAIL, TOTAL, dan CONTAINER.")
 
             pdf_paths = []
+            temp_cleanup_paths = []
 
             for f in files_to_process:
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                tmp.write(f.read())
-                tmp.close()
-                pdf_paths.append(tmp.name)
+                final_pdf_path, created_paths = _prepare_uploaded_file_as_pdf(f)
+                pdf_paths.append(final_pdf_path)
+                temp_cleanup_paths.extend(created_paths)
 
             #butuh diubah menjadi base_name = os.path.splitext(invoice.name)[0]
             #final_invoice_name = (output_name or base_name).strip()
@@ -151,9 +237,9 @@ if menu == "Upload":
                 except Exception:
                     pass
 
-                for p in pdf_paths:
+                for p in temp_cleanup_paths:
                     try:
-                        if os.path.exists(p):
+                        if os.path.isfile(p) and os.path.exists(p):
                             os.remove(p)
                     except Exception:
                         pass
