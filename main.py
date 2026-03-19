@@ -1,197 +1,24 @@
-import streamlit as st
-import tempfile
-import subprocess
-import sys
-from function import create_running_markers, delete_running_markers
-from google.cloud import storage
-from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
-import os
-import re
-from datetime import datetime, timezone, timedelta
-import json
-
-st.set_page_config(layout="wide")
-
-st.markdown("""
-<style>
-    section[data-testid="stSidebar"] * {
-        font-size: 18px !important;
-    }
-
-    .main-title {
-        font-size: 42px;
-        font-weight: 700;
-        margin-bottom: 10px;
-    }
-
-    .pager-wrap {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 12px;
-      margin-top: 12px;
-    }
-
-    div[data-testid="stButton"] button[kind="secondary"] {
-      height: 42px !important;
-      padding: 0 18px !important;
-      border-radius: 10px !important;
-      font-size: 16px !important;
-      white-space: nowrap !important;
-    }
-
-    div.pager-select div[data-baseweb="select"] > div {
-      min-height: 42px !important;
-      border-radius: 10px !important;
-      font-size: 16px !important;
-    }
-
-    div.pager-select {
-      min-width: 110px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-col1, col2 = st.columns([1, 5])
-
-with col1:
-    st.image("logo-polygon-insera-sena.jpg", width=120) 
-
-with col2:
-    st.markdown('<div class="main-title">OCR Gemini</div>', unsafe_allow_html=True)
-
-menu = st.sidebar.radio("Menu", ["Upload", "Report"])
-
-storage_client = storage.Client()
-bucket = storage_client.bucket(BUCKET_NAME)
-
-def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
-    worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_worker.py")
-
-    cmd = [
-        sys.executable,
-        worker_path,
-        invoice_name,
-        "true" if with_total_container else "false",
-        json.dumps(pdf_paths),
-    ]
-
-    return subprocess.Popen(
-        cmd,
-        start_new_session=True
-    )
-
-if menu == "Upload":
-
-    st.subheader("Upload Documents")
-
-    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls"])
-    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls"])
-    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls"])
-    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls"])
-
-    output_name = st.text_input("Output file name (default invoice name)")
-
-    if st.button("Extract"):
-
-        if not invoice or not packing:
-            st.warning("Invoice dan Packing List wajib diupload")
-
-        else:
-            has_bl = bool(bl)
-            has_coo = bool(coo)
-            with_total_container = has_bl
-
-            if has_coo and not has_bl:
-                st.error("COO hanya bisa diproses jika Bill of Lading juga diupload.")
-                st.stop()
-
-            files_to_process = [invoice, packing]
-
-            if bl:
-                files_to_process.append(bl)
-            if coo:
-                files_to_process.append(coo)
-
-            if not has_bl and not has_coo:
-                st.info("Hanya Invoice dan Packing List yang diupload. Sistem akan menghasilkan DETAIL saja.")
-            elif has_bl and not has_coo:
-                st.info("Bill of Lading terdeteksi tanpa COO. Sistem akan tetap menghasilkan DETAIL, TOTAL, dan CONTAINER.")
-            elif has_bl and has_coo:
-                st.info("Dokumen lengkap terdeteksi. Sistem akan menghasilkan DETAIL, TOTAL, dan CONTAINER.")
-
-            pdf_paths = []
-
-            for f in files_to_process:
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                tmp.write(f.read())
-                tmp.close()
-                pdf_paths.append(tmp.name)
-
-            #butuh diubah menjadi base_name = os.path.splitext(invoice.name)[0]
-            #final_invoice_name = (output_name or base_name).strip()
-            final_invoice_name = (output_name or invoice.name.replace(".pdf", "")).strip()
-
-            try:
-                # bikin marker RUNNING lebih dulu supaya Report langsung bisa baca status
-                create_running_markers(final_invoice_name, with_total_container)
-
-                # jalankan OCR di process terpisah
-                _launch_ocr_process(
-                    invoice_name=final_invoice_name,
-                    pdf_paths=pdf_paths,
-                    with_total_container=with_total_container
-                )
-
-                st.success("OCR sedang diproses. Silakan cek menu Report untuk status RUNNING / DONE.")
-
-            except Exception as e:
-                try:
-                    delete_running_markers(final_invoice_name, with_total_container)
-                except Exception:
-                    pass
-
-                for p in pdf_paths:
-                    try:
-                        if os.path.exists(p):
-                            os.remove(p)
-                    except Exception:
-                        pass
-
-                st.error(f"Gagal memulai OCR: {e}")
-
 if menu == "Report":
 
-    top_left, top_right = st.columns([8, 1.3])
-
-    with top_left:
-        st.subheader("Download OCR Result")
-
-    with top_right:
-        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
-        if st.button("↻ Refresh", key="btn_refresh_report", use_container_width=True):
-            st.rerun()
-            #Set hasil filter data sesuai value dropdown pilih report ketika tekan tombol refresh
-            sig = (report_type, start_date, end_date, show_running)
-        if st.session_state.get("report_sig") != sig:
-            st.session_state["report_sig"] = sig
-            st.session_state["report_page"] = 1
-
-    report_type = st.selectbox(
-        "Pilih Report",
-        ["detail", "total", "container"]
-    )
-
-    # =========================
-    # Filter UI (WIB)
-    # =========================
     WIB = timezone(timedelta(hours=7))
 
-    # ambil semua blob dulu (nanti baru difilter)
-    result_prefix = f"output/{report_type}/"
+    # =========================
+    # Init session state
+    # =========================
+    if "report_type" not in st.session_state:
+        st.session_state["report_type"] = "detail"
+    if "show_running" not in st.session_state:
+        st.session_state["show_running"] = True
+    if "report_page" not in st.session_state:
+        st.session_state["report_page"] = 1
+
+    # ambil dulu berdasarkan report_type yang sedang aktif di session
+    current_report_type = st.session_state["report_type"]
+
+    result_prefix = f"output/{current_report_type}/"
     result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
 
-    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{report_type}/"
+    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{current_report_type}/"
     running_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=running_prefix))
 
     # cari min/max updated untuk default filter
@@ -208,19 +35,54 @@ if menu == "Report":
         default_start = now_wib_date
         default_end = now_wib_date
 
+    if "start_date" not in st.session_state:
+        st.session_state["start_date"] = default_start
+    if "end_date" not in st.session_state:
+        st.session_state["end_date"] = default_end
+
+    top_left, top_right = st.columns([8, 1.3])
+
+    with top_left:
+        st.subheader("Download OCR Result")
+
+    with top_right:
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+        if st.button("↻ Refresh", key="btn_refresh_report", use_container_width=True):
+            # klik button Streamlit sendiri sudah trigger rerun,
+            # ini hanya untuk memastikan UI rerender dengan state saat ini
+            st.rerun()
+
+    report_type = st.selectbox(
+        "Pilih Report",
+        ["detail", "total", "container"],
+        key="report_type"
+    )
+
+    # kalau report_type berubah, reload blob list sesuai pilihan baru
+    result_prefix = f"output/{report_type}/"
+    result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
+
+    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{report_type}/"
+    running_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=running_prefix))
+
+    # =========================
+    # Filter UI (WIB)
+    # =========================
     fcol1, fcol2, fcol3 = st.columns([2, 2, 2])
     with fcol1:
-        start_date = st.date_input("FROM", value=default_start)
+        start_date = st.date_input("FROM", key="start_date")
     with fcol2:
-        end_date = st.date_input("TO", value=default_end)
+        end_date = st.date_input("TO", key="end_date")
     with fcol3:
-        show_running = st.checkbox("Tampilkan RUNNING", value=True)
+        show_running = st.checkbox("Tampilkan RUNNING", key="show_running")
 
     if start_date > end_date:
         st.warning("Tanggal 'Dari' lebih besar dari 'Sampai'. Saya tukar otomatis.")
         start_date, end_date = end_date, start_date
+        st.session_state["start_date"] = start_date
+        st.session_state["end_date"] = end_date
 
-    # convert range WIB -> UTC (blob.updated umumnya UTC)
+    # convert range WIB -> UTC
     start_dt_wib = datetime.combine(start_date, datetime.min.time(), tzinfo=WIB)
     end_dt_wib_excl = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=WIB)
     start_dt_utc = start_dt_wib.astimezone(timezone.utc)
@@ -249,8 +111,8 @@ if menu == "Report":
         if blob.name.endswith("/") or not blob.name.endswith(".lock"):
             continue
 
-        lock_name = os.path.basename(blob.name)  # contoh: INV123_detail.lock
-        expected_name = lock_name[:-5] + ".csv"  # -> INV123_detail.csv
+        lock_name = os.path.basename(blob.name)
+        expected_name = lock_name[:-5] + ".csv"
 
         running_files[expected_name] = {
             "invoice": expected_name,
@@ -267,7 +129,6 @@ if menu == "Report":
         done_item = done_files.get(name)
         running_item = running_files.get(name) if show_running else None
 
-        # kalau ada running lock yang lebih baru dari output, tampilkan RUNNING
         if running_item and (
             done_item is None
             or (
@@ -289,15 +150,19 @@ if menu == "Report":
             filtered.append(f)
             continue
 
-        # DONE: filter by updated time
         dt = f.get("updated")
         if dt and (start_dt_utc <= dt < end_dt_utc_excl):
             filtered.append(f)
 
+    # reset page kalau filter/report berubah
+    sig = (report_type, start_date, end_date, show_running)
+    if st.session_state.get("report_sig") != sig:
+        st.session_state["report_sig"] = sig
+        st.session_state["report_page"] = 1
+
     if not filtered:
         st.warning("Belum ada file result untuk range waktu tersebut.")
     else:
-        # DONE first (newest), RUNNING below
         rank = {"RUNNING": 2, "DONE": 1}
         filtered.sort(
             key=lambda x: (rank.get(x["status"], 0), x["updated"] or datetime.min.replace(tzinfo=timezone.utc)),
@@ -305,21 +170,12 @@ if menu == "Report":
         )
 
         # =========================
-        # Pagination (10 items)
+        # Pagination
         # =========================
         PAGE_SIZE = 10
         total_items = len(filtered)
         total_pages = max(1, (total_items + PAGE_SIZE - 1) // PAGE_SIZE)
 
-        # reset page kalau filter berubah / report_type berubah
-        sig = (report_type, start_date, end_date, show_running)
-        if st.session_state.get("report_sig") != sig:
-            st.session_state["report_sig"] = sig
-            st.session_state["report_page"] = 1
-
-        # init & clamp page
-        if "report_page" not in st.session_state:
-            st.session_state["report_page"] = 1
         st.session_state["report_page"] = max(1, min(st.session_state["report_page"], total_pages))
 
         page = st.session_state["report_page"]
@@ -327,9 +183,6 @@ if menu == "Report":
         end_idx = start_idx + PAGE_SIZE
         page_items = filtered[start_idx:end_idx]
 
-        # =========================
-        # Render table rows
-        # =========================
         for f in page_items:
             col1, col2, col3, col4 = st.columns([3, 2, 3, 2])
 
@@ -358,18 +211,15 @@ if menu == "Report":
                         data=file_bytes,
                         file_name=f["invoice"],
                         mime="application/octet-stream",
-                        key=f"dl_{report_type}_{f['invoice']}"  # ✅ unik
+                        key=f"dl_{report_type}_{f['invoice']}"
                     )
 
-        # Pagination controls (BOTTOM + CENTER) => [Prev][Page][Next]
-        # =========================
         def _prev_page():
             st.session_state["report_page"] = max(1, st.session_state["report_page"] - 1)
 
         def _next_page():
             st.session_state["report_page"] = min(total_pages, st.session_state["report_page"] + 1)
 
-        # wrapper center
         st.markdown('<div class="pager-wrap">', unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns([2, 1, 2])
