@@ -85,10 +85,10 @@ if menu == "Upload":
 
     st.subheader("Upload Documents")
 
-    invoice = st.file_uploader("Invoice*", type="pdf")
-    packing = st.file_uploader("Packing List*", type="pdf")
-    bl = st.file_uploader("Bill of Lading", type="pdf")
-    coo = st.file_uploader("COO", type="pdf")
+    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls"])
+    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls"])
+    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls"])
+    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls"])
 
     output_name = st.text_input("Output file name (default invoice name)")
 
@@ -128,6 +128,8 @@ if menu == "Upload":
                 tmp.close()
                 pdf_paths.append(tmp.name)
 
+            #butuh diubah menjadi base_name = os.path.splitext(invoice.name)[0]
+            #final_invoice_name = (output_name or base_name).strip()
             final_invoice_name = (output_name or invoice.name.replace(".pdf", "")).strip()
 
             try:
@@ -169,6 +171,11 @@ if menu == "Report":
         st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
         if st.button("↻ Refresh", key="btn_refresh_report", use_container_width=True):
             st.rerun()
+            #Set hasil filter data sesuai value dropdown pilih report ketika tekan tombol refresh
+            sig = (report_type, start_date, end_date, show_running)
+        if st.session_state.get("report_sig") != sig:
+            st.session_state["report_sig"] = sig
+            st.session_state["report_page"] = 1
 
     report_type = st.selectbox(
         "Pilih Report",
