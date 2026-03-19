@@ -1572,8 +1572,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         # ==============================
         # (NEW) MAP PO TO TOTAL (DETAIL tetap batch, TOTAL tidak batch)
         # ==============================
-        if total_data is not None:
-            total_data = _map_po_to_total(total_data, po_lines, po_numbers)
+        # if total_data is not None:
+        #     total_data = _map_po_to_total(total_data, po_lines, po_numbers)
 
         # CONVERT TO CSV
         # ==============================
