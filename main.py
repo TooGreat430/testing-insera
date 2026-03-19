@@ -1,3 +1,165 @@
+import streamlit as st
+import tempfile
+import subprocess
+import sys
+from function import create_running_markers, delete_running_markers
+from google.cloud import storage
+from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
+import os
+import re
+from datetime import datetime, timezone, timedelta
+import json
+
+st.set_page_config(layout="wide")
+
+st.markdown("""
+<style>
+    section[data-testid="stSidebar"] * {
+        font-size: 18px !important;
+    }
+
+    .main-title {
+        font-size: 42px;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }
+
+    .pager-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    div[data-testid="stButton"] button[kind="secondary"] {
+      height: 42px !important;
+      padding: 0 18px !important;
+      border-radius: 10px !important;
+      font-size: 16px !important;
+      white-space: nowrap !important;
+    }
+
+    div.pager-select div[data-baseweb="select"] > div {
+      min-height: 42px !important;
+      border-radius: 10px !important;
+      font-size: 16px !important;
+    }
+
+    div.pager-select {
+      min-width: 110px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+col1, col2 = st.columns([1, 5])
+
+with col1:
+    st.image("logo-polygon-insera-sena.jpg", width=120) 
+
+with col2:
+    st.markdown('<div class="main-title">OCR Gemini</div>', unsafe_allow_html=True)
+
+menu = st.sidebar.radio("Menu", ["Upload", "Report"])
+
+storage_client = storage.Client()
+bucket = storage_client.bucket(BUCKET_NAME)
+
+def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
+    worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_worker.py")
+
+    cmd = [
+        sys.executable,
+        worker_path,
+        invoice_name,
+        "true" if with_total_container else "false",
+        json.dumps(pdf_paths),
+    ]
+
+    return subprocess.Popen(
+        cmd,
+        start_new_session=True
+    )
+
+if menu == "Upload":
+
+    st.subheader("Upload Documents")
+
+    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls"])
+    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls"])
+    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls"])
+    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls"])
+
+    output_name = st.text_input("Output file name (default invoice name)")
+
+    if st.button("Extract"):
+
+        if not invoice or not packing:
+            st.warning("Invoice dan Packing List wajib diupload")
+
+        else:
+            has_bl = bool(bl)
+            has_coo = bool(coo)
+            with_total_container = has_bl
+
+            if has_coo and not has_bl:
+                st.error("COO hanya bisa diproses jika Bill of Lading juga diupload.")
+                st.stop()
+
+            files_to_process = [invoice, packing]
+
+            if bl:
+                files_to_process.append(bl)
+            if coo:
+                files_to_process.append(coo)
+
+            if not has_bl and not has_coo:
+                st.info("Hanya Invoice dan Packing List yang diupload. Sistem akan menghasilkan DETAIL saja.")
+            elif has_bl and not has_coo:
+                st.info("Bill of Lading terdeteksi tanpa COO. Sistem akan tetap menghasilkan DETAIL, TOTAL, dan CONTAINER.")
+            elif has_bl and has_coo:
+                st.info("Dokumen lengkap terdeteksi. Sistem akan menghasilkan DETAIL, TOTAL, dan CONTAINER.")
+
+            pdf_paths = []
+
+            for f in files_to_process:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                tmp.write(f.read())
+                tmp.close()
+                pdf_paths.append(tmp.name)
+
+            #butuh diubah menjadi base_name = os.path.splitext(invoice.name)[0]
+            #final_invoice_name = (output_name or base_name).strip()
+            final_invoice_name = (output_name or invoice.name.replace(".pdf", "")).strip()
+
+            try:
+                # bikin marker RUNNING lebih dulu supaya Report langsung bisa baca status
+                create_running_markers(final_invoice_name, with_total_container)
+
+                # jalankan OCR di process terpisah
+                _launch_ocr_process(
+                    invoice_name=final_invoice_name,
+                    pdf_paths=pdf_paths,
+                    with_total_container=with_total_container
+                )
+
+                st.success("OCR sedang diproses. Silakan cek menu Report untuk status RUNNING / DONE.")
+
+            except Exception as e:
+                try:
+                    delete_running_markers(final_invoice_name, with_total_container)
+                except Exception:
+                    pass
+
+                for p in pdf_paths:
+                    try:
+                        if os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+                st.error(f"Gagal memulai OCR: {e}")
+
 if menu == "Report":
 
     WIB = timezone(timedelta(hours=7))
