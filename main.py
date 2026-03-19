@@ -173,18 +173,48 @@ if menu == "Report":
         st.session_state["show_running"] = True
     if "report_page" not in st.session_state:
         st.session_state["report_page"] = 1
+    if "refresh_counter" not in st.session_state:
+        st.session_state["refresh_counter"] = 0
 
-    # ambil dulu berdasarkan report_type yang sedang aktif di session
-    current_report_type = st.session_state["report_type"]
+    def _refresh_report():
+        st.session_state["refresh_counter"] += 1
 
-    result_prefix = f"output/{current_report_type}/"
+    top_left, top_right = st.columns([8, 1.3])
+
+    with top_left:
+        st.subheader("Download OCR Result")
+
+    with top_right:
+        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
+        st.button(
+            "↻ Refresh",
+            key="btn_refresh_report",
+            use_container_width=True,
+            on_click=_refresh_report
+        )
+
+    # =========================
+    # Report selector
+    # =========================
+    report_type = st.selectbox(
+        "Pilih Report",
+        ["detail", "total", "container"],
+        key="report_type"
+    )
+
+    # =========================
+    # Load blobs sesuai report_type aktif
+    # =========================
+    result_prefix = f"output/{report_type}/"
     result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
 
-    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{current_report_type}/"
+    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{report_type}/"
     running_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=running_prefix))
 
-    # cari min/max updated untuk default filter
-    done_updates = [b.updated for b in result_blobs if b.name and (not b.name.endswith("/"))]
+    # =========================
+    # Default date range
+    # =========================
+    done_updates = [b.updated for b in result_blobs if b.name and not b.name.endswith("/")]
     now_wib_date = datetime.now(WIB).date()
 
     if done_updates:
@@ -202,33 +232,8 @@ if menu == "Report":
     if "end_date" not in st.session_state:
         st.session_state["end_date"] = default_end
 
-    top_left, top_right = st.columns([8, 1.3])
-
-    with top_left:
-        st.subheader("Download OCR Result")
-
-    with top_right:
-        st.markdown("<div style='height: 6px;'></div>", unsafe_allow_html=True)
-        if st.button("↻ Refresh", key="btn_refresh_report", use_container_width=True):
-            # klik button Streamlit sendiri sudah trigger rerun,
-            # ini hanya untuk memastikan UI rerender dengan state saat ini
-            st.rerun()
-
-    report_type = st.selectbox(
-        "Pilih Report",
-        ["detail", "total", "container"],
-        key="report_type"
-    )
-
-    # kalau report_type berubah, reload blob list sesuai pilihan baru
-    result_prefix = f"output/{report_type}/"
-    result_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=result_prefix))
-
-    running_prefix = f"{TMP_PREFIX.rstrip('/')}/running/{report_type}/"
-    running_blobs = list(storage_client.list_blobs(BUCKET_NAME, prefix=running_prefix))
-
     # =========================
-    # Filter UI (WIB)
+    # Filter UI
     # =========================
     fcol1, fcol2, fcol3 = st.columns([2, 2, 2])
     with fcol1:
@@ -249,6 +254,15 @@ if menu == "Report":
     end_dt_wib_excl = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=WIB)
     start_dt_utc = start_dt_wib.astimezone(timezone.utc)
     end_dt_utc_excl = end_dt_wib_excl.astimezone(timezone.utc)
+
+    # =========================
+    # Reset page hanya jika filter/report berubah
+    # Refresh TIDAK reset report_type
+    # =========================
+    sig = (report_type, start_date, end_date, show_running)
+    if st.session_state.get("report_sig") != sig:
+        st.session_state["report_sig"] = sig
+        st.session_state["report_page"] = 1
 
     # =========================
     # Build files_data
@@ -316,18 +330,15 @@ if menu == "Report":
         if dt and (start_dt_utc <= dt < end_dt_utc_excl):
             filtered.append(f)
 
-    # reset page kalau filter/report berubah
-    sig = (report_type, start_date, end_date, show_running)
-    if st.session_state.get("report_sig") != sig:
-        st.session_state["report_sig"] = sig
-        st.session_state["report_page"] = 1
-
     if not filtered:
         st.warning("Belum ada file result untuk range waktu tersebut.")
     else:
         rank = {"RUNNING": 2, "DONE": 1}
         filtered.sort(
-            key=lambda x: (rank.get(x["status"], 0), x["updated"] or datetime.min.replace(tzinfo=timezone.utc)),
+            key=lambda x: (
+                rank.get(x["status"], 0),
+                x["updated"] or datetime.min.replace(tzinfo=timezone.utc)
+            ),
             reverse=True
         )
 
@@ -338,7 +349,9 @@ if menu == "Report":
         total_items = len(filtered)
         total_pages = max(1, (total_items + PAGE_SIZE - 1) // PAGE_SIZE)
 
-        st.session_state["report_page"] = max(1, min(st.session_state["report_page"], total_pages))
+        st.session_state["report_page"] = max(
+            1, min(st.session_state["report_page"], total_pages)
+        )
 
         page = st.session_state["report_page"]
         start_idx = (page - 1) * PAGE_SIZE
@@ -403,7 +416,7 @@ if menu == "Report":
                 key="report_page",
                 label_visibility="collapsed"
             )
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
         with c3:
             st.button(
@@ -416,4 +429,7 @@ if menu == "Report":
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        st.caption(f"Halaman {st.session_state['report_page']} / {total_pages} | Total {total_items} item | {PAGE_SIZE}/halaman")
+        st.caption(
+            f"Halaman {st.session_state['report_page']} / {total_pages} | "
+            f"Total {total_items} item | {PAGE_SIZE}/halaman"
+        )
