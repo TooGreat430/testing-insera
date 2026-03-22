@@ -351,7 +351,7 @@ def _call_gemini_uri(file_uri: str, prompt: str):
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(
             temperature=0,
-            top_p=0.1,
+            top_p=0,
             max_output_tokens=65535,
         ),
     )
