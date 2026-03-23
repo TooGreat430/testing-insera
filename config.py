@@ -5,3 +5,6 @@ TMP_PREFIX = "tmp"
 RESULT_PREFIX = "result"
 PO_PREFIX = "po"
 MODEL_NAME = "gemini-2.5-flash"
+CACHE_ENABLED = True
+CACHE_PREFIX = "cache"
+CACHE_VERSION = "v1"

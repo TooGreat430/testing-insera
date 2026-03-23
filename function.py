@@ -6,6 +6,7 @@ import os
 import csv 
 import subprocess 
 import ijson 
+import hashlib
 from urllib.parse import urlparse 
 from google.cloud import storage 
 from PyPDF2 import PdfMerger, PdfReader, PdfWriter
@@ -340,6 +341,54 @@ def _upload_temp_pdf_to_gcs(local_path: str, run_prefix: str, name: str) -> str:
     bucket.blob(blob_path).upload_from_filename(local_path)
     return f"gs://{BUCKET_NAME}/{blob_path}"
 
+# ==============================
+# CACHE HELPERS
+# ==============================
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _cache_blob_path(hash_key: str, report_type: str) -> str:
+    return f"{CACHE_PREFIX}/{CACHE_VERSION}/{hash_key}/{report_type}.csv"
+
+def _copy_blob_if_exists(src_blob_path: str, dst_blob_path: str) -> bool:
+    bucket = storage_client.bucket(BUCKET_NAME)
+    src_blob = bucket.blob(src_blob_path)
+
+    if not src_blob.exists():
+        return False
+
+    bucket.copy_blob(src_blob, bucket, dst_blob_path)
+    return True
+
+def _load_cache_to_output(hash_key: str, report_type: str, output_blob_path: str) -> bool:
+    if not CACHE_ENABLED or not hash_key:
+        return False
+
+    cache_path = _cache_blob_path(hash_key, report_type)
+    hit = _copy_blob_if_exists(cache_path, output_blob_path)
+
+    if hit:
+        print(f"[CACHE HIT] report={report_type} hash={hash_key}")
+    else:
+        print(f"[CACHE MISS] report={report_type} hash={hash_key}")
+
+    return hit
+
+def _save_output_to_cache(hash_key: str, report_type: str, output_blob_path: str):
+    if not CACHE_ENABLED or not hash_key:
+        return
+
+    cache_path = _cache_blob_path(hash_key, report_type)
+    ok = _copy_blob_if_exists(output_blob_path, cache_path)
+
+    if ok:
+        print(f"[CACHE SAVE] report={report_type} hash={hash_key}")
+
 def _call_gemini_uri(file_uri: str, prompt: str):
     parts = [
         types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
@@ -347,7 +396,7 @@ def _call_gemini_uri(file_uri: str, prompt: str):
     ]
 
     response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=MODEL_NAME,
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(
             temperature=0,
@@ -1414,189 +1463,250 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
     bucket = storage_client.bucket(BUCKET_NAME)
 
+    detail_output_blob_path = f"output/detail/{invoice_name}_detail.csv"
+    total_output_blob_path = f"output/total/{invoice_name}_total.csv"
+    container_output_blob_path = f"output/container/{invoice_name}_container.csv"
+    
     try:
         # DETAIL: invoice+packing saja (2 file pertama dari UI)
         merged_pdf_detail = _merge_pdfs(uploaded_pdf_paths[:2])
         merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
+        detail_hash = _file_sha256(merged_pdf_detail)
 
         # FULL: semua dokumen yang diupload (untuk total/container)
         file_uri_detail = _upload_temp_pdf_to_gcs(merged_pdf_detail, run_prefix, name="detail")
 
         file_uri_full = None
+        full_hash = None
 
         has_extra_docs = len(uploaded_pdf_paths) > 2
         if has_extra_docs:
             merged_pdf_full = _merge_pdfs(uploaded_pdf_paths)
             merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
+            full_hash = _file_sha256(merged_pdf_full)
             file_uri_full = _upload_temp_pdf_to_gcs(merged_pdf_full, run_prefix, name="full")
 
         detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
-        header_obj = _call_gemini_json_uri(
-            detail_input_uri,
-            build_header_prompt(),
-            expect_array=False,
-            retries=3
-        )
-        if not isinstance(header_obj, dict):
-            header_obj = {}
-
-        # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
-
-        if isinstance(data_row, dict) and "total_row" in data_row:
-            total_row = int(data_row["total_row"])
-        else:
-            raise Exception(f"total_row tidak ditemukan di response: {data_row}")
-
-        # NEW: INDEX extraction (anchor line item)
-        index_items = _call_gemini_json_uri(
-            file_uri_detail,
-            build_index_prompt(total_row),
-            expect_array=True,
-            retries=3
-        )
-
-        # fallback safety
-        if not isinstance(index_items, list) or not index_items:
-            raise Exception("INDEX line items kosong")
-
-        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
-        if len(index_items) != total_row:
-            print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
-            total_row = len(index_items)
-
-        # BATCH DETAIL EXTRACTION
-        jobs = []
-        first_index = 1
-        batch_no = 1
-
-        while first_index <= total_row:
-            last_index = min(first_index + BATCH_SIZE - 1, total_row)
-
-            index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
-
-            prompt = build_detail_prompt_from_index(
-                total_row=total_row,
-                index_slice=index_slice,
-                first_index=first_index,
-                last_index=last_index
-            )
-
-            jobs.append((batch_no, prompt))
-            first_index = last_index + 1
-            batch_no += 1
-
-        # default 2 worker (aman untuk 2 CPU & mengurangi risiko 429)
-        MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
-        MAX_WORKERS = max(1, min(MAX_WORKERS, len(jobs)))
-
-        results = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futures = [
-                ex.submit(_run_one_detail_batch, detail_input_uri, run_prefix, bn, prm)
-                for (bn, prm) in jobs
-            ]
-            for f in as_completed(futures):
-                bn, arr = f.result()
-                results[bn] = arr
-
-        # gabungkan hasil batch sesuai urutan batch_no (tanpa download ulang dari GCS)
-        all_rows = []
-        for bn in sorted(results.keys()):
-            all_rows.extend(results[bn])
-
-        if not all_rows:
-            raise Exception("Tidak ada data detail hasil Gemini")
-
-        _ensure_all_detail_keys(all_rows)
-
-        _apply_header_to_rows(all_rows, header_obj)
-
-        _postprocess_inv_spart_item_no(all_rows)
-
-        # 0) reset match fields (Gemini tidak validasi)
-        _reset_match_fields(all_rows)
-
-        # 1) apply rule invoice po forward-fill sebelum ambil po_numbers
-        _fill_forward(all_rows, "inv_customer_po_no")
-
-        #  FIX: kalau inv_price_unit null, samakan dengan inv_amount_unit
-        _fill_inv_price_unit_from_amount_unit(all_rows)
-
-        # 2) ambil po_numbers setelah carry-forward
-        po_numbers = {
-            row.get("inv_customer_po_no")
-            for row in all_rows
-            if isinstance(row, dict)
-            and row.get("inv_customer_po_no")
-            and str(row.get("inv_customer_po_no")).strip().lower() != "null"
-        }
-
-        po_lines = _stream_filter_po_lines(po_numbers)
-        print("PO NUMBERS:", po_numbers)
-        print("PO LINES FOUND:", len(po_lines))
-
-        # 3) recompute seq global
-        _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
-
-        # 4) MAP PO TO DETAIL (sekali saja)
-        all_rows = _map_po_to_details(po_lines, all_rows)
-
-        # =========================
-        # OPTIONAL: total/container
-        # =========================
-        # Total dan container dibuat setiap Bill of Lading tersedia.
+        if file_uri_full:
+            detail_hash = full_hash
+        
         total_data = None
         container_data = None
-        if with_total_container:
-            total_data = _call_gemini_json_uri(file_uri_full, TOTAL_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
+        po_numbers = set()
+        po_lines = []
 
-            container_data = _call_gemini_json_uri(file_uri_full, CONTAINER_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
-
-        # =========================
-        # VALIDASI (python-based)
-        # =========================
-        all_rows = _validate_po(all_rows)
-
-        _validate_invoice_rows(all_rows)
-        _validate_packing_rows(all_rows)
-        _validate_invoice_vs_packing_extra(all_rows)
-
-        _validate_bl_rows(all_rows)
-        _validate_coo_rows(all_rows)
-
-        _finalize_match_fields(all_rows)
-        _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
-
-        # ==============================
-        # (NEW) MAP PO TO TOTAL (DETAIL tetap batch, TOTAL tidak batch)
-        # ==============================
-        # if total_data is not None:
-        #     total_data = _map_po_to_total(total_data, po_lines, po_numbers)
-
-        # CONVERT TO CSV
-        # ==============================
-        # (NEW) OUTPUT PER FOLDER
-        # ==============================
-        detail_csv_uri = _convert_to_csv_path(
-            f"output/detail/{invoice_name}_detail.csv",
-            all_rows,
-            field_order=DETAIL_CSV_FIELD_ORDER_FINAL
+        detail_cache_hit = _load_cache_to_output(
+            detail_hash,
+            "detail",
+            detail_output_blob_path
         )
+
+        if not detail_cache_hit:
+            header_obj = _call_gemini_json_uri(
+                detail_input_uri,
+                build_header_prompt(),
+                expect_array=False,
+                retries=3
+            )
+            if not isinstance(header_obj, dict):
+                header_obj = {}
+
+            # GET TOTAL ROW FROM GEMINI
+            data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
+
+            if isinstance(data_row, dict) and "total_row" in data_row:
+                total_row = int(data_row["total_row"])
+            else:
+                raise Exception(f"total_row tidak ditemukan di response: {data_row}")
+
+            # NEW: INDEX extraction (anchor line item)
+            index_items = _call_gemini_json_uri(
+                file_uri_detail,
+                build_index_prompt(total_row),
+                expect_array=True,
+                retries=3
+            )
+
+            # fallback safety
+            if not isinstance(index_items, list) or not index_items:
+                raise Exception("INDEX line items kosong")
+
+            # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
+            if len(index_items) != total_row:
+                print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
+                total_row = len(index_items)
+
+            # BATCH DETAIL EXTRACTION
+            jobs = []
+            first_index = 1
+            batch_no = 1
+
+            while first_index <= total_row:
+                last_index = min(first_index + BATCH_SIZE - 1, total_row)
+
+                index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
+
+                prompt = build_detail_prompt_from_index(
+                    total_row=total_row,
+                    index_slice=index_slice,
+                    first_index=first_index,
+                    last_index=last_index
+                )
+
+                jobs.append((batch_no, prompt))
+                first_index = last_index + 1
+                batch_no += 1
+
+            # default 2 worker (aman untuk 2 CPU & mengurangi risiko 429)
+            MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+            MAX_WORKERS = max(1, min(MAX_WORKERS, len(jobs)))
+
+            results = {}
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+                futures = [
+                    ex.submit(_run_one_detail_batch, detail_input_uri, run_prefix, bn, prm)
+                    for (bn, prm) in jobs
+                ]
+                for f in as_completed(futures):
+                    bn, arr = f.result()
+                    results[bn] = arr
+
+            # gabungkan hasil batch sesuai urutan batch_no (tanpa download ulang dari GCS)
+            all_rows = []
+            for bn in sorted(results.keys()):
+                all_rows.extend(results[bn])
+
+            if not all_rows:
+                raise Exception("Tidak ada data detail hasil Gemini")
+
+            _ensure_all_detail_keys(all_rows)
+
+            _apply_header_to_rows(all_rows, header_obj)
+
+            _postprocess_inv_spart_item_no(all_rows)
+
+            # 0) reset match fields (Gemini tidak validasi)
+            _reset_match_fields(all_rows)
+
+            # 1) apply rule invoice po forward-fill sebelum ambil po_numbers
+            _fill_forward(all_rows, "inv_customer_po_no")
+
+            #  FIX: kalau inv_price_unit null, samakan dengan inv_amount_unit
+            _fill_inv_price_unit_from_amount_unit(all_rows)
+
+            # 2) ambil po_numbers setelah carry-forward
+            po_numbers = {
+                row.get("inv_customer_po_no")
+                for row in all_rows
+                if isinstance(row, dict)
+                and row.get("inv_customer_po_no")
+                and str(row.get("inv_customer_po_no")).strip().lower() != "null"
+            }
+
+            po_lines = _stream_filter_po_lines(po_numbers)
+            print("PO NUMBERS:", po_numbers)
+            print("PO LINES FOUND:", len(po_lines))
+
+            # 3) recompute seq global
+            _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
+
+            # 4) MAP PO TO DETAIL (sekali saja)
+            all_rows = _map_po_to_details(po_lines, all_rows)
+
+            # =========================
+            # VALIDASI (python-based)
+            # =========================
+            all_rows = _validate_po(all_rows)
+
+            _validate_invoice_rows(all_rows)
+            _validate_packing_rows(all_rows)
+            _validate_invoice_vs_packing_extra(all_rows)
+
+            _validate_bl_rows(all_rows)
+            _validate_coo_rows(all_rows)
+
+            _finalize_match_fields(all_rows)
+            _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
+
+            # ==============================
+            # (NEW) MAP PO TO TOTAL (DETAIL tetap batch, TOTAL tidak batch)
+            # ==============================
+            # if total_data is not None:
+            #     total_data = _map_po_to_total(total_data, po_lines, po_numbers)
+
+            # CONVERT TO CSV
+            # ==============================
+            # (NEW) OUTPUT PER FOLDER
+            # ==============================
+            detail_csv_uri = _convert_to_csv_path(
+                detail_output_blob_path,
+                all_rows,
+                field_order=DETAIL_CSV_FIELD_ORDER_FINAL
+            )
+            
+            _save_output_to_cache(detail_hash, "detail", detail_output_blob_path)
+        
+        else:
+            print("[SKIP OCR] detail pakai cache")
+            detail_csv_uri = f"gs://{BUCKET_NAME}/{detail_output_blob_path}"
+
+        if with_total_container:
+            total_cache_hit = False
+            if full_hash:
+                total_cache_hit = _load_cache_to_output(
+                    full_hash,
+                    "total",
+                    total_output_blob_path
+                )
+                    
+            if not total_cache_hit:
+                total_data = _call_gemini_json_uri(
+                    file_uri_full,
+                    TOTAL_SYSTEM_INSTRUCTION,
+                    expect_array=True,
+                    retries=3
+                )
+            else:
+                print("[SKIP OCR] total pakai cache")
+                
+            container_cache_hit = False
+            if full_hash:
+                container_cache_hit = _load_cache_to_output(
+                    full_hash,
+                    "container",
+                    container_output_blob_path
+                )
+
+            if not container_cache_hit:
+                container_data = _call_gemini_json_uri(
+                    file_uri_full,
+                    CONTAINER_SYSTEM_INSTRUCTION,
+                    expect_array=True,
+                    retries=3
+                    )
+            else:
+                print("[SKIP OCR] container pakai cache")
 
         total_csv_uri = None
         if total_data is not None:
             total_csv_uri = _convert_to_csv_path(
-                f"output/total/{invoice_name}_total.csv", total_data
+                total_output_blob_path,
+                total_data
             )
-
+            _save_output_to_cache(full_hash, "total", total_output_blob_path)
+        elif with_total_container:
+            total_csv_uri = f"gs://{BUCKET_NAME}/{total_output_blob_path}"
+        
         container_csv_uri = None
         if container_data is not None:
             container_csv_uri = _convert_to_csv_path(
-                f"output/container/{invoice_name}_container.csv", container_data
+                container_output_blob_path,
+                container_data
             )
-
+            _save_output_to_cache(full_hash, "container", container_output_blob_path)
+        elif with_total_container:
+            container_csv_uri = f"gs://{BUCKET_NAME}/{container_output_blob_path}"
 
         # CLEAN TEMP FILES
         prefix = TMP_PREFIX.rstrip("/")
