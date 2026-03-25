@@ -467,11 +467,16 @@ if menu == "Report":
                 if f["status"] == "DONE":
                     blob = bucket.blob(f["path"])
                     file_bytes = blob.download_as_bytes()
+
+                    file_name = f["invoice"]
+                    if not file_name.lower().endswith(".csv"):
+                        file_name = f"{file_name}.csv"
+
                     st.download_button(
                         label="Download",
                         data=file_bytes,
-                        file_name=f["invoice"],
-                        mime="application/octet-stream",
+                        file_name=file_name,
+                        mime="text/csv",
                         key=f"dl_{report_type}_{f['invoice']}"
                     )
 
