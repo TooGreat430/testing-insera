@@ -6,5 +6,5 @@ vertexai
 google-genai
 ijson
 openpyxl
-google-cloud-storage>=2.14.0
-google-auth>=2.0.0
+google-cloud-storage
+streamlit-autorefresh

@@ -4,10 +4,6 @@ import subprocess
 import sys
 from function import create_running_markers, delete_running_markers
 from google.cloud import storage
-import google.auth
-from google.auth import default
-from google.auth.transport.requests import Request
-from google.auth.iam import Signer
 from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
 import re
@@ -19,6 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment
 import csv
 from PyPDF2 import PdfReader
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(layout="wide")
 
@@ -334,14 +331,7 @@ if menu == "Upload":
 
 if menu == "Report":
 
-    credentials, _ = default()
-    auth_request = Request()
-
-    signer = Signer(
-        auth_request,
-        credentials,
-        credentials.service_account_email
-    )
+    st_autorefresh(interval=120000, key="auto_refresh_report")
 
     WIB = timezone(timedelta(hours=7))
 
@@ -561,26 +551,18 @@ if menu == "Report":
             with col4:
                 if f["status"] == "DONE":
                     blob = bucket.blob(f["path"])
+                    file_bytes = blob.download_as_bytes()
 
                     file_name = f["invoice"]
                     if not file_name.lower().endswith(".csv"):
                         file_name = f"{file_name}.csv"
 
-                    signed_url = blob.generate_signed_url(
-                        version="v4",
-                        expiration=timedelta(minutes=30),
-                        method="GET",
-                        credentials=credentials,
-                        signer=signer,
-                        service_account_email=credentials.service_account_email,
-                        response_disposition=f'attachment; filename="{file_name}"',
-                        response_type="text/csv",
-                    )
-
-                    st.link_button(
-                        "Download",
-                        signed_url,
-                        use_container_width=True
+                    st.download_button(
+                        label="Download",
+                        data=file_bytes,
+                        file_name=file_name,
+                        mime="text/csv",
+                        key=f"dl_{report_type}_{f['invoice']}"
                     )
 
         def _prev_page():
