@@ -447,7 +447,7 @@ GENERAL KNOWLEDGE DETAIL:
       - 45295210
       - 45295893
       - 45297175
-  - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI PL_CUSTOMER_PO_NO
+  - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
 
 3. inv_seq:
    - inv_seq wajib numeric murni dan tidak boleh "null".
