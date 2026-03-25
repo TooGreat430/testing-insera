@@ -4,6 +4,7 @@ import subprocess
 import sys
 from function import create_running_markers, delete_running_markers
 from google.cloud import storage
+import google.auth
 from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
 import re
@@ -545,6 +546,8 @@ if menu == "Report":
                 else:
                     st.write("-")
 
+            credentials, _ = google.auth.default()
+
             with col4:
                 if f["status"] == "DONE":
                     blob = bucket.blob(f["path"])
@@ -553,11 +556,18 @@ if menu == "Report":
                     if not file_name.lower().endswith(".csv"):
                         file_name = f"{file_name}.csv"
 
-                    file_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{f['path']}"
+                    signed_url = blob.generate_signed_url(
+                        version="v4",
+                        expiration=timedelta(minutes=30),
+                        method="GET",
+                        credentials=credentials,
+                        response_disposition=f'attachment; filename="{file_name}"',
+                        response_type="text/csv",
+                    )
 
                     st.link_button(
                         "Download",
-                        file_url,
+                        signed_url,
                         use_container_width=True
                     )
 
