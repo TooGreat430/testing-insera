@@ -108,35 +108,13 @@ GENERAL KNOWLEDGE TOTAL
 6. LC Logic:
    -Jika Consignee terdapat nama perusahaan Bank, maka dokumen BL merupakan tipe LC
    -Jika Consignee tidak terdapat nama perusahaan Bank, maka dokumen BL bukan merupakan tipe LC
-
-7. pl_package_unit dan bl_package_unit:
-   - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
-   - Tentukan package unit berdasarkan struktur kemasan yang ada.
-   - Ada beberapa penempatan Package Unit:
-      - Di Header dari package Unit contoh: Header mengatakan "PCS/CTN" Berarti unit yang digunakan yaitu "CTN"
-      - Terdapat kolom tambahan untuk package unit contoh terdapat 2 kolom Package count dan juga unitnya. Berarti value unit akan mengikuti kolom dari unitnya.
-      - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
-   - TOLONG PAHAMI penempatan dari package count.
-
-   - Jika semua barang menggunakan karton (CTN / CARTON) → CT
-   - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
+7. Package Unit (pl_package_unit DAN bl_package_unit):
+   - Jika semua barang menggunakan karton (CTN / CTNS / CARTONS / CARTON) → CT
+   - Jika semua barang menggunakan pallet (PLT / PLTS/ PALLETS /PALLET) → PX
    - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
    - Jika barang dalam Bal (BALE) → BL
    - Selain itu → gunakan nilai asli dari dokumen.
 
-   - Jika terdapat struktur kemasan bertingkat (nested packaging), gunakan unit kemasan utamanya.
-     Contoh:
-     Package Detail: 1 PLT(S)
-     Number of Carton: 9
-
-     Karton berada di dalam pallet, sehingga package unit utama adalah PLT → PX.
-
-   - Jika unit muncul sebagai kemasan terpisah, maka dianggap campuran.
-     Contoh:
-     5 PLT
-     11 CTN
-
-     Maka package unit adalah PK.
 ============================================
 VALIDASI TOTAL
 ============================================

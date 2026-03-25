@@ -543,7 +543,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-11. pl_package_unit:
+11. pl_package_unit DAN coo_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
    - Ada beberapa penempatan Package Unit:
@@ -645,13 +645,6 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
-
-18. coo_package_unit
-   - Jika semua barang menggunakan karton (CTN / CARTON) → CT
-   - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
-   - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
-   - Jika barang dalam Bal (BALE) → BL
-   - Selain itu → gunakan nilai asli dari dokumen.
    
 18. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
