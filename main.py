@@ -10,7 +10,6 @@ import re
 from datetime import datetime, timezone, timedelta
 import json
 import shutil
-from datetime import timedelta
 
 st.set_page_config(layout="wide")
 
@@ -94,34 +93,41 @@ def _save_uploaded_file_to_temp(uploaded_file):
     tmp.close()
     return tmp.name
 
-def _convert_file_to_pdf(local_input_path):
-    """
-    Convert xls/xlsx/csv -> pdf via LibreOffice headless.
-    Jika file sudah pdf, return path asli.
-    """
-    ext = os.path.splitext(local_input_path)[1].lower()
+def _count_pdf_pages(pdf_path: str) -> int:
+    try:
+        reader = PdfReader(pdf_path)
+        return len(reader.pages)
+    except Exception as e:
+        raise Exception(f"Gagal membaca jumlah halaman PDF hasil convert: {e}")
 
-    if ext == ".pdf":
-        return local_input_path
 
-    if ext not in [".xls", ".xlsx", ".csv"]:
-        raise Exception(f"Format file tidak didukung untuk conversion ke PDF: {ext}")
-
+def _get_soffice_path() -> str:
     soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice_path:
         raise Exception(
             "LibreOffice headless tidak ditemukan di server. "
             "Install libreoffice/soffice agar file xls/xlsx/csv bisa dikonversi ke PDF."
         )
+    return soffice_path
 
-    out_dir = tempfile.mkdtemp()
+
+def _run_soffice_convert(local_input_path: str, out_dir: str, convert_to: str):
+    soffice_path = _get_soffice_path()
+
+    # profile sementara supaya hasil convert lebih konsisten
+    profile_dir = tempfile.mkdtemp(prefix="lo-profile-")
+    profile_uri = Path(profile_dir).as_uri()
 
     cmd = [
         soffice_path,
+        f"-env:UserInstallation={profile_uri}",
         "--headless",
-        "--convert-to", "pdf",
+        "--nologo",
+        "--nolockcheck",
+        "--nodefault",
+        "--convert-to", convert_to,
         "--outdir", out_dir,
-        local_input_path
+        local_input_path,
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -131,19 +137,89 @@ def _convert_file_to_pdf(local_input_path):
             f"Gagal convert file ke PDF. stdout={result.stdout} stderr={result.stderr}"
         )
 
-    base_name = os.path.splitext(os.path.basename(local_input_path))[0]
-    pdf_path = os.path.join(out_dir, f"{base_name}.pdf")
 
-    if not os.path.exists(pdf_path):
-        # fallback: cari pdf pertama di output dir
-        pdf_files = [
-            os.path.join(out_dir, f)
-            for f in os.listdir(out_dir)
-            if f.lower().endswith(".pdf")
-        ]
-        if not pdf_files:
-            raise Exception("Konversi selesai tapi file PDF hasil convert tidak ditemukan.")
-        pdf_path = pdf_files[0]
+def _find_first_output_file(out_dir: str, ext: str) -> str:
+    files = [
+        os.path.join(out_dir, f)
+        for f in os.listdir(out_dir)
+        if f.lower().endswith(ext.lower())
+    ]
+    if not files:
+        raise Exception(f"Konversi selesai tapi file output {ext} tidak ditemukan.")
+    files.sort()
+    return files[0]
+
+
+def _csv_to_xlsx(local_csv_path: str) -> str:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+
+    with open(local_csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            ws.append(row)
+
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx").name
+    wb.save(out_path)
+    return out_path
+
+
+def _xls_to_xlsx(local_xls_path: str) -> str:
+    out_dir = tempfile.mkdtemp()
+    _run_soffice_convert(local_xls_path, out_dir, "xlsx")
+    return _find_first_output_file(out_dir, ".xlsx")
+
+
+def _validate_spreadsheet_pdf_result(pdf_path: str, source_name: str):
+    total_pages = _count_pdf_pages(pdf_path)
+
+    if total_pages == 0:
+        raise Exception(f"Hasil convert PDF untuk '{source_name}' kosong.")
+
+    # warning saja, jangan hard fail
+    if total_pages > 100:
+        print(f"[WARNING] {source_name} menghasilkan {total_pages} halaman")
+
+
+def _convert_file_to_pdf(local_input_path):
+    """
+    Convert xls/xlsx/csv -> pdf
+    Prinsip:
+    - xlsx: convert langsung, jangan rewrite workbook
+    - xls : convert ke xlsx via soffice, lalu convert langsung ke pdf
+    - csv : buat xlsx sederhana dulu, lalu convert ke pdf
+    """
+    ext = os.path.splitext(local_input_path)[1].lower()
+
+    if ext == ".pdf":
+        return local_input_path
+
+    if ext not in [".xls", ".xlsx", ".csv"]:
+        raise Exception(f"Format file tidak didukung untuk conversion ke PDF: {ext}")
+
+    source_for_pdf = local_input_path
+
+    if ext == ".csv":
+        source_for_pdf = _csv_to_xlsx(local_input_path)
+
+    elif ext == ".xls":
+        source_for_pdf = _xls_to_xlsx(local_input_path)
+
+    out_dir = tempfile.mkdtemp()
+
+    _run_soffice_convert(
+        source_for_pdf,
+        out_dir,
+        "pdf:calc_pdf_Export"
+    )
+
+    pdf_path = _find_first_output_file(out_dir, ".pdf")
+    _validate_spreadsheet_pdf_result(pdf_path, os.path.basename(local_input_path))
 
     return pdf_path
 
@@ -467,23 +543,18 @@ if menu == "Report":
             with col4:
                 if f["status"] == "DONE":
                     blob = bucket.blob(f["path"])
+                    file_bytes = blob.download_as_bytes()
 
                     file_name = f["invoice"]
                     if not file_name.lower().endswith(".csv"):
                         file_name = f"{file_name}.csv"
 
-                    signed_url = blob.generate_signed_url(
-                        version="v4",
-                        expiration=timedelta(minutes=30),
-                        method="GET",
-                        response_disposition=f'attachment; filename="{file_name}"',
-                        response_type="text/csv",
-                    )
-
-                    st.link_button(
-                        "Download",
-                        signed_url,
-                        use_container_width=True
+                    st.download_button(
+                        label="Download",
+                        data=file_bytes,
+                        file_name=file_name,
+                        mime="text/csv",
+                        key=f"dl_{report_type}_{f['invoice']}"
                     )
 
         def _prev_page():
