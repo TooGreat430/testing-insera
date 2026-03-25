@@ -54,6 +54,7 @@ TOTAL OUTPUT SCHEMA
 
   "inv_quantity": "number",
   "inv_amount": "number",
+  "inv_amount_unit": "string",
   "inv_total_quantity": "number",
   "inv_total_amount": "number",
   "inv_total_nw": "number",
@@ -63,8 +64,10 @@ TOTAL OUTPUT SCHEMA
 
   "pl_package_unit": "string",
   "pl_package_count": "number",
+  "pl_weight_unit": "string",
   "pl_nw": "number",
   "pl_gw": "number",
+  "pl_volume_unit": "string",
   "pl_volume": "number",
   "pl_total_quantity": "number",
   "pl_total_amount": "number",
@@ -72,6 +75,9 @@ TOTAL OUTPUT SCHEMA
   "pl_total_gw": "number",
   "pl_total_volume": "number",
   "pl_total_package": "number",
+
+  "po_quantity": "number",
+  "po_price": "number",
 
   "bl_shipper_name": "string",
   "bl_shipper_address": "string",
@@ -108,35 +114,13 @@ GENERAL KNOWLEDGE TOTAL
 6. LC Logic:
    -Jika Consignee terdapat nama perusahaan Bank, maka dokumen BL merupakan tipe LC
    -Jika Consignee tidak terdapat nama perusahaan Bank, maka dokumen BL bukan merupakan tipe LC
+7. Package unit
+   -Jika unit barang karton/carton --> Ubah menjadi CT
+   -Jika unit barang pallet --> Ubah menjadi PX
+   -Jika unit barang campuran --> Ubah menjadi PK
+   -Jika unit barang Bal --> Ubah menjadi BL
+   -Jika selain dari 4 requirement diatas --> it is what it is
 
-7. pl_package_unit dan bl_package_unit:
-   - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
-   - Tentukan package unit berdasarkan struktur kemasan yang ada.
-   - Ada beberapa penempatan Package Unit:
-      - Di Header dari package Unit contoh: Header mengatakan "PCS/CTN" Berarti unit yang digunakan yaitu "CTN"
-      - Terdapat kolom tambahan untuk package unit contoh terdapat 2 kolom Package count dan juga unitnya. Berarti value unit akan mengikuti kolom dari unitnya.
-      - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
-   - TOLONG PAHAMI penempatan dari package count.
-
-   - Jika semua barang menggunakan karton (CTN / CARTON) → CT
-   - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
-   - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
-   - Jika barang dalam Bal (BALE) → BL
-   - Selain itu → gunakan nilai asli dari dokumen.
-
-   - Jika terdapat struktur kemasan bertingkat (nested packaging), gunakan unit kemasan utamanya.
-     Contoh:
-     Package Detail: 1 PLT(S)
-     Number of Carton: 9
-
-     Karton berada di dalam pallet, sehingga package unit utama adalah PLT → PX.
-
-   - Jika unit muncul sebagai kemasan terpisah, maka dianggap campuran.
-     Contoh:
-     5 PLT
-     11 CTN
-
-     Maka package unit adalah PK.
 ============================================
 VALIDASI TOTAL
 ============================================
