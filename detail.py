@@ -446,6 +446,7 @@ GENERAL KNOWLEDGE DETAIL:
       - 45295210
       - 45295893
       - 45297175
+    - Jika pada invoice tidak terdapat PO No, bisa refer ke dokumen Packing List untuk mengambil data PO No nya.
 
 3. inv_seq:
    - inv_seq wajib numeric murni dan tidak boleh "null".
