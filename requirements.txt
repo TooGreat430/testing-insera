@@ -1,5 +1,4 @@
 streamlit
-google-cloud-storage
 google-generativeai
 PyPDF2
 reportlab
@@ -7,3 +6,5 @@ vertexai
 google-genai
 ijson
 openpyxl
+google-cloud-storage>=2.14.0
+google-auth>=2.0.0
