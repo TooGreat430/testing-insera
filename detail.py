@@ -595,6 +595,7 @@ GENERAL KNOWLEDGE DETAIL:
 
 13. pl_volume_unit:
    - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
+   - JIKA UNIT VOLUME TIDAK ADA PADA DOKUMEN MAKA BIARKAN "null" saja.
 
    - Identifikasi Header Tabel: Periksa baris header atau judul kolom pada tabel Packing List untuk menentukan unit dari volume yang digunakan. Jika terdapat teks seperti "TOTAL CBM", "MEASUREMENT", "VOL", atau "Cubic Meter", maka unitnya adalah CBM atau M3 (PAHAMI JIKA TOTAL CBM maka unit "CBM". Jika misal TOTAL M3, maka M3).
    - Posisi Unit: Unit volume seringkali tidak tertulis di samping angka, melainkan tertanam di dalam judul kolom tabel (contoh: kolom bernama "CBM"). Ambil unit dari judul kolom tersebut.
