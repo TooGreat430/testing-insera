@@ -5,8 +5,9 @@ import sys
 from function import create_running_markers, delete_running_markers
 from google.cloud import storage
 import google.auth
-from google.auth.transport.requests import Request
 from google.auth import default
+from google.auth.transport.requests import Request
+from google.auth.iam import Signer
 from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
 import re
@@ -336,6 +337,12 @@ if menu == "Report":
     credentials, _ = default()
     auth_request = Request()
 
+    signer = Signer(
+        auth_request,
+        credentials,
+        credentials.service_account_email
+    )
+
     WIB = timezone(timedelta(hours=7))
 
     # =========================
@@ -564,9 +571,8 @@ if menu == "Report":
                         expiration=timedelta(minutes=30),
                         method="GET",
                         credentials=credentials,
+                        signer=signer,
                         service_account_email=credentials.service_account_email,
-                        access_token=credentials.token,
-                        request=auth_request,
                         response_disposition=f'attachment; filename="{file_name}"',
                         response_type="text/csv",
                     )
