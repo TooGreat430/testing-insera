@@ -543,7 +543,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-11. Package Unit (pl_package_unit DAN coo_package_unit):
+11. pl_package_unit DAN coo_package_unit:
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
    - Ada beberapa penempatan Package Unit:
