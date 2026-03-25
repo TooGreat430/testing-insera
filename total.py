@@ -54,7 +54,6 @@ TOTAL OUTPUT SCHEMA
 
   "inv_quantity": "number",
   "inv_amount": "number",
-  "inv_amount_unit": "string",
   "inv_total_quantity": "number",
   "inv_total_amount": "number",
   "inv_total_nw": "number",
@@ -64,10 +63,8 @@ TOTAL OUTPUT SCHEMA
 
   "pl_package_unit": "string",
   "pl_package_count": "number",
-  "pl_weight_unit": "string",
   "pl_nw": "number",
   "pl_gw": "number",
-  "pl_volume_unit": "string",
   "pl_volume": "number",
   "pl_total_quantity": "number",
   "pl_total_amount": "number",
@@ -75,9 +72,6 @@ TOTAL OUTPUT SCHEMA
   "pl_total_gw": "number",
   "pl_total_volume": "number",
   "pl_total_package": "number",
-
-  "po_quantity": "number",
-  "po_price": "number",
 
   "bl_shipper_name": "string",
   "bl_shipper_address": "string",
