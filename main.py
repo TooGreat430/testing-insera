@@ -10,6 +10,7 @@ import re
 from datetime import datetime, timezone, timedelta
 import json
 import shutil
+from datetime import timedelta
 
 st.set_page_config(layout="wide")
 
@@ -466,18 +467,23 @@ if menu == "Report":
             with col4:
                 if f["status"] == "DONE":
                     blob = bucket.blob(f["path"])
-                    file_bytes = blob.download_as_bytes()
 
                     file_name = f["invoice"]
                     if not file_name.lower().endswith(".csv"):
                         file_name = f"{file_name}.csv"
 
-                    st.download_button(
-                        label="Download",
-                        data=file_bytes,
-                        file_name=file_name,
-                        mime="text/csv",
-                        key=f"dl_{report_type}_{f['invoice']}"
+                    signed_url = blob.generate_signed_url(
+                        version="v4",
+                        expiration=timedelta(minutes=30),
+                        method="GET",
+                        response_disposition=f'attachment; filename="{file_name}"',
+                        response_type="text/csv",
+                    )
+
+                    st.link_button(
+                        "Download",
+                        signed_url,
+                        use_container_width=True
                     )
 
         def _prev_page():
