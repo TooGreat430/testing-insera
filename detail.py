@@ -602,18 +602,6 @@ GENERAL KNOWLEDGE DETAIL:
 
    - Identifikasi Header Tabel: Periksa baris header atau judul kolom pada tabel Packing List untuk menentukan unit dari volume yang digunakan. Jika terdapat teks seperti "TOTAL CBM", "MEASUREMENT", "VOL", atau "Cubic Meter", maka unitnya adalah CBM atau M3 (PAHAMI JIKA TOTAL CBM maka unit "CBM". Jika misal TOTAL M3, maka M3).
    - Posisi Unit: Unit volume seringkali tidak tertulis di samping angka, melainkan tertanam di dalam judul kolom tabel (contoh: kolom bernama "CBM"). Ambil unit dari judul kolom tersebut.
-  
-   - Jika pada dokumen Packing List pl_volume_unit tidak tercantum, maka periksa dokumen lain seperti Bill of Lading (BL).
-   - Jika volume pada Packing List dan dokumen lain memiliki nilai yang sama, maka gunakan volume unit dari dokumen tersebut.
-   - Jika nilai volume berbeda, pahami kemungkinan perbedaan satuan dan lakukan konversi terlebih dahulu.
-   - Gunakan unit yang setelah dikonversi menghasilkan nilai volume yang sesuai dengan volume pada PL.
-     Contoh:
-     PL volume = 2326.8 (tanpa unit)
-     BL volume = 63.34 m3
-     Karena nilai berbeda, coba konversi m3 ke unit lain.
-     63.34 m3 ≈ 2236.8 cuft
-     Maka:
-     pl_volume_unit = CUF
 
 14. Field po_* WAJIB diisi dengan STRING "null".
 
