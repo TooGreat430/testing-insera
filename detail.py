@@ -578,6 +578,8 @@ GENERAL KNOWLEDGE DETAIL:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
+   - Berikan perhatian lebih untuk nominal desimal. Jangan salah membaca penempatan desimal. Contoh: 44.2 dibaca sebagai 4.42
+
    - Jika nilai volume pada dokumen merupakan volume per package, maka kalikan nilai tersebut dengan jumlah package pada line item (pl_package_count) untuk mendapatkan total volume line item.
    - Gunakan hasil perhitungan tersebut sebagai nilai pl_volume.
      Contoh:
