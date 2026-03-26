@@ -577,12 +577,6 @@ GENERAL KNOWLEDGE DETAIL:
 12. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
-   - Apabila pada field pl_volume ini terdapat dua nilai speerti:
-     package_count    NAMA BARANG     pl_volume    
-          10               A          0.5
-                                      5
-    Maka pahami bahwa nilai 5 adalah volume package. Sehingga volume line item tersebut adalah 0.5 × 10 = 5
-    Selalu ambil nilai volume total untuk setiap line item, bukan volume per package. Jika hanya tersedia volume per package, maka kalikan dengan jumlah package untuk mendapatkan total volume line item.
 
    - Jika nilai volume pada dokumen merupakan volume per package, maka kalikan nilai tersebut dengan jumlah package pada line item (pl_package_count) untuk mendapatkan total volume line item.
    - Gunakan hasil perhitungan tersebut sebagai nilai pl_volume.
