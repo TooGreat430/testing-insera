@@ -577,9 +577,6 @@ GENERAL KNOWLEDGE DETAIL:
 12. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
-   - Ambil volume unit HANYA yang tercantum pada dokumen Packing List (PL).
-   - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
-   - JIKA VOLUME UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
 
    - Jika nilai volume pada dokumen merupakan volume per package, maka kalikan nilai tersebut dengan jumlah package pada line item (pl_package_count) untuk mendapatkan total volume line item.
    - Gunakan hasil perhitungan tersebut sebagai nilai pl_volume.
@@ -599,6 +596,9 @@ GENERAL KNOWLEDGE DETAIL:
 13. pl_volume_unit:
    - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
    - JIKA UNIT VOLUME TIDAK ADA PADA DOKUMEN MAKA BIARKAN "null" saja.
+   - Ambil volume unit HANYA yang tercantum pada dokumen Packing List (PL).
+   - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
+   - JIKA VOLUME UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
 
    - Identifikasi Header Tabel: Periksa baris header atau judul kolom pada tabel Packing List untuk menentukan unit dari volume yang digunakan. Jika terdapat teks seperti "TOTAL CBM", "MEASUREMENT", "VOL", atau "Cubic Meter", maka unitnya adalah CBM atau M3 (PAHAMI JIKA TOTAL CBM maka unit "CBM". Jika misal TOTAL M3, maka M3).
    - Posisi Unit: Unit volume seringkali tidak tertulis di samping angka, melainkan tertanam di dalam judul kolom tabel (contoh: kolom bernama "CBM"). Ambil unit dari judul kolom tersebut.
