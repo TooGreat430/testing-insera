@@ -594,8 +594,6 @@ GENERAL KNOWLEDGE DETAIL:
       pl_volume = 0.11 × 155 = 17.05
 
 13. pl_volume_unit:
-   - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
-   - JIKA UNIT VOLUME TIDAK ADA PADA DOKUMEN MAKA BIARKAN "null" saja.
    - Ambil volume unit HANYA yang tercantum pada dokumen Packing List (PL).
    - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
    - JIKA VOLUME UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
