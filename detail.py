@@ -577,9 +577,11 @@ GENERAL KNOWLEDGE DETAIL:
 12. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
-   - Jika nilai volume pada dokumen merupakan volume per package, maka kalikan nilai tersebut dengan jumlah package pada line item (pl_package_count) untuk mendapatkan total volume line item.
-   - Perhatikan penempatan desimal. Misal: 44.2 terbaca sebagai 4.42
+   - Ambil volume unit HANYA yang tercantum pada dokumen Packing List (PL).
+   - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
+   - JIKA VOLUME UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
 
+   - Jika nilai volume pada dokumen merupakan volume per package, maka kalikan nilai tersebut dengan jumlah package pada line item (pl_package_count) untuk mendapatkan total volume line item.
    - Gunakan hasil perhitungan tersebut sebagai nilai pl_volume.
      Contoh:
      Jika pada dokumen tertulis:
@@ -595,12 +597,23 @@ GENERAL KNOWLEDGE DETAIL:
       pl_volume = 0.11 × 155 = 17.05
 
 13. pl_volume_unit:
-   - Ambil volume unit HANYA yang tercantum pada dokumen Packing List (PL).
-   - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
-   - JIKA VOLUME UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
+   - Ambil volume unit yang tercantum pada dokumen Packing List (PL).
+   - JIKA UNIT VOLUME TIDAK ADA PADA DOKUMEN MAKA BIARKAN "null" saja.
 
    - Identifikasi Header Tabel: Periksa baris header atau judul kolom pada tabel Packing List untuk menentukan unit dari volume yang digunakan. Jika terdapat teks seperti "TOTAL CBM", "MEASUREMENT", "VOL", atau "Cubic Meter", maka unitnya adalah CBM atau M3 (PAHAMI JIKA TOTAL CBM maka unit "CBM". Jika misal TOTAL M3, maka M3).
    - Posisi Unit: Unit volume seringkali tidak tertulis di samping angka, melainkan tertanam di dalam judul kolom tabel (contoh: kolom bernama "CBM"). Ambil unit dari judul kolom tersebut.
+  
+   - Jika pada dokumen Packing List pl_volume_unit tidak tercantum, maka periksa dokumen lain seperti Bill of Lading (BL).
+   - Jika volume pada Packing List dan dokumen lain memiliki nilai yang sama, maka gunakan volume unit dari dokumen tersebut.
+   - Jika nilai volume berbeda, pahami kemungkinan perbedaan satuan dan lakukan konversi terlebih dahulu.
+   - Gunakan unit yang setelah dikonversi menghasilkan nilai volume yang sesuai dengan volume pada PL.
+     Contoh:
+     PL volume = 2326.8 (tanpa unit)
+     BL volume = 63.34 m3
+     Karena nilai berbeda, coba konversi m3 ke unit lain.
+     63.34 m3 ≈ 2236.8 cuft
+     Maka:
+     pl_volume_unit = CUF
 
 14. Field po_* WAJIB diisi dengan STRING "null".
 
