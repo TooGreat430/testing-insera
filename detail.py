@@ -554,6 +554,9 @@ GENERAL KNOWLEDGE DETAIL:
       - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
    - TOLONG PAHAMI penempatan dari package count.
 
+   - Ambil package unit HANYA yang tercantum pada dokumen Packing List (PL).
+   - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
+   - JIKA PACKAGE UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
    - Jika semua barang menggunakan karton (CTN / CARTON) → CT
    - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
    - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
@@ -577,8 +580,6 @@ GENERAL KNOWLEDGE DETAIL:
 12. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
-
-   - Berikan perhatian lebih untuk nominal desimal. Jangan salah membaca penempatan desimal. Contoh: 44.2 dibaca sebagai 4.42
 
    - Jika nilai volume pada dokumen merupakan volume per package, maka kalikan nilai tersebut dengan jumlah package pada line item (pl_package_count) untuk mendapatkan total volume line item.
    - Gunakan hasil perhitungan tersebut sebagai nilai pl_volume.
