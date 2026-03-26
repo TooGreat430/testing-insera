@@ -593,7 +593,6 @@ GENERAL KNOWLEDGE DETAIL:
       VOL/PKGS = 0.11
       Maka:
       pl_volume = 0.11 × 155 = 17.05
-   - Pastikan total volume line item bukanlah nila volume per package, melainkan yang sudah dihitung sesuai dengan ketentuan.
 
 13. pl_volume_unit:
    - Ambil volume unit HANYA yang tercantum pada dokumen Packing List (PL).
