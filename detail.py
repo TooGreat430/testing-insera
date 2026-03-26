@@ -553,7 +553,7 @@ GENERAL KNOWLEDGE DETAIL:
       - Terdapat kolom tambahan untuk package unit contoh terdapat 2 kolom Package count dan juga unitnya. Berarti value unit akan mengikuti kolom dari unitnya.
       - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
    - TOLONG PAHAMI penempatan dari package count.
-   - Jika semua barang menggunakan karton, cartons, ctn, atau ct → (CTN / CARTON) → CT
+   - Jika semua barang menggunakan karton, , carton, cartons, ctn, atau ct → CT
    - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
    - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
    - Jika barang dalam Bal (BALE) → BL
