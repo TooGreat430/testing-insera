@@ -554,9 +554,6 @@ GENERAL KNOWLEDGE DETAIL:
       - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
    - TOLONG PAHAMI penempatan dari package count.
 
-   - Ambil package unit HANYA yang tercantum pada dokumen Packing List (PL).
-   - JANGAN AMBIL / ASUMSI DARI DOKUMEN LAIN seperti Invoice (INV), Bill of Lading (BL), dan Certificate of Origin (COO)
-   - JIKA PACKAGE UNIT TIDAK TERSEDIA PADA DOKUMEN MAKA BIARKAN "null" saja.
    - Jika semua barang menggunakan karton (CTN / CARTON) → CT
    - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
    - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
