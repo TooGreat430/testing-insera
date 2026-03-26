@@ -151,7 +151,14 @@ VALIDASI TOTAL
    - Package Count BL HARUS sama dengan Total Package Count Packing List. Jika tidak sama → VALIDASI GAGAL.
    - Package Unit BL HARUS sama dengan Package Unit Packing List. Jika tidak sama → VALIDASI GAGAL.
    - Total Gross Weight BL HARUS sama dengan Total Gross Weight Packing List. Jika tidak sama → VALIDASI GAGAL.
-   - Volume BL HARUS sama dengan Total Volume Packing List. Jika tidak sama → VALIDASI GAGAL.
+   
+   - Volume BL HARUS sama dengan Total Volume Packing List.
+     - Jika nilai volume berbeda, lakukan pengecekan kemungkinan adanya perbedaan satuan (misalnya CBM dan CUFT)
+     - Lakukan konversi satuan dengan ketentuan 1 CBM = 35.3 CUFT (pembulatan 2 desimal)
+     - Setelah konversi, bandingkan kembali nilai volume:
+       - Jika hasilnya sama atau selisih dalam toleransi wajar (±0.01 hingga ±0.1), maka VALIDASI BERHASIL.
+       - Jika tetap tidak sama, maka VALIDASI GAGAL.
+
    - Volume Unit BL HARUS sama dengan Volume Unit Packing List. Jika tidak sama → VALIDASI GAGAL.
 
 5. Validasi Penjumlahan:
