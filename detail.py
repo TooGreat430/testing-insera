@@ -3,6 +3,14 @@ import json
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
+ALLOWED_PACKAGE_UNIT = [
+    "CT",
+    "PX",
+    "PK",
+    "BL",
+    "null"
+]
+
 
 DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_score",
@@ -161,7 +169,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "pl_item_no": "string",
   "pl_description": "string",
   "pl_quantity": "number",
-  "pl_package_unit": "string",
+  "pl_package_unit": {"type": "string", "enum": ALLOWED_PACKAGE_UNIT},
   "pl_package_count": "number",
   "pl_nw": "number",
   "pl_gw": "number",
