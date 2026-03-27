@@ -33,6 +33,37 @@ BATCH_SIZE = 30
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, ) 
 
+def _normalize_pl_package_unit_rows(rows: list):
+    mapping = {
+        "CTN": "CT",
+        "CTNS": "CT",
+        "CARTON": "CT",
+        "CARTONS": "CT",
+
+        "PLT": "PX",
+        "PLTS": "PX",
+        "PALLET": "PX",
+        "PALLETS": "PX",
+
+        "BAL": "BL",
+        "BALE": "BL",
+        "BALES": "BL"
+    }
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        value = row.get("pl_package_unit")
+
+        if _is_null(value):
+            continue
+
+        unit = str(value).strip().upper()
+        unit = re.sub(r"[^A-Z]", "", unit)
+
+        row["pl_package_unit"] = mapping.get(unit, unit)
+
 def _normalize_running_name(invoice_name: str) -> str:
     return str(invoice_name).strip().replace("/", "_").replace("\\", "_")
 
@@ -1525,6 +1556,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         #  FIX: kalau inv_price_unit null, samakan dengan inv_amount_unit
         _fill_inv_price_unit_from_amount_unit(all_rows)
+
+        # NEW: normalisasi pl_package_unit
+        _normalize_pl_package_unit_rows(all_rows)
 
         # 2) ambil po_numbers setelah carry-forward
         po_numbers = {

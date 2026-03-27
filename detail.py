@@ -568,7 +568,6 @@ GENERAL KNOWLEDGE DETAIL:
    - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
    - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
    - Jika barang dalam Bal (BALE) → BL
-   - Selain itu → gunakan nilai asli dari dokumen.
 
    - Jika terdapat struktur kemasan bertingkat (nested packaging), gunakan unit kemasan utamanya.
      Contoh:
