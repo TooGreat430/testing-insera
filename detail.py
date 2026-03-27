@@ -555,8 +555,8 @@ GENERAL KNOWLEDGE DETAIL:
      maka pl_package_count = 3.
 
 11. pl_package_unit:
-   - Pilih salah satu unit yang ada pada {ALLOWED_PACKAGE_UNIT}!
-   - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
+   - Pilih salah satu unit yang ada pada {ALLOWED_PACKAGE_UNIT}! JANGAN MEMILIH DILUAR DARI {ALLOWED_PACKAGE_UNIT}
+   - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG TERLAMPIR DAN GUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
    - Ada beberapa penempatan Package Unit:
       - Di Header dari package Unit contoh: Header mengatakan "PCS/CTN" Berarti unit yang digunakan yaitu "CT"
