@@ -31,7 +31,78 @@ import uuid
 
 BATCH_SIZE = 30
 storage_client = storage.Client() 
-genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, ) 
+genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, )
+
+# ==============================
+# SANITIZER: pl_package_unit
+# ==============================
+
+PL_PACKAGE_UNIT_MAP = {
+    "ctn": "CT",
+    "ctns": "CT",
+    "carton": "CT",
+    "cartons": "CT",
+
+    "plt": "PX",
+    "plts": "PX",
+    "pallet": "PX",
+    "pallets": "PX",
+
+    "bal": "BL",
+    "bale": "BL",
+    "bales": "BL",
+}
+
+def _normalize_alpha_lower(value):
+    """
+    Normalize dulu jadi huruf kecil dan hanya alphabet.
+    Contoh:
+    - 'CTN' -> 'ctn'
+    - 'Cartons ' -> 'cartons'
+    - 'PALLETS.' -> 'pallets'
+    """
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+
+    if s == "" or s.lower() == "null":
+        return ""
+
+    s = s.lower()
+    s = re.sub(r"[^a-z]", "", s)  # hanya alphabet kecil
+
+    return s
+
+def _sanitize_pl_package_unit(value):
+    """
+    Compare pakai normalized value,
+    tapi insert output final sesuai requirement.
+    Kalau tidak ketemu mapping, kembalikan value asli.
+    """
+    if value is None:
+        return "null"
+
+    raw = str(value).strip()
+
+    if raw == "" or raw.lower() == "null":
+        return "null"
+
+    normalized = _normalize_alpha_lower(raw)
+
+    if normalized in PL_PACKAGE_UNIT_MAP:
+        return PL_PACKAGE_UNIT_MAP[normalized]
+
+    return raw
+
+def _postprocess_pl_package_unit(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row["pl_package_unit"] = _sanitize_pl_package_unit(
+            row.get("pl_package_unit")
+        )
 
 def _normalize_running_name(invoice_name: str) -> str:
     return str(invoice_name).strip().replace("/", "_").replace("\\", "_")
@@ -1516,6 +1587,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         _apply_header_to_rows(all_rows, header_obj)
 
         _postprocess_inv_spart_item_no(all_rows)
+        _postprocess_pl_package_unit(all_rows)
 
         # 0) reset match fields (Gemini tidak validasi)
         _reset_match_fields(all_rows)

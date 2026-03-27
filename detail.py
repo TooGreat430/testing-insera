@@ -555,36 +555,30 @@ GENERAL KNOWLEDGE DETAIL:
      maka pl_package_count = 3.
 
 11. pl_package_unit:
-   - Pilih salah satu unit yang ada pada {ALLOWED_PACKAGE_UNIT}! JANGAN MEMILIH DILUAR DARI {ALLOWED_PACKAGE_UNIT}
-   - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG TERLAMPIR DAN GUNAKAN PADA DOKUMEN.
-   - Tentukan package unit berdasarkan struktur kemasan yang ada.
-   - Ada beberapa penempatan Package Unit:
-      - Di Header dari package Unit contoh: Header mengatakan "PCS/CTN" Berarti unit yang digunakan yaitu "CT"
-      - Terdapat kolom tambahan untuk package unit contoh terdapat 2 kolom Package count dan juga unitnya. Berarti value unit akan mengikuti kolom dari unitnya.
-      - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CT".
-   - TOLONG PAHAMI penempatan dari package count.
+    - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
+    - Sumber bukti yang VALID untuk pl_package_unit hanya:
+      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail
+      2) unit yang menempel langsung pada package_count
+      3) header rasio kemasan seperti PCS/CTN, SET/CTN, PCS/BOX, QTY/CARTON -> ambil unit kemasannya, BUKAN unit quantity
 
-   - Jika semua barang menggunakan karton (CTN / CARTON) → CT
-   - Jika semua barang menggunakan pallet (PLT / PALLET) → PX
-   - Jika terdapat lebih dari satu jenis package unit yang berdiri sendiri (misal: 5 PLT dan 11 CTN) → PK
-   - Jika barang dalam Bal (BALE) → BL
-   - Selain itu → gunakan nilai asli dari dokumen.
+    - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
+      1) kolom quantity / qty / pcs / sets / units
+      2) inv_quantity_unit
+      3) unit penjualan barang
+      4) unit yang hanya menjelaskan isi per kemasan
 
-   - Jika terdapat struktur kemasan bertingkat (nested packaging), gunakan unit kemasan utamanya.
-     Contoh:
-     Package Detail: 1 PLT(S)
-     Number of Carton: 9
+    - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
 
-     Karton berada di dalam pallet, sehingga package unit utama adalah PLT → PX.
+    - pl_package_unit harus final dalam canonical value berikut saja:
+      {ALLOWED_PACKAGE_UNIT}
 
-   - Jika unit muncul sebagai kemasan terpisah, maka dianggap campuran.
-     Contoh:
-     5 PLT
-     11 CTN
+    - Mapping canonical:
+      CTN / CARTON / CARTONS -> CT
+      PLT / PALLET / PALLETS -> PX
+      BALE / BALES -> BL
+      mixed standalone package types -> PK
 
-     Maka package unit adalah PK.
-   
-   - pl_package_unit value yang ada di luar {ALLOWED_PACKAGE_UNIT} dianggap sebagai "null".
+    - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
 
    
 12. pl_volume:
