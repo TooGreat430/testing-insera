@@ -8,7 +8,7 @@ ALLOWED_PACKAGE_UNIT = [
     "PX",
     "PK",
     "BL",
-    "null"
+    "null"s
 ]
 
 
@@ -555,12 +555,13 @@ GENERAL KNOWLEDGE DETAIL:
      maka pl_package_count = 3.
 
 11. pl_package_unit:
+   - Pilih salah satu unit yang ada pada {ALLOWED_PACKAGE_UNIT}!
    - PAHAMI TERLEBIH DAHULU JENIS PACKAGE UNIT YANG DIGUNAKAN PADA DOKUMEN.
    - Tentukan package unit berdasarkan struktur kemasan yang ada.
    - Ada beberapa penempatan Package Unit:
       - Di Header dari package Unit contoh: Header mengatakan "PCS/CTN" Berarti unit yang digunakan yaitu "CT"
       - Terdapat kolom tambahan untuk package unit contoh terdapat 2 kolom Package count dan juga unitnya. Berarti value unit akan mengikuti kolom dari unitnya.
-      - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CTN".
+      - Terdapat bersebelahan langsung dengan value dari package count. Contoh:: 25 SET berarti unit yang digunakan "SET". 25 Carton berarti unit yang digunakan "CT".
    - TOLONG PAHAMI penempatan dari package count.
 
    - Jika semua barang menggunakan karton (CTN / CARTON) → CT
@@ -582,7 +583,10 @@ GENERAL KNOWLEDGE DETAIL:
      11 CTN
 
      Maka package unit adalah PK.
+   
+   - pl_package_unit value yang ada di luar {ALLOWED_PACKAGE_UNIT} dianggap sebagai "null".
 
+   
 12. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
