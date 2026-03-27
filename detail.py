@@ -206,8 +206,8 @@ DETAIL_LINE_FIELDS = [
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
-    "pl_item_no","pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_weight_unit","pl_nw","pl_gw",
-    "pl_volume_unit","pl_volume","pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
+    "pl_item_no","pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_nw","pl_gw",
+    "pl_volume","pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
 
     "po_no","po_vendor_article_no","po_text","po_sap_article_no","po_line","po_quantity","po_unit","po_price","po_currency",
     "po_info_record_price","po_info_record_currency",
