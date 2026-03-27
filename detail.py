@@ -8,7 +8,7 @@ ALLOWED_PACKAGE_UNIT = [
     "PX",
     "PK",
     "BL",
-    "null"s
+    "null"
 ]
 
 
