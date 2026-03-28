@@ -48,6 +48,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "pl_invoice_date",
     "pl_messrs",
     "pl_messrs_address",
+    "pl_customer_po_no",
     "pl_item_no",
     "pl_description",
     "pl_quantity",
@@ -214,7 +215,7 @@ DETAIL_LINE_FIELDS = [
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
-    "pl_item_no","pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_nw","pl_gw",
+    "pl_customer_po_no", "pl_item_no","pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_nw","pl_gw",
     "pl_volume","pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
 
     "po_no","po_vendor_article_no","po_text","po_sap_article_no","po_line","po_quantity","po_unit","po_price","po_currency",
@@ -241,37 +242,53 @@ DETAIL_LINE_NUM_FIELDS = {
 def build_index_prompt(total_row: int) -> str:
     return f"""
 ROLE:
-Anda adalah AI IDP professional yang fokus membuat INDEX line items INVOICE.
+Anda adalah AI IDP professional yang fokus membuat INDEX line items berbasis DUA SUMBER:
+1) Invoice
+2) Packing List (PL)
+
 Rule-based, deterministik, anti-halusinasi.
 
 TUGAS:
-Buat daftar INDEX untuk SEMUA line item di INVOICE SAJA.
+Buat daftar INDEX untuk SEMUA line item dengan anchor utama dari Invoice dan anchor pendukung dari Packing List.
 INDEX ini akan dipakai sebagai "anchor" untuk ekstraksi detail batch berikutnya.
 
 ATURAN:
 1) Output HANYA JSON ARRAY, tanpa teks lain.
 2) Panjang array harus = {total_row} (jika invoice memang memiliki {total_row} line item).
-3) Setiap object mewakili 1 line item invoice berdasarkan urutan kemunculan di invoice.
+3) Setiap object mewakili 1 line item berdasarkan urutan kemunculan di Invoice.
 4) DILARANG markdown / plan / penjelasan.
 5) Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
+6) Invoice adalah anchor utama untuk identitas row.
+7) Packing List adalah anchor pendukung untuk membantu memilih pasangan row PL yang paling cocok.
+8) PL TIDAK BOLEH membuat row baru.
+9) Jangan ikutkan BL / COO ke index.
 
 SCHEMA OUTPUT (INDEX):
 [
   {{
     "idx": number,
+
+    "inv_page_no": number,
+    "inv_customer_po_no": "string",
     "inv_spart_item_no": "string",
     "inv_description": "string",
     "inv_quantity": number,
     "inv_quantity_unit": "string",
     "inv_unit_price": number,
     "inv_price_unit": "string",
-    "inv_amount": number
+    "inv_amount": number,
+
+    "pl_page_no": number,
+    "pl_customer_po_no": "string",
+    "pl_description": "string",
+    "pl_quantity": number
   }}
 ]
 
 CATATAN:
-- Fokus INVOICE line item table.
-- Jangan ikutkan packing list / BL / COO untuk index.
+- inv_* anchor diambil dari Invoice.
+- pl_* anchor diambil dari Packing List.
+- Jika pasangan row PL tidak ditemukan dengan yakin, isi field pl_* dengan "null"/0.
 """
 
 def build_header_prompt() -> str:
@@ -414,6 +431,29 @@ dan URUTANNYA HARUS SAMA persis dengan urutan anchor.
 
 ANCHOR INDEX (JSON):
 {anchors_json}
+
+- Anchor terdiri dari dua sumber:
+  1) Invoice anchor (utama)
+  2) PL anchor (pendukung)
+
+- Invoice anchor digunakan untuk menjaga identitas row:
+  inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
+
+- PL anchor digunakan sebagai bukti pendukung agar model memilih pasangan row Packing List yang benar:
+  pl_customer_po_no, pl_description, pl_quantity.
+
+- inv_page_no dan pl_page_no adalah nomor halaman tempat anchor ditemukan pada masing-masing dokumen di file detail.
+
+- PL anchor TIDAK BOLEH membuat object baru.
+  Jumlah object output tetap harus mengikuti jumlah anchor invoice.
+
+- Jika ada beberapa kandidat row PL, pilih yang paling konsisten dengan:
+  1) pl_customer_po_no
+  2) pl_description
+  3) pl_quantity
+
+- Jika bukti PL tidak cukup yakin, field pl_* boleh diisi "null"/0.
+- DILARANG menggunakan row PL dari PO berbeda untuk mengisi line item invoice ini.
 
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS. JANGAN MENGARANG.

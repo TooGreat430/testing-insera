@@ -1539,6 +1539,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
             total_row = len(index_items)
 
+        _fill_forward(index_items, "inv_customer_po_no")
+        _fill_forward(index_items, "pl_customer_po_no")
+
         # BATCH DETAIL EXTRACTION
         jobs = []
         first_index = 1
