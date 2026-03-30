@@ -488,15 +488,19 @@ GENERAL KNOWLEDGE DETAIL:
 
 2. customer_po_no pada Invoice dan juga PL:
    - PO No. dapat terletak di atas Description Item atau memiliki kolom tersendiri jadi PAHAMI setiap line item itu PO No nya itu apa.
-   - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
    - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
-      Contoh
+      Contoh valid:
       - 442000324
       - 49021348
       - 45295210
       - 45295893
       - 45297175
-  - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
+  - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
+
+  - KHUSUS UNTUK VENDOR FOX, Jika invoice_customer_po_no tidak ditemukan / null:
+    - WAJIB diisi dari pl_customer_po_no
+  
+  - Selain Vendor FOX, pl_customer_po_no tidak wajib digunakan maupun diekstrak; seluruh proses hanya bergantung pada invoice_customer_po_no tanpa perlu fallback ke PL.
 
 3. inv_seq:
    - inv_seq wajib numeric murni dan tidak boleh "null".
