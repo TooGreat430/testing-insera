@@ -14,7 +14,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
 import csv
-from PyPDF2 import PdfReader
+from PyPDF2 import PdfReader, PdfMerger
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(layout="wide")
@@ -250,37 +250,78 @@ def _prepare_uploaded_file_as_pdf(uploaded_file):
 
     return pdf_path, temp_paths
 
+def _prepare_uploaded_files_as_one_pdf(uploaded_files):
+    """
+    Convert semua file upload dalam 1 tipe dokumen menjadi PDF,
+    lalu merge jadi 1 PDF.
+
+    Return:
+    - final_pdf_path: path PDF final untuk tipe dokumen tsb
+    - temp_paths: semua temp file yang harus dibersihkan
+    """
+    if not uploaded_files:
+        raise Exception("Tidak ada file yang dipilih.")
+
+    # support kalau ternyata dikirim single object
+    if not isinstance(uploaded_files, list):
+        uploaded_files = [uploaded_files]
+
+    pdf_paths = []
+    temp_paths = []
+
+    for uploaded_file in uploaded_files:
+        final_pdf_path, created_paths = _prepare_uploaded_file_as_pdf(uploaded_file)
+        pdf_paths.append(final_pdf_path)
+        temp_paths.extend(created_paths)
+
+    # kalau cuma 1 file, tidak perlu merge lagi
+    if len(pdf_paths) == 1:
+        return pdf_paths[0], temp_paths
+
+    merged_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    merged_tmp.close()
+
+    merger = PdfMerger()
+    try:
+        for pdf_path in pdf_paths:
+            merger.append(pdf_path)
+
+        with open(merged_tmp.name, "wb") as f:
+            merger.write(f)
+    finally:
+        merger.close()
+
+    temp_paths.append(merged_tmp.name)
+    return merged_tmp.name, temp_paths
+
 if menu == "Upload":
 
     st.subheader("Upload Documents")
-
-    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls", "csv"])
-    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls", "csv"])
-    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"])
-    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls", "csv"])
+    
+    invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
+    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
+    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=False)
+    coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
 
     output_name = st.text_input("Output file name (default invoice name)")
 
     if st.button("Extract"):
 
-        if not invoice or not packing:
+        invoice_files = invoice or []
+        packing_files = packing or []
+        coo_files = coo or []
+
+        if not invoice_files or not packing_files:
             st.warning("Invoice dan Packing List wajib diupload")
 
         else:
             has_bl = bool(bl)
-            has_coo = bool(coo)
+            has_coo = bool(coo_files)
             with_total_container = has_bl
 
             if has_coo and not has_bl:
                 st.error("COO hanya bisa diproses jika Bill of Lading juga diupload.")
                 st.stop()
-
-            files_to_process = [invoice, packing]
-
-            if bl:
-                files_to_process.append(bl)
-            if coo:
-                files_to_process.append(coo)
 
             if not has_bl and not has_coo:
                 st.info("Hanya Invoice dan Packing List yang diupload. Sistem akan menghasilkan DETAIL saja.")
@@ -292,16 +333,33 @@ if menu == "Upload":
             pdf_paths = []
             temp_cleanup_paths = []
 
-            for f in files_to_process:
-                final_pdf_path, created_paths = _prepare_uploaded_file_as_pdf(f)
-                pdf_paths.append(final_pdf_path)
+            try:
+                # 1) merge semua invoice -> 1 PDF
+                invoice_merged_pdf, created_paths = _prepare_uploaded_files_as_one_pdf(invoice_files)
+                pdf_paths.append(invoice_merged_pdf)
                 temp_cleanup_paths.extend(created_paths)
 
-            #butuh diubah menjadi base_name = os.path.splitext(invoice.name)[0]
-            #final_invoice_name = (output_name or base_name).strip()
-            final_invoice_name = (output_name or invoice.name.replace(".pdf", "")).strip()
+                # 2) merge semua packing list -> 1 PDF
+                packing_merged_pdf, created_paths = _prepare_uploaded_files_as_one_pdf(packing_files)
+                pdf_paths.append(packing_merged_pdf)
+                temp_cleanup_paths.extend(created_paths)
 
-            try:
+                # 3) BL tetap single file
+                if bl:
+                    bl_pdf, created_paths = _prepare_uploaded_files_as_one_pdf([bl])
+                    pdf_paths.append(bl_pdf)
+                    temp_cleanup_paths.extend(created_paths)
+
+                # 4) merge semua COO -> 1 PDF
+                if coo_files:
+                    coo_merged_pdf, created_paths = _prepare_uploaded_files_as_one_pdf(coo_files)
+                    pdf_paths.append(coo_merged_pdf)
+                    temp_cleanup_paths.extend(created_paths)
+
+                # ambil nama default dari file invoice pertama
+                base_name = os.path.splitext(invoice_files[0].name)[0]
+                final_invoice_name = (output_name or "").strip() or base_name
+
                 # bikin marker RUNNING lebih dulu supaya Report langsung bisa baca status
                 create_running_markers(final_invoice_name, with_total_container)
 
@@ -316,7 +374,8 @@ if menu == "Upload":
 
             except Exception as e:
                 try:
-                    delete_running_markers(final_invoice_name, with_total_container)
+                    if "final_invoice_name" in locals() and final_invoice_name:
+                        delete_running_markers(final_invoice_name, with_total_container)
                 except Exception:
                     pass
 

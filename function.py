@@ -58,6 +58,270 @@ PL_PACKAGE_UNIT_MAP = {
     "bales": "BL",
 }
 
+TOTAL_OUTPUT_FIELDS = [
+    "inv_quantity",
+    "inv_amount",
+    "inv_total_quantity",
+    "inv_total_amount",
+    "inv_total_nw",
+    "inv_total_gw",
+    "inv_total_volume",
+    "inv_total_package",
+
+    "pl_package_unit",
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+    "pl_total_quantity",
+    "pl_total_amount",
+    "pl_total_nw",
+    "pl_total_gw",
+    "pl_total_volume",
+    "pl_total_package",
+
+    "bl_shipper_name",
+    "bl_shipper_address",
+    "bl_no",
+    "bl_date",
+    "bl_consignee_name",
+    "bl_consignee_address",
+    "bl_consignee_tax_id",
+    "bl_seller_name",
+    "bl_seller_address",
+    "bl_lc_number",
+    "bl_notify_party",
+    "bl_vessel",
+    "bl_voyage_no",
+    "bl_port_of_loading",
+    "bl_port_of_destination",
+    "bl_gw_unit",
+    "bl_gw",
+    "bl_volume_unit",
+    "bl_volume",
+    "bl_package_count",
+    "bl_package_unit",
+]
+
+# saya append match fields di belakang supaya flow validasi existing tetap konsisten
+TOTAL_CSV_FIELD_ORDER_FINAL = TOTAL_OUTPUT_FIELDS + [
+    "match_score",
+    "match_description",
+]
+
+TOTAL_NUM_FIELDS = {
+    "inv_quantity",
+    "inv_amount",
+    "inv_total_quantity",
+    "inv_total_amount",
+    "inv_total_nw",
+    "inv_total_gw",
+    "inv_total_volume",
+    "inv_total_package",
+
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+    "pl_total_quantity",
+    "pl_total_amount",
+    "pl_total_nw",
+    "pl_total_gw",
+    "pl_total_volume",
+    "pl_total_package",
+
+    "bl_gw",
+    "bl_volume",
+    "bl_package_count",
+}
+
+def _sum_numeric(rows: list, key: str) -> float:
+    total = 0.0
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        v = _to_float(r.get(key))
+        if v is not None:
+            total += v
+    return total
+
+def _first_text(rows: list, key: str, default="null"):
+    v = _first_non_null(rows, key)
+    return default if _is_null(v) else v
+
+def _first_number(rows: list, key: str, default=0):
+    v = _first_non_null_nonzero(rows, key)
+    n = _to_float(v)
+    return default if n is None else n
+
+def _ensure_total_keys(total_obj: dict):
+    for k in TOTAL_OUTPUT_FIELDS:
+        if k in total_obj and total_obj[k] is not None:
+            continue
+        if k in TOTAL_NUM_FIELDS:
+            total_obj[k] = 0
+        else:
+            total_obj[k] = "null"
+
+def _normalize_compare_text(v):
+    if _is_null(v):
+        return ""
+    return re.sub(r"\s+", " ", str(v).strip().upper())
+
+def _build_total_from_detail_and_container(detail_rows: list, container_rows):
+    if container_rows is None:
+        return None
+
+    if isinstance(container_rows, dict):
+        container_rows = [container_rows]
+
+    if not isinstance(container_rows, list):
+        raise Exception("container_data tidak valid untuk membentuk total")
+
+    container_rows = [r for r in container_rows if isinstance(r, dict)]
+
+    if not container_rows:
+        raise Exception("container_data kosong, total tidak bisa dibentuk")
+
+    total_obj = {
+        # =========================
+        # DETAIL
+        # =========================
+        "inv_quantity": _sum_numeric(detail_rows, "inv_quantity"),
+        "inv_amount": _sum_numeric(detail_rows, "inv_amount"),
+        "inv_total_quantity": _first_number(detail_rows, "inv_total_quantity", default=0),
+        "inv_total_amount": _first_number(detail_rows, "inv_total_amount", default=0),
+        "inv_total_nw": _first_number(detail_rows, "inv_total_nw", default=0),
+        "inv_total_gw": _first_number(detail_rows, "inv_total_gw", default=0),
+        "inv_total_volume": _first_number(detail_rows, "inv_total_volume", default=0),
+        "inv_total_package": _first_number(detail_rows, "inv_total_package", default=0),
+
+        "pl_package_unit": _first_text(detail_rows, "pl_package_unit"),
+        "pl_package_count": _sum_numeric(detail_rows, "pl_package_count"),
+        "pl_nw": _sum_numeric(detail_rows, "pl_nw"),
+        "pl_gw": _sum_numeric(detail_rows, "pl_gw"),
+        "pl_volume": _sum_numeric(detail_rows, "pl_volume"),
+        "pl_total_quantity": _first_number(detail_rows, "pl_total_quantity", default=0),
+        "pl_total_amount": _first_number(detail_rows, "pl_total_amount", default=0),
+        "pl_total_nw": _first_number(detail_rows, "pl_total_nw", default=0),
+        "pl_total_gw": _first_number(detail_rows, "pl_total_gw", default=0),
+        "pl_total_volume": _first_number(detail_rows, "pl_total_volume", default=0),
+        "pl_total_package": _first_number(detail_rows, "pl_total_package", default=0),
+
+        # =========================
+        # CONTAINER
+        # =========================
+        "bl_shipper_name": _first_text(container_rows, "bl_shipper_name"),
+        "bl_shipper_address": _first_text(container_rows, "bl_shipper_address"),
+        "bl_no": _first_text(container_rows, "bl_no"),
+        "bl_date": _first_text(container_rows, "bl_date"),
+        "bl_consignee_name": _first_text(container_rows, "bl_consignee_name"),
+        "bl_consignee_address": _first_text(container_rows, "bl_consignee_address"),
+        "bl_consignee_tax_id": _first_text(container_rows, "bl_consignee_tax_id"),
+        "bl_seller_name": _first_text(container_rows, "bl_seller_name"),
+        "bl_seller_address": _first_text(container_rows, "bl_seller_address"),
+        "bl_lc_number": _first_text(container_rows, "bl_lc_number"),
+        "bl_notify_party": _first_text(container_rows, "bl_notify_party"),
+        "bl_vessel": _first_text(container_rows, "bl_vessel"),
+        "bl_voyage_no": _first_text(container_rows, "bl_voyage_no"),
+        "bl_port_of_loading": _first_text(container_rows, "bl_port_of_loading"),
+        "bl_port_of_destination": _first_text(container_rows, "bl_port_of_destination"),
+        "bl_gw_unit": _first_text(container_rows, "bl_gw_unit"),
+        "bl_gw": _sum_numeric(container_rows, "bl_gw"),
+        "bl_volume_unit": _first_text(container_rows, "bl_volume_unit"),
+        "bl_volume": _sum_numeric(container_rows, "bl_volume"),
+        "bl_package_count": _sum_numeric(container_rows, "bl_package_count"),
+        "bl_package_unit": _first_text(container_rows, "bl_package_unit"),
+
+        "match_score": "true",
+        "match_description": "null",
+    }
+
+    _ensure_total_keys(total_obj)
+
+    # WAJIB 1 line saja
+    return [total_obj]
+
+def _validate_total_rows(total_data, detail_rows: list):
+    if total_data is None:
+        return None
+
+    if isinstance(total_data, dict):
+        total_data = [total_data]
+
+    if not isinstance(total_data, list) or not total_data or not isinstance(total_data[0], dict):
+        raise Exception("Output total tidak valid")
+
+    if len(total_data) != 1:
+        raise Exception(f"Output total harus tepat 1 baris, ditemukan {len(total_data)} baris")
+
+    total_obj = total_data[0]
+    _ensure_total_keys(total_obj)
+
+    total_obj["match_score"] = "true"
+    total_obj["match_description"] = "null"
+
+    def _cmp_num(left_key: str, right_key: str, eps=0.01):
+        lv = _to_float(total_obj.get(left_key))
+        rv = _to_float(total_obj.get(right_key))
+        if lv is None or rv is None:
+            return
+        if abs(lv - rv) > eps:
+            _append_total_error(
+                total_obj,
+                f"Total: {left_key} != {right_key} ({lv} vs {rv})"
+            )
+
+    def _cmp_text(left_label: str, left_val, right_label: str, right_val):
+        if _is_null(left_val) or _is_null(right_val):
+            return
+        if _normalize_compare_text(left_val) != _normalize_compare_text(right_val):
+            _append_total_error(
+                total_obj,
+                f"Total: {left_label} != {right_label} ({left_val} vs {right_val})"
+            )
+
+    # 1) cek total bl_package_count vs total pl_package_count
+    _cmp_num("bl_package_count", "pl_package_count")
+
+    # 2) cek bl_package_unit vs pl_package_unit
+    _cmp_text(
+        "bl_package_unit",
+        total_obj.get("bl_package_unit"),
+        "pl_package_unit",
+        total_obj.get("pl_package_unit")
+    )
+
+    # 3) cek total bl_gw vs total pl_gw
+    _cmp_num("bl_gw", "pl_gw")
+
+    # 4) cek bl_gw_unit vs pl_gw_unit
+    # NOTE:
+    # di output total yang Anda minta tidak ada field pl_gw_unit,
+    # jadi validasi diambil dari source detail: pl_weight_unit
+    _cmp_text(
+        "bl_gw_unit",
+        total_obj.get("bl_gw_unit"),
+        "pl_weight_unit",
+        _first_non_null(detail_rows, "pl_weight_unit")
+    )
+
+    # 5) cek total bl_volume vs total pl_volume
+    _cmp_num("bl_volume", "pl_volume")
+
+    # 6) cek bl_volume_unit vs pl_volume_unit
+    _cmp_text(
+        "bl_volume_unit",
+        total_obj.get("bl_volume_unit"),
+        "pl_volume_unit",
+        _first_non_null(detail_rows, "pl_volume_unit")
+    )
+
+    if total_obj.get("match_score") == "true":
+        total_obj["match_description"] = "null"
+
+    return total_data
+
 def _normalize_alpha_lower(value):
     """
     Normalize dulu jadi huruf kecil dan hanya alphabet.
@@ -1791,9 +2055,12 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         total_data = None
         container_data = None
         if with_total_container:
-            total_data = _call_gemini_json_uri(file_uri_full, TOTAL_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
-
-            container_data = _call_gemini_json_uri(file_uri_full, CONTAINER_SYSTEM_INSTRUCTION, expect_array=True, retries=3)
+            container_data = _call_gemini_json_uri(
+                file_uri_full,
+                CONTAINER_SYSTEM_INSTRUCTION,
+                expect_array=True,
+                retries=3
+            )
 
         # =========================
         # VALIDASI (python-based)
@@ -1809,6 +2076,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         _finalize_match_fields(all_rows)
         _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
+
+        if with_total_container:
+            total_data = _build_total_from_detail_and_container(all_rows, container_data)
+            total_data = _validate_total_rows(total_data, all_rows)
 
         # ==============================
         # (NEW) MAP PO TO TOTAL (DETAIL tetap batch, TOTAL tidak batch)
@@ -1829,7 +2100,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         total_csv_uri = None
         if total_data is not None:
             total_csv_uri = _convert_to_csv_path(
-                f"output/total/{invoice_name}_total.csv", total_data
+                f"output/total/{invoice_name}_total.csv",
+                total_data,
+                field_order=TOTAL_CSV_FIELD_ORDER_FINAL
             )
 
         container_csv_uri = None
