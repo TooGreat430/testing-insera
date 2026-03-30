@@ -16,7 +16,12 @@ import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
 from total import TOTAL_SYSTEM_INSTRUCTION 
-from container import CONTAINER_SYSTEM_INSTRUCTION 
+from container import CONTAINER_SYSTEM_INSTRUCTION
+from pathlib import Path
+from email import policy
+from email.parser import BytesParser
+from weasyprint import HTML
+import shutil
 from detail import (
     build_index_prompt,
     build_header_prompt,
@@ -400,6 +405,155 @@ def _compress_pdf_if_needed(input_path, max_mb=45):
     subprocess.run(cmd, check=True)
 
     return compressed_path
+
+HTML_LIKE_MARKERS = (
+    b"content-type: multipart/",
+    b"content-type: text/html",
+    b"<!doctype html",
+    b"<html",
+    b"quoted-printable",
+)
+
+def _read_head(path, n=8192):
+    with open(path, "rb") as f:
+        return f.read(n)
+
+def _looks_like_xlsx(head: bytes) -> bool:
+    return head.startswith(b"PK\x03\x04")
+
+def _looks_like_ole_xls(head: bytes) -> bool:
+    return head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+
+def _looks_like_html_wrapped_xls(head: bytes) -> bool:
+    low = head.lower()
+    return any(marker in low for marker in HTML_LIKE_MARKERS)
+
+def _extract_html_from_wrapped_xls(src_path, workdir):
+    raw = Path(src_path).read_bytes()
+    html_path = Path(workdir) / f"{Path(src_path).stem}_extracted.html"
+
+    try:
+        msg = BytesParser(policy=policy.default).parsebytes(raw)
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.is_multipart():
+                    continue
+                if part.get_content_type() == "text/html":
+                    html = part.get_content()
+                    html_path.write_text(html, encoding="utf-8")
+                    return str(html_path)
+    except Exception:
+        pass
+
+    text = raw.decode("utf-8", errors="replace")
+    m = re.search(r"(?is)(<!DOCTYPE html.*|<html.*)</html>", text)
+    if m:
+        html_path.write_text(m.group(0), encoding="utf-8")
+        return str(html_path)
+
+    raise Exception("HTML part tidak ditemukan dari file .xls")
+
+def _inject_print_css(html: str) -> str:
+    extra_css = """
+    <style>
+    @page { size: Letter landscape; margin: 0.18in; }
+    html, body {
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+    }
+    table, tr, td, th { page-break-inside: avoid; }
+    img { max-width: 100%; }
+    </style>
+    """
+
+    if "</head>" in html:
+        return html.replace("</head>", extra_css + "\n</head>", 1)
+    return extra_css + "\n" + html
+
+def _render_html_to_pdf(html_path, output_pdf):
+    html = Path(html_path).read_text(encoding="utf-8", errors="replace")
+    html = _inject_print_css(html)
+    HTML(string=html, base_url=str(Path(html_path).parent)).write_pdf(output_pdf)
+
+def _convert_with_libreoffice(src_path, output_pdf):
+    outdir = str(Path(output_pdf).parent)
+
+    subprocess.run([
+        "soffice",
+        "--headless",
+        "--convert-to", "pdf",
+        "--outdir", outdir,
+        src_path,
+    ], check=True)
+
+    produced = str(Path(outdir) / f"{Path(src_path).stem}.pdf")
+    if os.path.abspath(produced) != os.path.abspath(output_pdf):
+        shutil.move(produced, output_pdf)
+
+def _pdf_contains_raw_markup(pdf_path) -> bool:
+    reader = PdfReader(str(pdf_path))
+    text = "\n".join((page.extract_text() or "") for page in reader.pages[:2]).lower()
+
+    markers = [
+        "content-type:",
+        "multipart/mixed",
+        "quoted-printable",
+        "<html",
+        "<!doctype",
+        "style type=",
+        ".c0 {",
+    ]
+    return any(m in text for m in markers)
+
+def _ensure_input_is_pdf(src_path: str) -> str:
+    ext = Path(src_path).suffix.lower()
+
+    if ext == ".pdf":
+        return src_path
+
+    tmp_pdf_path = None
+
+    try:
+        tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp_pdf.close()
+        tmp_pdf_path = tmp_pdf.name
+
+        head = _read_head(src_path)
+
+        if _looks_like_html_wrapped_xls(head):
+            workdir = tempfile.mkdtemp()
+            try:
+                html_path = _extract_html_from_wrapped_xls(src_path, workdir)
+                _render_html_to_pdf(html_path, tmp_pdf_path)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+            return tmp_pdf_path
+
+        if ext in (".xls", ".xlsx") or _looks_like_xlsx(head) or _looks_like_ole_xls(head):
+            _convert_with_libreoffice(src_path, tmp_pdf_path)
+
+            if _pdf_contains_raw_markup(tmp_pdf_path):
+                try:
+                    workdir = tempfile.mkdtemp()
+                    try:
+                        html_path = _extract_html_from_wrapped_xls(src_path, workdir)
+                        _render_html_to_pdf(html_path, tmp_pdf_path)
+                    finally:
+                        shutil.rmtree(workdir, ignore_errors=True)
+                except Exception:
+                    pass
+
+            return tmp_pdf_path
+
+        raise Exception(f"Format file tidak didukung: {src_path}")
+
+    except Exception:
+        if tmp_pdf_path and os.path.exists(tmp_pdf_path):
+            try:
+                os.remove(tmp_pdf_path)
+            except Exception:
+                pass
+        raise
 
 # ==============================
 # UPLOAD PDF TO GCS
@@ -1478,7 +1632,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
     # maka file ke-3 adalah COO tanpa BL dan harus ditolak.
     if len(uploaded_pdf_paths) == 3 and not with_total_container:
         raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
-    
+
+    normalized_pdf_paths = []
+    temp_local_paths = []
+
     run_id = uuid.uuid4().hex
     prefix = TMP_PREFIX.rstrip("/")
     run_prefix = f"{prefix}/{run_id}"
@@ -1488,8 +1645,15 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
     bucket = storage_client.bucket(BUCKET_NAME)
 
     try:
+        for p in uploaded_pdf_paths:
+            normalized = _ensure_input_is_pdf(p)
+            normalized_pdf_paths.append(normalized)
+
+            if os.path.abspath(str(normalized)) != os.path.abspath(str(p)):
+                temp_local_paths.append(normalized)
+
         # DETAIL: invoice+packing saja (2 file pertama dari UI)
-        merged_pdf_detail = _merge_pdfs(uploaded_pdf_paths[:2])
+        merged_pdf_detail = _merge_pdfs(normalized_pdf_paths[:2])
         merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
 
         # FULL: semua dokumen yang diupload (untuk total/container)
@@ -1497,9 +1661,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         file_uri_full = None
 
-        has_extra_docs = len(uploaded_pdf_paths) > 2
+        has_extra_docs = len(normalized_pdf_paths) > 2
         if has_extra_docs:
-            merged_pdf_full = _merge_pdfs(uploaded_pdf_paths)
+            merged_pdf_full = _merge_pdfs(normalized_pdf_paths)
             merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
             file_uri_full = _upload_temp_pdf_to_gcs(merged_pdf_full, run_prefix, name="full")
 
@@ -1674,12 +1838,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
                 f"output/container/{invoice_name}_container.csv", container_data
             )
 
-
-        # CLEAN TEMP FILES
-        prefix = TMP_PREFIX.rstrip("/")
-        for blob in bucket.list_blobs(prefix=f"{run_prefix}/"):
-            blob.delete()
-
         return {
             "detail_csv": detail_csv_uri,
             "total_csv": total_csv_uri,
@@ -1694,3 +1852,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         for blob in bucket.list_blobs(prefix=f"{run_prefix}/"):
             blob.delete()
+
+        for p in temp_local_paths:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass

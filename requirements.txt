@@ -8,3 +8,4 @@ ijson
 openpyxl
 google-cloud-storage
 streamlit-autorefresh
+weasyprint

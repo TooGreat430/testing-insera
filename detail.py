@@ -491,12 +491,14 @@ GENERAL KNOWLEDGE DETAIL:
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
    - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
       Contoh
-      - 442000324
+      - 44200032
       - 49021348
       - 45295210
       - 45295893
       - 45297175
   - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
+  - Misal value PO Number pada dokumen begini: No.C25-1544U/45323564, maka value yang diambil adalah "45323564".
+
 
 3. inv_seq:
    - inv_seq wajib numeric murni dan tidak boleh "null".
