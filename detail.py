@@ -137,7 +137,7 @@ DETAIL_CSV_FIELD_ORDER_FINAL = [
 
 HEADER_SCHEMA_TEXT = [
     "inv_invoice_no","inv_invoice_date","inv_messrs","inv_messrs_address","inv_vendor_name",
-    "inv_vendor_address","inv_incoterms_terms","inv_terms","inv_coo_commodity_origin", "inv_total_quantity",
+    "inv_vendor_address","inv_incoterms_terms","inv_terms","inv_coo_commodity_origin", "inv_price_unit", "inv_amount_unit", "inv_total_quantity",
     "inv_total_amount", "inv_total_nw", "inv_total_gw", "inv_total_volume", "inv_total_package",
     "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address", "pl_total_quantity", "pl_total_amount",
     "pl_total_nw", "pl_total_gw", "pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
@@ -162,9 +162,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "inv_quantity": "number",
   "inv_quantity_unit": "string",
   "inv_unit_price": "number",
-  "inv_price_unit": "string",
   "inv_amount": "number",
-  "inv_amount_unit": "string",
 
   "pl_customer_po_no": "string",
   "pl_item_no": "string",
@@ -322,6 +320,8 @@ OUTPUT SCHEMA (HEADER ONLY):
   "inv_incoterms_terms": "string",
   "inv_terms": "string",
   "inv_coo_commodity_origin": "string",
+  "inv_price_unit": "string",
+  "inv_amount_unit": "string",
   "inv_total_quantity": "number",
   "inv_total_amount": "number", 
   "inv_total_nw": "number", 
@@ -393,21 +393,38 @@ GENERAL KNOWLEDGE:
       JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
       Berarti yang diekstrak hanya: JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR
 
-4. pl_total_package:
+4. inv_price_unit SAMA dengan inv_amount_unit:
+   - Kedua field ini mempresentasikan mata uang (currency).  
+   - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
+
+   - Output harus menggunakan kode mata uang standar ISO 4217 (3 huruf).
+   - Jangan menggunakan simbol mata uang seperti $, US$, ¥, €, Rp, dll.
+     Contoh konversi:
+     US$ atau $ → USD
+     RMB atau ¥ → CNY
+     ¥ → JPY (jika konteks Jepang)
+     Rp → IDR
+     € → EUR
+     
+   - Jika "null" gunakan currency dari dokumen tersebut, biasanya dapat ditemukan pada bagian Currency atau Currency Code.  
+     Contoh:
+     Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD.
+
+5. pl_total_package:
    - Untuk total package yang digunakan, liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
    - Jika tidak secara eksplisit, contoh:
      Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
      Maka pl_total_package adalah 9 karena secara detail, ada 9 total package.
 
-5. LC Logic pada Bill of Lading (BL):
+6. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.
 
-6. Jika pada dokumen Bill of Lading (BL) bertipe LC:
+7. Jika pada dokumen Bill of Lading (BL) bertipe LC:
     - bl_consignee_name diambil dari notify party
     - bl_consignee_address diambil dari notify party
 
-7. inv_coo_commodity_origin
+8. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 """
 
@@ -534,29 +551,12 @@ GENERAL KNOWLEDGE DETAIL:
    - untuk membaca quantity harap pahami tipe dokumen yang akan di ekstrak.
    - jika inv_quantity, maka quantity pada dokumen invoice yang akan di ekstrak
    - jika pl_quantity, maka quantity pada dokumen Packing List yang akan di ekstrak.
-   - JANGAN KEBALIK DAN AMBIL SESUAI DENGAN KEBUTUHAN KOLOM.
+   - JANGAN KEBALIK DAN AMBIL SESUAI DENGAN KEBUTUHAN KOLOM. 
 
-6. inv_price_unit SAMA dengan inv_amount_unit:
-   - Kedua field ini mempresentasikan mata uang (currency).  
-   - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
-
-   - Output harus menggunakan kode mata uang standar ISO 4217 (3 huruf).
-   - Jangan menggunakan simbol mata uang seperti $, US$, ¥, €, Rp, dll.
-     Contoh konversi:
-     US$ atau $ → USD
-     RMB atau ¥ → CNY
-     ¥ → JPY (jika konteks Jepang)
-     Rp → IDR
-     € → EUR
-     
-   - Jika "null" gunakan currency dari dokumen tersebut, biasanya dapat ditemukan pada bagian Currency atau Currency Code.  
-     Contoh:
-     Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD. 
-
-7. inv_total_quantity:
+6. inv_total_quantity:
    - Jika value tidak tersedia di dokumen, isi dengan "null", JANGAN MENGARANG ATAU BERASUMSI.     
 
-8. quantity dan package_count:
+7. quantity dan package_count:
    - quantity dan package_count adalah dua field yang berbeda dan tidak boleh saling menggantikan.
    - quantity adalah jumlah unit barang yang dikirim atau total item quantity.
    - package_count adalah jumlah kemasan fisik yang digunakan untuk mengirim barang, seperti carton, box, pallet, crate, package, dan jenis kemasan lainnya.
@@ -579,11 +579,11 @@ GENERAL KNOWLEDGE DETAIL:
      - pl_package_count = 20
      - pl_quantity = 10 × 20 = 200
 
-9. pl_item_no
+8. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
 
-10. pl_package_count:                                 
+9. pl_package_count:                                 
    - Field ini merepresentasikan jumlah package untuk setiap line item.
    - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
    - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
@@ -596,7 +596,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-11. pl_package_unit:
+10. pl_package_unit:
     - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
     - Sumber bukti yang VALID untuk pl_package_unit hanya:
       1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail
@@ -623,7 +623,7 @@ GENERAL KNOWLEDGE DETAIL:
     - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
 
    
-12. pl_volume:
+11. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -642,16 +642,16 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-13. Field po_* WAJIB diisi dengan STRING "null".
+12. Field po_* WAJIB diisi dengan STRING "null".
 
-14. coo_seq:
+13. coo_seq:
    - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
    - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
    - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
    - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
    - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
 
-15. coo_gw_unit:
+14. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -665,7 +665,7 @@ GENERAL KNOWLEDGE DETAIL:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-16. bl_description dan bl_hs_code:
+15. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -679,6 +679,13 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
+16. coo_description:
+    - Jika description diawali dengan jumlah package dan jenis packagenya, maka exclude jumlah package dan jenis packagenya dan ambil hanya deskripsi itemnya saja.
+      - Contoh:
+        - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF SAMOX CHAINWHEEL AND CRANK MODEL: ...
+          - Maka coo_description: SAMOX CHAINWHEEL AND CRANK MODEL: ...
+          - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF DI EXCLUDE
+
 17. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
@@ -689,7 +696,7 @@ GENERAL KNOWLEDGE DETAIL:
    - Customer PO Number biasanya berupa angka (numeric) yang merujuk pada pesanan customer.
    - Ambil nilai Customer PO Number persis seperti yang tertulis pada dokumen tanpa mengubah formatnya.
    - Jika dokumen BUKAN berasal dari vendor Shimano → isi coo_customer_po_no dengan "null".
-   
+
 OUTPUT RESTRICTION:
 - Output HARUS dimulai '[' dan diakhiri ']'
 - Tidak boleh markdown/plan/teks lain.
