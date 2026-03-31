@@ -405,6 +405,10 @@ GENERAL KNOWLEDGE:
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD.
 
+5. pl_total_package dan pl_total_quantity:
+   - Jika pada dokumen terdapat dua value dengan UNIT yang berbeda, maka sum kedua value tersebut
+     contoh: pada dokumen terlampir total dari quantity seperti ini 2139PCE/150SET. Maka sum kedua value tersebut adalah 2289 (2139 + 150 = 2289)
+
 5. pl_total_package:
    - Untuk total package yang digunakan, liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
    - Jika tidak secara eksplisit, contoh:
