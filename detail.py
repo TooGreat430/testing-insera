@@ -542,6 +542,13 @@ GENERAL KNOWLEDGE DETAIL:
       2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
       3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
       4. MODEL -> Biasanya terdapat pada header kolom tersebut.
+   - Jika ekstraksi inv_spart_item_no diambil dari CODE pada kolom deskripsi, list prioritas tetap sama: CODE -> MATERIAL -> MODEL.
+      Contoh
+      CCSXX4206767-0270
+      FRAME PART A-HG009
+      CHAINWHEEL SOMETHING MODEL: HG009
+      CODE: CCSXX4206767
+      Maka inv_spart_item_no = CCSXX4206767 dan BUKAN CCSXX4206767-0270 (karena prioritas CODE lebih tinggi daripada MATERIAL dan MODEL dan label CODE secara kesplisit dideklarasi)
 
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
@@ -600,6 +607,13 @@ GENERAL KNOWLEDGE DETAIL:
       2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
       3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
       4. MODEL -> Biasanya terdapat pada header kolom tersebut.
+    - Jika ekstraksi inv_spart_item_no diambil dari CODE pada kolom deskripsi, list prioritas tetap sama: CODE -> MATERIAL -> MODEL.
+      Contoh
+      CCSXX4206767-0270
+      FRAME PART A-HG009
+      CHAINWHEEL SOMETHING MODEL: HG009
+      CODE: CCSXX4206767
+      Maka inv_spart_item_no = CCSXX4206767 dan BUKAN CCSXX4206767-0270 (karena prioritas CODE lebih tinggi daripada MATERIAL dan MODEL dan label CODE secara kesplisit dideklarasi)
    - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
       [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
       Maka pl_item_no = CWSFSSH12001-R
