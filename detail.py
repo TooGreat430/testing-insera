@@ -543,13 +543,19 @@ GENERAL KNOWLEDGE DETAIL:
       2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
       3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
       4. MODEL -> Biasanya terdapat pada header kolom tersebut.
-   - Jika ekstraksi inv_spart_item_no diambil dari CODE pada kolom deskripsi, list prioritas tetap sama: CODE -> MATERIAL -> MODEL.
-      Contoh
-      CCSXX4206767-0270
-      FRAME PART A-HG009
-      CHAINWHEEL SOMETHING MODEL: HG009
-      CODE: CCSXX4206767
-      Maka inv_spart_item_no = CCSXX4206767 dan BUKAN CCSXX4206767-0270 (karena prioritas CODE lebih tinggi daripada MATERIAL dan MODEL dan label CODE secara kesplisit dideklarasi)
+      
+    - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no diambil dari CODE pada kolom deskripsi.
+      Contoh:
+        Item No: 
+        CWSSXAF38D0002-165
+        Description:
+        SAMOX CHAINWHEEL MODEL: 
+        AF38-D28NS-BG31, BLACK
+        1 SP, (3/32" *28T* 165 MM), ALLOY CRANK, STEEL 28T BED,
+        49MM 0T, W/CG, W/O SPIDER, SQUARE, C/CAPLESS BOLT
+        W/O LOGO , W/BCD76, ALLOY CG
+        ** CODE: CWSSXAF38D0002
+        Maka inv_spart_item_no = CWSSXAF38D0002 dan BUKAN CWSSXAF38D0002-165 (karena prioritas CODE lebih tinggi daripada Item No)
 
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
@@ -608,26 +614,26 @@ GENERAL KNOWLEDGE DETAIL:
       2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
       3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
       4. MODEL -> Biasanya terdapat pada header kolom tersebut.
-    - Jika ekstraksi inv_spart_item_no diambil dari CODE pada kolom deskripsi, list prioritas tetap sama: CODE -> MATERIAL -> MODEL.
-      Contoh
-      CCSXX4206767-0270
-      FRAME PART A-HG009
-      CHAINWHEEL SOMETHING MODEL: HG009
-      CODE: CCSXX4206767
-      Maka inv_spart_item_no = CCSXX4206767 dan BUKAN CCSXX4206767-0270 (karena prioritas CODE lebih tinggi daripada MATERIAL dan MODEL dan label CODE secara kesplisit dideklarasi)
+
+    - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka pl_item_no diambil dari CODE pada kolom deskripsi.
+      Contoh:
+        Item No: 
+        CWSSXAF38D0002-165
+        Description:
+        SAMOX CHAINWHEEL MODEL: 
+        AF38-D28NS-BG31, BLACK
+        1 SP, (3/32" *28T* 165 MM), ALLOY CRANK, STEEL 28T BED,
+        49MM 0T, W/CG, W/O SPIDER, SQUARE, C/CAPLESS BOLT
+        W/O LOGO , W/BCD76, ALLOY CG
+        ** CODE: CWSSXAF38D0002
+        Maka inv_spart_item_no = CWSSXAF38D0002 dan BUKAN CWSSXAF38D0002-165 (karena prioritas CODE lebih tinggi daripada Item No)
+   
    - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
       [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
       Maka pl_item_no = CWSFSSH12001-R
    - Jika pada deskripsi item ditemukan lebih dari satu kandidat pl_item_no, maka pilih yang paling kanan, seperti:
       [ LD-STM28640T3501 ] - [ FFSLDCR2862702-R ] FORK STEM;ZZ;LD-STM28640T3501;STEEL;28.6X25.4X183 40T;CROWN DIAMETER:35MM, THREADED
       Maka pl_item_no = FFSLDCR2862702-R (karena lebih kanan daripada LD-STM28640T3501)   
-   - Jika ekstraksi pl_item_no diambil dari kolom deskripsi, list prioritas tetap sama: CODE -> MATERIAL -> MODEL.
-      Contoh
-      Item No. CCSXX4206767-0270
-      FRAME PART A-HG009
-      CHAINWHEEL SOMETHING MODEL: HG009
-      CODE: CCSXX4206767
-      Maka pl_item_no = CCSXX4206767 (karena prioritas CODE lebih tinggi daripada MATERIAL dan MODEL)
 
 7. pl_package_count:                                 
    - Field ini merepresentasikan jumlah package untuk setiap line item.
