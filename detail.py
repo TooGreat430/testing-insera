@@ -131,11 +131,13 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
 
 # Versi FINAL: cocok kalau kamu tetap drop inv_messrs, inv_messrs_address, inv_gw, inv_gw_unit
 DETAIL_CSV_FIELD_ORDER_FINAL = [
-    "inv_vendor_article_no" if k == "inv_spart_item_no"
-    else "pl_vendor_article_no" if k == "pl_item_no"
-    else k
-    k for k in DETAIL_CSV_FIELD_ORDER_FULL
-    if k not in {"inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"} 
+    (
+        "inv_vendor_article_no" if k == "inv_spart_item_no"
+        else "pl_vendor_article_no" if k == "pl_item_no"
+        else k
+    )
+    for k in DETAIL_CSV_FIELD_ORDER_FULL
+    if k not in {"inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"}
 ]
 
 HEADER_SCHEMA_TEXT = [
@@ -390,11 +392,13 @@ GENERAL KNOWLEDGE:
    - Jika ada variasi nama perusahaan PT Insera Sena seperti:
      "PT. INSERA SENA", "PERSEROAN TERBATAS INSERA SENA", "PT INSERASENA", atau bentuk lainnya yang merujuk pada PT Insera Sena,
      NORMALISASI menjadi: "PT Insera Sena"
-   
+
 3. Messrs address pada Packing List (PL) dan Invoice (INV):
    - Hanya ekstrak address dari perusahaannya tanpa kode posnya, contoh:
       JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
       Berarti yang diekstrak hanya: JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR
+   - JANGAN SAMPAI SALAH EKSTRAK! PAHAMI KONTEKS. Jika messrs address maka yang ditanyakan adalah alamat jadi penulisan harus tepat
+     contoh: Di dokumen seperti ini JI VETERAN maka perlu di convert menjadi "JL VETERAN" karena konteksnua adalah JALAN
 
 4. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
