@@ -426,6 +426,11 @@ GENERAL KNOWLEDGE:
 
 8. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
+
+9. pl_volume_unit
+  - volume unit yang hanya ada dua value antara CUFT dan M3
+  - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
+  - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
@@ -470,6 +475,7 @@ ANCHOR INDEX (JSON):
   3) pl_quantity
 
 - Jika bukti PL tidak cukup yakin, field pl_* boleh diisi "null"/0.
+- Semua field total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu noleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN
 - DILARANG menggunakan row PL dari PO berbeda untuk mengisi line item invoice ini.
 
 ATURAN:
