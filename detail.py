@@ -535,6 +535,10 @@ GENERAL KNOWLEDGE DETAIL:
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
      - code alfanumerik adalah inv_spart_item_no yang benar
+   - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
+      1. CODE
+      2. MATERIAL
+      3. MODEL
 
    - Contoh:
      1
@@ -588,6 +592,10 @@ GENERAL KNOWLEDGE DETAIL:
 8. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
+   - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
+      1. CODE
+      2. MATERIAL
+      3. MODEL
 
 9. pl_package_count:                                 
    - Field ini merepresentasikan jumlah package untuk setiap line item.
