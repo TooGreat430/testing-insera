@@ -533,9 +533,10 @@ GENERAL KNOWLEDGE DETAIL:
 3. inv_spart_item_no:
    - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
    - Berikut adalah list informasi yang bisa diekstrak sebagai inv_spart_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
-      1. CODE
-      2. MATERIAL
-      3. MODEL
+      1. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
+      2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
+      4. MODEL -> Biasanya terdapat pada header kolom tersebut.
 
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
@@ -590,9 +591,10 @@ GENERAL KNOWLEDGE DETAIL:
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
    - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
-      1. CODE
-      2. MATERIAL
-      3. MODEL
+      1. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
+      2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
+      4. MODEL -> Biasanya terdapat pada header kolom tersebut.
    - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
       [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
       Maka pl_item_no = CWSFSSH12001-R
