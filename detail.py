@@ -549,14 +549,6 @@ GENERAL KNOWLEDGE DETAIL:
       1. CODE
       2. MATERIAL
       3. MODEL
-      
-   - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
-      [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
-      Maka inv_spart_item_no = CWSFSSH12001-R
-
-   - Jika pada deskripsi item ditemukan lebih dari satu kandidat inv_spart_item_no, maka pilih yang paling kanan, seperti:
-      [ LD-STM28640T3501 ] - [ FFSLDCR2862702-R ] FORK STEM;ZZ;LD-STM28640T3501;STEEL;28.6X25.4X183 40T;CROWN DIAMETER:35MM, THREADED
-      Maka inv_spart_item_no = FFSLDCR2862702-R (karena lebih kanan daripada LD-STM28640T3501)
 
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
@@ -614,14 +606,6 @@ GENERAL KNOWLEDGE DETAIL:
       1. CODE
       2. MATERIAL
       3. MODEL
-       
-   - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
-      [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
-      Maka pl_item_no = CWSFSSH12001-R
-
-   - Jika pada deskripsi item ditemukan lebih dari satu kandidat pl_item_no, maka pilih yang paling kanan, seperti:
-      [ LD-STM28640T3501 ] - [ FFSLDCR2862702-R ] FORK STEM;ZZ;LD-STM28640T3501;STEEL;28.6X25.4X183 40T;CROWN DIAMETER:35MM, THREADED
-      Maka pl_item_no = FFSLDCR2862702-R (karena lebih kanan daripada LD-STM28640T3501)
 
 7. pl_package_count:                                 
    - Field ini merepresentasikan jumlah package untuk setiap line item.
