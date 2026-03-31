@@ -187,6 +187,9 @@ def _build_total_from_detail_and_container(detail_rows: list, container_rows):
         # =========================
         # DETAIL
         # =========================
+        "match_score": "true",
+        "match_description": "null",
+        
         "inv_quantity": _sum_numeric(detail_rows, "inv_quantity"),
         "inv_amount": _sum_numeric(detail_rows, "inv_amount"),
         "inv_total_quantity": _first_number(detail_rows, "inv_total_quantity", default=0),
@@ -232,9 +235,6 @@ def _build_total_from_detail_and_container(detail_rows: list, container_rows):
         "bl_volume": _sum_numeric(container_rows, "bl_volume"),
         "bl_package_count": _sum_numeric(container_rows, "bl_package_count"),
         "bl_package_unit": _first_text(container_rows, "bl_package_unit"),
-
-        "match_score": "true",
-        "match_description": "null",
     }
 
     _ensure_total_keys(total_obj)
