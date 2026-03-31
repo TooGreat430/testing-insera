@@ -1236,6 +1236,21 @@ def _drop_columns(rows: list, cols: list):
 
 ALL_DETAIL_FIELDS = list(HEADER_FIELDS) + list(DETAIL_LINE_FIELDS) + ["match_score", "match_description"]
 
+def _normalize_compare_prefix(value, max_len=20):
+    """
+    Normalisasi untuk compare:
+    - uppercase
+    - buang semua selain huruf A-Z
+    - ambil 20 huruf pertama
+    """
+    if _is_null(value):
+        return ""
+
+    s = str(value).upper().strip()
+    s = re.sub(r"[^A-Z]", "", s)
+
+    return s[:max_len]
+
 def _ensure_all_detail_keys(rows: list):
     """
     Pastikan setiap row punya SEMUA kolom (header + content + match fields).
@@ -1489,11 +1504,14 @@ def _doc_present(rows: list, keys: list) -> bool:
 def _validate_invoice_vs_packing_extra(rows: list):
     """
     Validasi tambahan:
-    - inv_messrs == pl_messrs
+    - inv_messrs == pl_messrs (compare 20 huruf pertama setelah normalisasi)
     - inv_messrs_address == pl_messrs_address
     - inv_gw == coo_gw
     - inv_gw_unit == coo_gw_unit
     """
+
+    def norm_prefix_20(s):
+        return _normalize_compare_prefix(s, 20)
 
     def norm(s):
         if _is_null(s):
@@ -1504,17 +1522,21 @@ def _validate_invoice_vs_packing_extra(rows: list):
         if not isinstance(r, dict):
             continue
 
-        # inv_messrs vs pl_messrs
+        # inv_messrs vs pl_messrs -> compare 20 huruf pertama setelah normalisasi
         if not _is_null(r.get("inv_messrs")) and not _is_null(r.get("pl_messrs")):
-            if norm(r.get("inv_messrs")) != norm(r.get("pl_messrs")):
+            if norm_prefix_20(r.get("inv_messrs")) != norm_prefix_20(r.get("pl_messrs")):
                 _append_err(r, "Invoice vs PL: inv_messrs != pl_messrs")
 
         # inv_messrs_address vs pl_messrs_address
         inv_messrs_address = r.get("inv_messrs_address")
         pl_messrs_address = r.get("pl_messrs_address")
         if not _is_null(inv_messrs_address) and not _is_null(pl_messrs_address):
-            if norm(inv_messrs_address) != norm(pl_messrs_address):
-                _append_err(r, f"Invoice vs PL: inv_messrs_address != pl_messrs_address (inv {inv_messrs_address}, pl {pl_messrs_address})")
+            if norm_prefix_20(inv_messrs_address) != norm_prefix_20(pl_messrs_address):
+                _append_err(
+                    r,
+                    f"Invoice vs PL: inv_messrs_address != pl_messrs_address "
+                    f"(inv {inv_messrs_address}, pl {pl_messrs_address})"
+                )
 
         # inv_gw vs coo_gw (hanya jika COO ada nilainya)
         inv_gw = _to_float(r.get("inv_gw"))
@@ -1539,12 +1561,15 @@ def _validate_bl_rows(rows: list):
     """
     bl_keys_presence = ["bl_no", "bl_date", "bl_shipper_name", "bl_consignee_name", "bl_vessel"]
     if not _doc_present(rows, bl_keys_presence):
-        return  # BL tidak tersedia -> skip semua validasi BL
+        return
 
     def norm(s):
         if _is_null(s):
             return ""
         return re.sub(r"\s+", " ", str(s).strip().upper())
+
+    def norm_prefix_20(s):
+        return _normalize_compare_prefix(s, 20)
 
     required = [
         "bl_shipper_name",
@@ -1563,7 +1588,6 @@ def _validate_bl_rows(rows: list):
         if not isinstance(r, dict):
             continue
 
-        # 1) Seller fallback
         if _is_null(r.get("bl_seller_name")):
             if not _is_null(r.get("bl_shipper_name")):
                 r["bl_seller_name"] = r.get("bl_shipper_name")
@@ -1571,30 +1595,25 @@ def _validate_bl_rows(rows: list):
             if not _is_null(r.get("bl_shipper_address")):
                 r["bl_seller_address"] = r.get("bl_shipper_address")
 
-        # 2) LC logic + consignee fallback
-        # Rule prompt: jika consignee mengandung nama perusahaan Bank => LC.
-        # Implementasi minimal: cek kata "BANK" pada consignee.
         is_lc = "BANK" in norm(r.get("bl_consignee_name"))
 
         if is_lc:
-            # fallback consignee dari notify party (nama+alamat) jika tersedia
             if not _is_null(r.get("bl_notify_party")):
                 if _is_null(r.get("bl_consignee_name")):
                     r["bl_consignee_name"] = r.get("bl_notify_party")
                 if _is_null(r.get("bl_consignee_address")):
                     r["bl_consignee_address"] = r.get("bl_notify_party")
 
-        # 3) Required fields jika BL ada
         for k in required:
             if _is_null(r.get(k)):
                 _append_err(r, f"BL: missing {k}")
 
-        # 4) Validasi kesesuaian dengan invoice: seller harus sama dengan vendor
+        # seller compare 20 huruf pertama setelah normalisasi
         inv_vendor = r.get("inv_vendor_name")
         bl_seller = r.get("bl_seller_name")
 
         if not _is_null(inv_vendor) and not _is_null(bl_seller):
-            if norm(inv_vendor) != norm(bl_seller):
+            if norm_prefix_20(inv_vendor) != norm_prefix_20(bl_seller):
                 _append_err(r, "BL: bl_seller_name != inv_vendor_name")
 
 
