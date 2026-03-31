@@ -445,7 +445,7 @@ GENERAL KNOWLEDGE:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-11. - Semua field total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu noleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN
+11. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
