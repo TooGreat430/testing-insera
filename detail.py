@@ -179,18 +179,6 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "pl_gw": "number",
   "pl_volume": "number",
 
-  "po_no": "string",
-  "po_vendor_article_no": "string",
-  "po_text": "string",
-  "po_sap_article_no": "string",
-  "po_line": "number",
-  "po_quantity": "number",
-  "po_unit": "string",
-  "po_price": "number",
-  "po_currency": "string",
-  "po_info_record_price": "number",
-  "po_info_record_currency": "string",
-
   "bl_description": "string",
   "bl_hs_code": "string",
   "bl_mark_number": "string",
@@ -512,7 +500,6 @@ ATURAN:
   bl_* → Bill of Lading, tidak boleh dari dokumen lain
   coo_* → Certificate of Origin, tidak boleh dari dokumen lain
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
-- Field po_* WAJIB "null"/0 (akan diisi Python dari master PO).
 - Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
 - Untuk merged total, identifikasi dulu seluruh row dalam merge group berdasarkan cakupan visual merge vertikalnya, lalu validasi dengan total quantity group jika tersedia, dan gunakan quantity seluruh row dalam group tersebut sebagai basis alokasi proporsional.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
