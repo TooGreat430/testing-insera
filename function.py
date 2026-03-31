@@ -1790,6 +1790,18 @@ def _map_po_to_total(total_data, po_lines, po_numbers_from_detail):
     return total_data
 
 
+def _rename_final_fields(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        # pindahin + hapus lama
+        if "inv_spart_item_no" in row:
+            row["inv_vendor_article_no"] = row.pop("inv_spart_item_no")
+
+        if "pl_item_no" in row:
+            row["pl_vendor_article_no"] = row.pop("pl_item_no")
+
 # ==============================
 # (NEW) CONVERT TO CSV -> CUSTOM FOLDER/PATH
 # ==============================
@@ -2107,6 +2119,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         # if total_data is not None:
         #     total_data = _map_po_to_total(total_data, po_lines, po_numbers)
 
+        _rename_final_fields(all_rows)
         # CONVERT TO CSV
         # ==============================
         # (NEW) OUTPUT PER FOLDER
