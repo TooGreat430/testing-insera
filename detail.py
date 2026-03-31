@@ -529,6 +529,7 @@ GENERAL KNOWLEDGE DETAIL:
       - 45297175
   - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
   - Misal value PO Number pada dokumen begini: No.C25-1544U/45323564, maka value yang diambil adalah "45323564".
+  - customer_po_no terkadang exist tidak sesuai dengan kolomnya nama kolom Item No. tapi valuenya PO No. JADI PAHAMI FORMAT DARI customer_po_no
 
 3. inv_spart_item_no:
    - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
