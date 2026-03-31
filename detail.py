@@ -444,6 +444,8 @@ GENERAL KNOWLEDGE:
       80KG G.W. → coo_gw_unit = KG
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
+
+11. - Semua field total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu noleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
@@ -488,7 +490,6 @@ ANCHOR INDEX (JSON):
   3) pl_quantity
 
 - Jika bukti PL tidak cukup yakin, field pl_* boleh diisi "null"/0.
-- Semua field total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu noleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN
 - DILARANG menggunakan row PL dari PO berbeda untuk mengisi line item invoice ini.
 
 ATURAN:
