@@ -104,10 +104,10 @@ TOTAL_OUTPUT_FIELDS = [
 ]
 
 # saya append match fields di belakang supaya flow validasi existing tetap konsisten
-TOTAL_CSV_FIELD_ORDER_FINAL = TOTAL_OUTPUT_FIELDS + [
+TOTAL_CSV_FIELD_ORDER_FINAL = [
     "match_score",
     "match_description",
-]
+] + TOTAL_OUTPUT_FIELDS
 
 TOTAL_NUM_FIELDS = {
     "inv_quantity",
@@ -2044,6 +2044,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         # 3) recompute seq global
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
+        _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)

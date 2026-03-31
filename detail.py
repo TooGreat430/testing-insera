@@ -131,8 +131,11 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
 
 # Versi FINAL: cocok kalau kamu tetap drop inv_messrs, inv_messrs_address, inv_gw, inv_gw_unit
 DETAIL_CSV_FIELD_ORDER_FINAL = [
+    "inv_vendor_article_no" if k == "inv_spart_item_no"
+    else "pl_vendor_article_no" if k == "pl_item_no"
+    else k
     k for k in DETAIL_CSV_FIELD_ORDER_FULL
-    if k not in {"inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"}
+    if k not in {"inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"} 
 ]
 
 HEADER_SCHEMA_TEXT = [
@@ -146,7 +149,7 @@ HEADER_SCHEMA_TEXT = [
     "bl_voyage_no","bl_port_of_loading","bl_port_of_destination",
     "coo_no","coo_form_type","coo_invoice_no","coo_invoice_date","coo_shipper_name","coo_shipper_address",
     "coo_consignee_name","coo_consignee_address","coo_consignee_tax_id","coo_producer_name","coo_producer_address",
-    "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge",
+    "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge", "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
 ]
 
 # =========================
@@ -198,12 +201,9 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "coo_unit": "string",
   "coo_package_count": "number",
   "coo_package_unit": "string",
-  "coo_gw_unit": "string",
   "coo_gw": "number",
-  "coo_amount_unit": "string",
   "coo_amount": "number",
   "coo_criteria": "string",
-  "coo_origin_country": "string",
   "coo_customer_po_no": "string"
 }"""
 
@@ -222,7 +222,7 @@ DETAIL_LINE_FIELDS = [
     "bl_description","bl_hs_code","bl_mark_number",
 
     "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count","coo_package_unit",
-    "coo_gw_unit","coo_gw","coo_amount_unit","coo_amount","coo_criteria","coo_origin_country","coo_customer_po_no",
+    "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no",
 ]
 
 DETAIL_LINE_NUM_FIELDS = {
@@ -373,6 +373,9 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_vessel": "string",
   "coo_voyage_no": "string",
   "coo_port_of_discharge": "string"
+  "coo_gw_unit": "string",
+  "coo_amount_unit": "string",
+  "coo_origin_country": "string",
 }
 
 GENERAL KNOWLEDGE:
@@ -431,6 +434,20 @@ GENERAL KNOWLEDGE:
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
+
+10. coo_gw_unit:
+    - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
+    - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
+    - Dalam format tersebut:
+      KG = satuan berat (unit)
+      G.W. = label yang berarti Gross Weight.
+
+    - Ambil satuan berat yang terletak setelah angka weight, yaitu KG.
+    - Jangan mengambil "G.W." sebagai unit karena itu hanya penanda Gross Weight.
+      Contoh:
+      80KG G.W. → coo_gw_unit = KG
+      160KG G.W. → coo_gw_unit = KG
+      240KG G.W. → coo_gw_unit = KG 
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
@@ -522,28 +539,20 @@ GENERAL KNOWLEDGE DETAIL:
   - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
   - Misal value PO Number pada dokumen begini: No.C25-1544U/45323564, maka value yang diambil adalah "45323564".
 
-
-3. inv_seq:
-   - inv_seq wajib numeric murni dan tidak boleh "null".
-   - inv_seq dihitung GLOBAL berdasarkan inv_customer_po_no yang sama untuk seluruh line item (index 1 sampai total_row), bukan dihitung ulang per batch.
-   - Definisi inv_seq per baris: inv_seq = hitung berapa kali inv_customer_po_no yang sama sudah muncul dari index 1 sampai index baris ini (termasuk baris ini).
-   Contoh: PO=112 muncul di index 2,5,6 → inv_seq untuk index 2=1, index 5=2, index 6=3.
-   - Untuk baris yang kamu keluarkan (index {first_index}..{last_index}), inv_seq tetap harus mengikuti hitungan global dari index 1..total_row.
-
-4. inv_spart_item_no:
+3. inv_spart_item_no:
    - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
-   - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
-     - angka pendek tersebut biasanya adalah index / item number / nomor urut
-     - code alfanumerik adalah inv_spart_item_no yang benar
-   - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
+   - Berikut adalah list informasi yang bisa diekstrak sebagai inv_spart_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
       1. CODE
       2. MATERIAL
       3. MODEL
 
-   - Contoh:
+   - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
+     - angka pendek tersebut biasanya adalah index / item number / nomor urut
+     - code alfanumerik adalah inv_spart_item_no yang benar
+     
+     - Contoh:
      1
      CWSFSSH12001-R
-
      Maka:
      - "1" adalah index / nomor urut
      - "CWSFSSH12001-R" adalah inv_spart_item_no
@@ -551,22 +560,19 @@ GENERAL KNOWLEDGE DETAIL:
    - Jadi untuk inv_spart_item_no, prioritaskan token yang berbentuk code part number, bukan angka urut pendek.
 
    - Ciri umum inv_spart_item_no:
-     - biasanya berbentuk alfanumerik
-     - sering mengandung kombinasi huruf dan angka
-     - dapat mengandung dash / hyphen, slash, atau separator lain
-     - umumnya lebih panjang daripada index row
-     - biasanya terlihat seperti product code / part code
+     - Biasanya berbentuk alfanumerik
+     - Sering mengandung kombinasi huruf dan angka
+     - Dapat mengandung dash / hyphen, slash, atau separator lain
+     - Umumnya lebih panjang daripada index row
+     - Biasanya terlihat seperti product code / part code
 
-5. inv_quantity dan pl_quantity:
+4. inv_quantity dan pl_quantity:
    - untuk membaca quantity harap pahami tipe dokumen yang akan di ekstrak.
    - jika inv_quantity, maka quantity pada dokumen invoice yang akan di ekstrak
    - jika pl_quantity, maka quantity pada dokumen Packing List yang akan di ekstrak.
    - JANGAN KEBALIK DAN AMBIL SESUAI DENGAN KEBUTUHAN KOLOM. 
-
-6. inv_total_quantity:
-   - Jika value tidak tersedia di dokumen, isi dengan "null", JANGAN MENGARANG ATAU BERASUMSI.     
-
-7. quantity dan package_count:
+  
+5. quantity dan package_count:
    - quantity dan package_count adalah dua field yang berbeda dan tidak boleh saling menggantikan.
    - quantity adalah jumlah unit barang yang dikirim atau total item quantity.
    - package_count adalah jumlah kemasan fisik yang digunakan untuk mengirim barang, seperti carton, box, pallet, crate, package, dan jenis kemasan lainnya.
@@ -589,15 +595,15 @@ GENERAL KNOWLEDGE DETAIL:
      - pl_package_count = 20
      - pl_quantity = 10 × 20 = 200
 
-8. pl_item_no
+6. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
-   - terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
+   - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
    - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
       1. CODE
       2. MATERIAL
       3. MODEL
 
-9. pl_package_count:                                 
+7. pl_package_count:                                 
    - Field ini merepresentasikan jumlah package untuk setiap line item.
    - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
    - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
@@ -610,7 +616,7 @@ GENERAL KNOWLEDGE DETAIL:
      Box#4
      maka pl_package_count = 3.
 
-10. pl_package_unit:
+8. pl_package_unit:
     - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
     - Sumber bukti yang VALID untuk pl_package_unit hanya:
       1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail
@@ -637,7 +643,7 @@ GENERAL KNOWLEDGE DETAIL:
     - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
 
    
-11. pl_volume:
+9. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -656,30 +662,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-12. Field po_* WAJIB diisi dengan STRING "null".
-
-13. coo_seq:
-   - coo_seq adalah nomor urut line item PADA DOKUMEN CERTIFICATE OF ORIGIN (COO) SAJA.
-   - Jika terdapat nomor urut eksplisit pada dokumen COO, WAJIB gunakan nomor tersebut.
-   - JANGAN menghitung ulang berdasarkan jumlah item pada Invoice atau dokumen lain.
-   - Jika tidak terdapat nomor urut eksplisit pada dokumen COO, hitung berdasarkan urutan kemunculan line item DI DALAM DOKUMEN COO SAJA (dimulai dari 1).
-   - Jumlah coo_seq harus sama dengan jumlah line item pada dokumen COO.
-
-14. coo_gw_unit:
-    - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
-    - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
-    - Dalam format tersebut:
-      KG = satuan berat (unit)
-      G.W. = label yang berarti Gross Weight.
-
-    - Ambil satuan berat yang terletak setelah angka weight, yaitu KG.
-    - Jangan mengambil "G.W." sebagai unit karena itu hanya penanda Gross Weight.
-      Contoh:
-      80KG G.W. → coo_gw_unit = KG
-      160KG G.W. → coo_gw_unit = KG
-      240KG G.W. → coo_gw_unit = KG 
-
-15. bl_description dan bl_hs_code:
+10. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -693,14 +676,14 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-16. coo_description:
+11. coo_description:
     - Jika description diawali dengan jumlah package dan jenis packagenya, maka exclude jumlah package dan jenis packagenya dan ambil hanya deskripsi itemnya saja.
       - Contoh:
         - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF SAMOX CHAINWHEEL AND CRANK MODEL: ...
           - Maka coo_description: SAMOX CHAINWHEEL AND CRANK MODEL: ...
           - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF DI EXCLUDE
 
-17. coo_customer_po_no:
+12. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:
