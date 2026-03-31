@@ -158,6 +158,7 @@ HEADER_SCHEMA_TEXT = [
 # CONTENT FIELDS (line-level)
 # =========================
 DETAIL_LINE_SCHEMA_TEXT = """{
+  "inv_invoice_no": "string",
   "inv_customer_po_no": "string",
   "inv_seq": "number",
   "inv_spart_item_no": "string",
@@ -199,7 +200,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 
 # dipakai Python untuk "ensure semua kolom ada"
 DETAIL_LINE_FIELDS = [
-    "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
+    "inv_invoice_no", "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
@@ -250,6 +251,7 @@ ATURAN:
 7) Packing List adalah anchor pendukung untuk membantu memilih pasangan row PL yang paling cocok.
 8) PL TIDAK BOLEH membuat row baru.
 9) Jangan ikutkan BL / COO ke index.
+10) inv_invoice_no WAJIB diisi pada setiap object index karena field ini akan dipakai Python untuk menghubungkan header dan content.
 
 SCHEMA OUTPUT (INDEX):
 [
@@ -257,6 +259,7 @@ SCHEMA OUTPUT (INDEX):
     "idx": number,
 
     "inv_page_no": number,
+    "inv_invoice_no": "string",
     "inv_customer_po_no": "string",
     "inv_spart_item_no": "string",
     "inv_description": "string",
@@ -272,6 +275,12 @@ SCHEMA OUTPUT (INDEX):
     "pl_quantity": number
   }}
 ]
+
+GENERAL KNOWLEDGE:
+- Invoice anchor digunakan untuk menjaga identitas row:
+  inv_invoice_no, inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
+
+- Field inv_invoice_no WAJIB selalu ada di setiap row output dan nilainya HARUS sama persis dengan inv_invoice_no pada anchor row yang bersesuaian.
 
 CATATAN:
 - inv_* anchor diambil dari Invoice.
@@ -292,81 +301,86 @@ Ekstrak HEADER (doc-level) dari dokumen yang tersedia:
 3) Bill of Lading (opsional)
 4) COO (opsional)
 
+Lakukan grouping per inv_invoice_no.
+Jika terdapat multiple invoice / multiple PL / multiple COO, pisahkan header menjadi beberapa object berdasarkan invoice number yang sama.
+Hubungkan header dokumen lain ke invoice yang sesuai menggunakan inv_invoice_no.
+
 ATURAN:
-1) Output HANYA 1 JSON OBJECT, tanpa teks lain.
-2) DILARANG markdown / plan / penjelasan.
-3) Tidak boleh JSON literal null → gunakan string "null".
-4) Format tanggal: YYYY-MM-DD.
-5) Jika dokumen tidak ada → semua field prefix dokumen tersebut = "null".
+1) Output HANYA JSON ARRAY, tanpa teks lain.
+2) Setiap object header merepresentasikan 1 invoice group.
+3) KEY GROUP utama adalah inv_invoice_no.
+4) Jika hanya ada 1 invoice, tetap output sebagai ARRAY dengan 1 object.
 
 OUTPUT SCHEMA (HEADER ONLY):
-{
-  "inv_invoice_no": "string",
-  "inv_invoice_date": "string",
-  "inv_messrs": "string",
-  "inv_messrs_address": "string",
-  "inv_vendor_name": "string",
-  "inv_vendor_address": "string",
-  "inv_incoterms_terms": "string",
-  "inv_terms": "string",
-  "inv_coo_commodity_origin": "string",
-  "inv_price_unit": "string",
-  "inv_amount_unit": "string",
-  "inv_total_quantity": "number",
-  "inv_total_amount": "number", 
-  "inv_total_nw": "number", 
-  "inv_total_gw": "number", 
-  "inv_total_volume": "number", 
-  "inv_total_package": "number",
+[
+  {
+    "inv_invoice_no": "string",
+    "inv_invoice_date": "string",
+    "inv_messrs": "string",
+    "inv_messrs_address": "string",
+    "inv_vendor_name": "string",
+    "inv_vendor_address": "string",
+    "inv_incoterms_terms": "string",
+    "inv_terms": "string",
+    "inv_coo_commodity_origin": "string",
+    "inv_price_unit": "string",
+    "inv_amount_unit": "string",
+    "inv_total_quantity": "number",
+    "inv_total_amount": "number", 
+    "inv_total_nw": "number", 
+    "inv_total_gw": "number", 
+    "inv_total_volume": "number", 
+    "inv_total_package": "number",
 
-  "pl_invoice_no": "string",
-  "pl_invoice_date": "string",
-  "pl_messrs": "string",
-  "pl_messrs_address": "string",
-  "pl_total_quantity": "number", 
-  "pl_total_amount": "number",
-  "pl_total_nw": "number", 
-  "pl_total_gw": "number", 
-  "pl_weight_unit": "string",
-  "pl_total_volume": "number",
-  "pl_volume_unit": "string",
-  "pl_total_package": "number",
+    "pl_invoice_no": "string",
+    "pl_invoice_date": "string",
+    "pl_messrs": "string",
+    "pl_messrs_address": "string",
+    "pl_total_quantity": "number", 
+    "pl_total_amount": "number",
+    "pl_total_nw": "number", 
+    "pl_total_gw": "number", 
+    "pl_weight_unit": "string",
+    "pl_total_volume": "number",
+    "pl_volume_unit": "string",
+    "pl_total_package": "number",
 
-  "bl_shipper_name": "string",
-  "bl_shipper_address": "string",
-  "bl_no": "string",
-  "bl_date": "string",
-  "bl_consignee_name": "string",
-  "bl_consignee_address": "string",
-  "bl_consignee_tax_id": "string",
-  "bl_seller_name": "string",
-  "bl_seller_address": "string",
-  "bl_lc_number": "string",
-  "bl_notify_party": "string",
-  "bl_vessel": "string",
-  "bl_voyage_no": "string",
-  "bl_port_of_loading": "string",
-  "bl_port_of_destination": "string",
+    "bl_shipper_name": "string",
+    "bl_shipper_address": "string",
+    "bl_no": "string",
+    "bl_date": "string",
+    "bl_consignee_name": "string",
+    "bl_consignee_address": "string",
+    "bl_consignee_tax_id": "string",
+    "bl_seller_name": "string",
+    "bl_seller_address": "string",
+    "bl_lc_number": "string",
+    "bl_notify_party": "string",
+    "bl_vessel": "string",
+    "bl_voyage_no": "string",
+    "bl_port_of_loading": "string",
+    "bl_port_of_destination": "string",
 
-  "coo_no": "string",
-  "coo_form_type": "string",
-  "coo_invoice_no": "string",
-  "coo_invoice_date": "string",
-  "coo_shipper_name": "string",
-  "coo_shipper_address": "string",
-  "coo_consignee_name": "string",
-  "coo_consignee_address": "string",
-  "coo_consignee_tax_id": "string",
-  "coo_producer_name": "string",
-  "coo_producer_address": "string",
-  "coo_departure_date": "string",
-  "coo_vessel": "string",
-  "coo_voyage_no": "string",
-  "coo_port_of_discharge": "string"
-  "coo_gw_unit": "string",
-  "coo_amount_unit": "string",
-  "coo_origin_country": "string",
-}
+    "coo_no": "string",
+    "coo_form_type": "string",
+    "coo_invoice_no": "string",
+    "coo_invoice_date": "string",
+    "coo_shipper_name": "string",
+    "coo_shipper_address": "string",
+    "coo_consignee_name": "string",
+    "coo_consignee_address": "string",
+    "coo_consignee_tax_id": "string",
+    "coo_producer_name": "string",
+    "coo_producer_address": "string",
+    "coo_departure_date": "string",
+    "coo_vessel": "string",
+    "coo_voyage_no": "string",
+    "coo_port_of_discharge": "string",
+    "coo_gw_unit": "string",
+    "coo_amount_unit": "string",
+    "coo_origin_country": "string",
+  }
+]
 
 GENERAL KNOWLEDGE:
 
@@ -474,8 +488,9 @@ ANCHOR INDEX (JSON):
   2) PL anchor (pendukung)
 
 - Invoice anchor digunakan untuk menjaga identitas row:
-  inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
+  inv_invoice_no, inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
 
+- Field inv_invoice_no WAJIB selalu ada di setiap row output dan nilainya HARUS sama persis dengan inv_invoice_no pada anchor row yang bersesuaian.
 - PL anchor digunakan sebagai bukti pendukung agar model memilih pasangan row Packing List yang benar:
   pl_customer_po_no, pl_description, pl_quantity.
 
