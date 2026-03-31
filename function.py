@@ -1044,18 +1044,37 @@ def _norm_key(x):
     s = re.sub(r"[^A-Z0-9]", "", s)    # hapus dash, slash, dll
     return s
 
+def _norm_desc(x):
+    """
+    Normalisasi description/text untuk matching.
+    - uppercase
+    - buang spasi & karakter non-alphanumeric
+    """
+    if x is None:
+        return ""
+    s = str(x).strip().upper()
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"[^A-Z0-9]", "", s)
+    return s
+
 def _map_po_to_details(po_lines, detail_rows):
     """
-    Join key:
-    - inv_customer_po_no  <-> po_no
-    - inv_spart_item_no   <-> vendor_article_no OR sap_article_no
+    Join key priority:
+    1. inv_customer_po_no <-> po_no
+       + inv_spart_item_no <-> vendor_article_no OR sap_article_no
+    2. fallback:
+       inv_customer_po_no <-> po_no
+       + inv_description <-> po_text
 
     Normalisasi hanya untuk matching.
-    Data yang dipakai untuk output tetap value asli (po_line asli).
+    Data output tetap pakai value asli dari po_line.
     """
 
-    # index: (po_no_norm, article_norm) -> list of (idx_in_po_lines, po_line_asli)
-    po_index = {}
+    # index article: (po_no_norm, article_norm) -> list[(idx, po_line)]
+    po_article_index = {}
+
+    # index description: (po_no_norm, desc_norm) -> list[(idx, po_line)]
+    po_desc_index = {}
 
     for idx, line in enumerate(po_lines):
         po_no_norm = _norm_po_number(line.get("po_no"))
@@ -1064,11 +1083,16 @@ def _map_po_to_details(po_lines, detail_rows):
 
         v_norm = _norm_key(line.get("vendor_article_no") or line.get("po_vendor_article_no"))
         s_norm = _norm_key(line.get("sap_article_no") or line.get("po_sap_article_no"))
+        d_norm = _norm_desc(line.get("po_text"))
 
         if v_norm:
-            po_index.setdefault((po_no_norm, v_norm), []).append((idx, line))
+            po_article_index.setdefault((po_no_norm, v_norm), []).append((idx, line))
+
         if s_norm:
-            po_index.setdefault((po_no_norm, s_norm), []).append((idx, line))
+            po_article_index.setdefault((po_no_norm, s_norm), []).append((idx, line))
+
+        if d_norm:
+            po_desc_index.setdefault((po_no_norm, d_norm), []).append((idx, line))
 
     used = set()  # (po_no_norm, idx_in_po_lines)
 
@@ -1076,32 +1100,52 @@ def _map_po_to_details(po_lines, detail_rows):
         if not isinstance(row, dict):
             continue
 
-        inv_po_raw = row.get("inv_customer_po_no")
-        inv_article_raw = row.get("inv_spart_item_no")
+        inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+        inv_article_norm = _norm_key(row.get("inv_spart_item_no"))
+        inv_desc_norm = _norm_desc(row.get("inv_description"))
 
-        inv_po_norm = _norm_po_number(inv_po_raw)      # ✅ ganti ini
-        inv_article_norm = _norm_key(inv_article_raw)
-
-        if not inv_po_norm or not inv_article_norm:
+        if not inv_po_norm:
             row["_po_mapped"] = False
             continue
 
-        candidates = po_index.get((inv_po_norm, inv_article_norm), [])
         chosen = None
         chosen_key = None
 
+        # =========================
+        # PRIORITAS 1: match by article
+        # =========================
+        candidates = []
+        if inv_article_norm:
+            candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
+
         for idx, po_line in candidates:
-            key = (inv_po_norm, idx)   
+            key = (inv_po_norm, idx)
             if key in used:
                 continue
-            chosen = po_line          # ✅ PO line ASLI
+            chosen = po_line
             chosen_key = key
+            row["_po_match_source"] = "article"
             break
+
+        # =========================
+        # PRIORITAS 2: fallback by description
+        # =========================
+        if chosen is None and inv_desc_norm:
+            candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
+
+            for idx, po_line in candidates:
+                key = (inv_po_norm, idx)
+                if key in used:
+                    continue
+                chosen = po_line
+                chosen_key = key
+                row["_po_match_source"] = "description"
+                break
 
         if chosen:
             used.add(chosen_key)
             row["_po_mapped"] = True
-            row["_po_data"] = chosen  # ✅ simpan ASLI untuk dipakai _validate_po
+            row["_po_data"] = chosen
         else:
             row["_po_mapped"] = False
 
