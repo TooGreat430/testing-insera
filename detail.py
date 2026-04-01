@@ -520,8 +520,20 @@ ATURAN:
   bl_* → Bill of Lading, tidak boleh dari dokumen lain
   coo_* → Certificate of Origin, tidak boleh dari dokumen lain
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
-- Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
-- Untuk merged total, identifikasi dulu seluruh row dalam merge group berdasarkan cakupan visual merge vertikalnya, lalu validasi dengan total quantity group jika tersedia, dan gunakan quantity seluruh row dalam group tersebut sebagai basis alokasi proporsional.
+- Jika terdapat merged cell vertikal yang mencakup beberapa line item / beberapa row, maka nilai pada merged cell tersebut HANYA boleh diassign ke line item paling atas dalam merge group.
+- Semua line item lain yang berada di bawah merged cell yang sama WAJIB diisi 0 untuk field numerik yang berasal dari merged cell tersebut.
+- Jangan melakukan pembagian proporsional, jangan melakukan averaging, dan jangan menduplikasi nilai merged cell ke semua row.
+- Merge group harus ditentukan berdasarkan cakupan visual merge vertikal pada tabel.
+- "Top row" adalah row pertama / paling atas yang secara visual bersinggungan dengan merged cell tersebut.
+- Rule ini berlaku untuk field numerik yang berasal dari merged cell, termasuk namun tidak terbatas pada:
+  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
+- Contoh:
+  Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut, maka:
+  - row paling atas: pl_volume = 13.5
+  - row ke-2: pl_volume = 0
+  - row ke-3: pl_volume = 0
+- Jika merged cell berada pada kolom non-numerik, hanya row paling atas yang boleh membawa value tersebut, sedangkan row lain di bawahnya isi "null".
+- Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
 - Saat membaca OCR, bedakan angka "0" dan huruf kapital "O" berdasarkan konteks field.
 - Untuk field code / part number / article number yang bersifat alfanumerik, tentukan "0" atau "O" berdasarkan pola code, posisi karakter, dan kemunculan berulang pada row lain.
