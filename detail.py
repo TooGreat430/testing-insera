@@ -3,13 +3,7 @@ import json
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
-ALLOWED_PACKAGE_UNIT = [
-    "CT",
-    "PX",
-    "PK",
-    "BL",
-    "null"
-]
+
 
 
 DETAIL_CSV_FIELD_ORDER_FULL = [
@@ -325,7 +319,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "pl_total_amount": "number",
   "pl_total_nw": "number", 
   "pl_total_gw": "number",
-  "pl_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
+  "pl_package_unit": {"type": "string", "enum":  ["CT", "PX", "PK", "BL", "null"]},
   "pl_weight_unit": "string",
   "pl_total_volume": "number",
   "pl_volume_unit": "string",
@@ -362,7 +356,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_vessel": "string",
   "coo_voyage_no": "string",
   "coo_port_of_discharge": "string"
-  "coo_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
+  "coo_package_unit": {"type": "string", "enum": ["CT", "PX", "PK", "BL", "null"]},
   "coo_gw_unit": "string",
   "coo_amount_unit": "string",
   "coo_origin_country": "string",
@@ -462,8 +456,7 @@ GENERAL KNOWLEDGE:
 
     - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
 
-    - pl_package_unit harus final dalam canonical value berikut saja:
-      """, ALLOWED_PACKAGE_UNIT, """
+    - pl_package_unit harus final dalam canonical value berikut saja: ["CT", "PX", "PK", "BL", "null"]
       pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
 
     - Mapping canonical:
