@@ -463,7 +463,7 @@ GENERAL KNOWLEDGE:
     - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
 
     - pl_package_unit harus final dalam canonical value berikut saja:
-      """, {ALLOWED_PACKAGE_UNIT}, """
+      """, ALLOWED_PACKAGE_UNIT, """
       pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
 
     - Mapping canonical:
