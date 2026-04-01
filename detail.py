@@ -562,10 +562,11 @@ GENERAL KNOWLEDGE DETAIL:
       3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
       4. MODEL -> Biasanya terdapat pada header kolom tersebut.
       
-    - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no diambil dari CODE pada kolom deskripsi.
-      Contoh:
+   - Jika terdapat kolom khusus Item No dan juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
+     Contoh:
         Item No: 
         CWSSXAF38D0002-165
+
         Description:
         SAMOX CHAINWHEEL MODEL: 
         AF38-D28NS-BG31, BLACK
@@ -573,7 +574,9 @@ GENERAL KNOWLEDGE DETAIL:
         49MM 0T, W/CG, W/O SPIDER, SQUARE, C/CAPLESS BOLT
         W/O LOGO , W/BCD76, ALLOY CG
         ** CODE: CWSSXAF38D0002
-        Maka inv_spart_item_no = CWSSXAF38D0002 dan BUKAN CWSSXAF38D0002-165 (karena prioritas CODE lebih tinggi daripada Item No)
+
+        Maka inv_spart_item_no = CWSSXAF38D0002,
+        BUKAN CWSSXAF38D0002-165 (karena ambil dari CODE di Description BUKAN dari kolom khusus Item No)
 
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
