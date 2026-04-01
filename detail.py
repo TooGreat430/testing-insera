@@ -145,13 +145,13 @@ HEADER_SCHEMA_TEXT = [
     "inv_vendor_address","inv_incoterms_terms","inv_terms","inv_coo_commodity_origin", "inv_price_unit", "inv_amount_unit", "inv_total_quantity",
     "inv_total_amount", "inv_total_nw", "inv_total_gw", "inv_total_volume", "inv_total_package",
     "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address", "pl_total_quantity", "pl_total_amount",
-    "pl_total_nw", "pl_total_gw", "pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
+    "pl_total_nw", "pl_total_gw", "pl_package_unit","pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
     "bl_shipper_name","bl_shipper_address","bl_no","bl_date","bl_consignee_name","bl_consignee_address",
     "bl_consignee_tax_id","bl_seller_name","bl_seller_address","bl_lc_number","bl_notify_party","bl_vessel",
     "bl_voyage_no","bl_port_of_loading","bl_port_of_destination",
     "coo_no","coo_form_type","coo_invoice_no","coo_invoice_date","coo_shipper_name","coo_shipper_address",
     "coo_consignee_name","coo_consignee_address","coo_consignee_tax_id","coo_producer_name","coo_producer_address",
-    "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge", "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
+    "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge","coo_package_unit" "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
 ]
 
 # =========================
@@ -174,7 +174,6 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "pl_item_no": "string",
   "pl_description": "string",
   "pl_quantity": "number",
-  "pl_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
   "pl_package_count": "number",
   "pl_nw": "number",
   "pl_gw": "number",
@@ -191,7 +190,6 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "coo_quantity": "number",
   "coo_unit": "string",
   "coo_package_count": "number",
-  "coo_package_unit": "string",
   "coo_gw": "number",
   "coo_amount": "number",
   "coo_criteria": "string",
@@ -204,7 +202,7 @@ DETAIL_LINE_FIELDS = [
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
-    "pl_customer_po_no", "pl_item_no","pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_nw","pl_gw",
+    "pl_customer_po_no", "pl_item_no","pl_description","pl_quantity","pl_package_count","pl_nw","pl_gw",
     "pl_volume","pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
 
     "po_no","po_vendor_article_no","po_text","po_sap_article_no","po_line","po_quantity","po_unit","po_price","po_currency",
@@ -212,7 +210,7 @@ DETAIL_LINE_FIELDS = [
 
     "bl_description","bl_hs_code","bl_mark_number",
 
-    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count","coo_package_unit",
+    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count"
     "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no",
 ]
 
@@ -340,6 +338,7 @@ OUTPUT SCHEMA (HEADER ONLY):
     "pl_total_amount": "number",
     "pl_total_nw": "number", 
     "pl_total_gw": "number", 
+    "pl_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
     "pl_weight_unit": "string",
     "pl_total_volume": "number",
     "pl_volume_unit": "string",
@@ -376,6 +375,7 @@ OUTPUT SCHEMA (HEADER ONLY):
     "coo_vessel": "string",
     "coo_voyage_no": "string",
     "coo_port_of_discharge": "string",
+    "coo_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
     "coo_gw_unit": "string",
     "coo_amount_unit": "string",
     "coo_origin_country": "string",
@@ -440,12 +440,39 @@ GENERAL KNOWLEDGE:
 8. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-9. pl_volume_unit
+9. pl_package_unit:
+    - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
+    - Sumber bukti yang VALID untuk pl_package_unit hanya:
+      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail (Contoh: pada dokumen ada header bernama "Carton No.")
+      2) unit yang menempel langsung pada package_count
+      3) header rasio kemasan seperti PCS/CTN, SET/CTN, PCS/BOX, QTY/CARTON -> ambil unit kemasannya, BUKAN unit quantity
+
+    - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
+      1) kolom quantity / qty / pcs / sets / units
+      2) inv_quantity_unit
+      3) unit penjualan barang
+      4) unit yang hanya menjelaskan isi per kemasan
+
+    - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
+
+    - pl_package_unit harus final dalam canonical value berikut saja:
+      {ALLOWED_PACKAGE_UNIT}
+      pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
+
+    - Mapping canonical:
+      CTN / CARTON / CARTONS -> CT
+      PLT / PALLET / PALLETS -> PX
+      BALE / BALES -> BL
+      mixed standalone package types -> PK
+
+    - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
+
+10. pl_volume_unit
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
 
-10. coo_gw_unit:
+11. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -459,7 +486,7 @@ GENERAL KNOWLEDGE:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-11. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
+12. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
@@ -668,36 +695,8 @@ GENERAL KNOWLEDGE DETAIL:
      Box#2
      Box#4
      maka pl_package_count = 3.
-
-8. pl_package_unit:
-    - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
-    - Sumber bukti yang VALID untuk pl_package_unit hanya:
-      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail (Contoh: pada dokumen ada header bernama "Carton No.")
-      2) unit yang menempel langsung pada package_count
-      3) header rasio kemasan seperti PCS/CTN, SET/CTN, PCS/BOX, QTY/CARTON -> ambil unit kemasannya, BUKAN unit quantity
-
-    - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
-      1) kolom quantity / qty / pcs / sets / units
-      2) inv_quantity_unit
-      3) unit penjualan barang
-      4) unit yang hanya menjelaskan isi per kemasan
-
-    - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
-
-    - pl_package_unit harus final dalam canonical value berikut saja:
-      {ALLOWED_PACKAGE_UNIT}
-      pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
-
-    - Mapping canonical:
-      CTN / CARTON / CARTONS -> CT
-      PLT / PALLET / PALLETS -> PX
-      BALE / BALES -> BL
-      mixed standalone package types -> PK
-
-    - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
-
    
-9. pl_volume:
+8. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -716,7 +715,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-10. bl_description dan bl_hs_code:
+9. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -730,14 +729,14 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-11. coo_description:
+10. coo_description:
     - Jika description diawali dengan jumlah package dan jenis packagenya, maka exclude jumlah package dan jenis packagenya dan ambil hanya deskripsi itemnya saja.
       - Contoh:
         - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF SAMOX CHAINWHEEL AND CRANK MODEL: ...
           - Maka coo_description: SAMOX CHAINWHEEL AND CRANK MODEL: ...
           - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF DI EXCLUDE
 
-12. coo_customer_po_no:
+11. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:
