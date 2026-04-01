@@ -2140,7 +2140,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         _apply_header_to_rows(all_rows, header_obj)
 
-        _postprocess_customer_po_no(all_rows)
         _postprocess_inv_spart_item_no(all_rows)
         _postprocess_pl_package_unit(all_rows)
 
@@ -2169,6 +2168,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         # 3) recompute seq global
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
         _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
+
+        _postprocess_customer_po_no(all_rows)
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
