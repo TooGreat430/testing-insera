@@ -1631,16 +1631,16 @@ def _validate_invoice_vs_packing_extra(rows: list):
                 )
 
         # inv_gw vs coo_gw (hanya jika COO ada nilainya)
-        inv_gw = _to_float(r.get("inv_gw"))
+        pl_gw = _to_float(r.get("pl_gw"))
         coo_gw = _to_float(r.get("coo_gw"))
-        if inv_gw is not None and coo_gw is not None:
-            if abs(inv_gw - coo_gw) > 0.01:
-                _append_err(r, f"Invoice vs COO: inv_gw != coo_gw (inv {inv_gw}, coo {coo_gw})")
+        if pl_gw is not None and coo_gw is not None:
+            if abs(pl_gw - coo_gw) > 0.01:
+                _append_err(r, f"Invoice vs COO: pl_gw != coo_gw (inv {pl_gw}, coo {coo_gw})")
 
-        # inv_gw_unit vs coo_gw_unit (hanya jika COO ada nilainya)
-        if not _is_null(r.get("inv_gw_unit")) and not _is_null(r.get("coo_gw_unit")):
-            if norm(r.get("inv_gw_unit")) != norm(r.get("coo_gw_unit")):
-                _append_err(r, "Invoice vs COO: inv_gw_unit != coo_gw_unit")
+        # pl_gw_unit vs coo_gw_unit (hanya jika COO ada nilainya)
+        if not _is_null(r.get("pl_gw_unit")) and not _is_null(r.get("coo_gw_unit")):
+            if norm(r.get("pl_gw_unit")) != norm(r.get("coo_gw_unit")):
+                _append_err(r, "Invoice vs COO: pl_gw_unit != coo_gw_unit")
 
 def _validate_bl_rows(rows: list):
     """
@@ -2206,12 +2206,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         if with_total_container:
             total_data = _build_total_from_detail_and_container(all_rows, container_data)
             total_data = _validate_total_rows(total_data, all_rows)
-
-        # ==============================
-        # (NEW) MAP PO TO TOTAL (DETAIL tetap batch, TOTAL tidak batch)
-        # ==============================
-        # if total_data is not None:
-        #     total_data = _map_po_to_total(total_data, po_lines, po_numbers)
 
         _rename_final_fields(all_rows)
         # CONVERT TO CSV
