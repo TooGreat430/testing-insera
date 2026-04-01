@@ -145,20 +145,19 @@ HEADER_SCHEMA_TEXT = [
     "inv_vendor_address","inv_incoterms_terms","inv_terms","inv_coo_commodity_origin", "inv_price_unit", "inv_amount_unit", "inv_total_quantity",
     "inv_total_amount", "inv_total_nw", "inv_total_gw", "inv_total_volume", "inv_total_package",
     "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address", "pl_total_quantity", "pl_total_amount",
-    "pl_total_nw", "pl_total_gw", "pl_package_unit","pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
+    "pl_total_nw", "pl_total_gw", "pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
     "bl_shipper_name","bl_shipper_address","bl_no","bl_date","bl_consignee_name","bl_consignee_address",
     "bl_consignee_tax_id","bl_seller_name","bl_seller_address","bl_lc_number","bl_notify_party","bl_vessel",
     "bl_voyage_no","bl_port_of_loading","bl_port_of_destination",
     "coo_no","coo_form_type","coo_invoice_no","coo_invoice_date","coo_shipper_name","coo_shipper_address",
     "coo_consignee_name","coo_consignee_address","coo_consignee_tax_id","coo_producer_name","coo_producer_address",
-    "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge","coo_package_unit" "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
+    "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge", "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
 ]
 
 # =========================
 # CONTENT FIELDS (line-level)
 # =========================
 DETAIL_LINE_SCHEMA_TEXT = """{
-  "inv_invoice_no": "string",
   "inv_customer_po_no": "string",
   "inv_seq": "number",
   "inv_spart_item_no": "string",
@@ -174,6 +173,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "pl_item_no": "string",
   "pl_description": "string",
   "pl_quantity": "number",
+  "pl_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
   "pl_package_count": "number",
   "pl_nw": "number",
   "pl_gw": "number",
@@ -190,6 +190,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "coo_quantity": "number",
   "coo_unit": "string",
   "coo_package_count": "number",
+  "coo_package_unit": "string",
   "coo_gw": "number",
   "coo_amount": "number",
   "coo_criteria": "string",
@@ -198,11 +199,11 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 
 # dipakai Python untuk "ensure semua kolom ada"
 DETAIL_LINE_FIELDS = [
-    "inv_invoice_no", "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
+    "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
-    "pl_customer_po_no", "pl_item_no","pl_description","pl_quantity","pl_package_count","pl_nw","pl_gw",
+    "pl_customer_po_no", "pl_item_no","pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_nw","pl_gw",
     "pl_volume","pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
 
     "po_no","po_vendor_article_no","po_text","po_sap_article_no","po_line","po_quantity","po_unit","po_price","po_currency",
@@ -210,7 +211,7 @@ DETAIL_LINE_FIELDS = [
 
     "bl_description","bl_hs_code","bl_mark_number",
 
-    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count"
+    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count","coo_package_unit",
     "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no",
 ]
 
@@ -249,7 +250,6 @@ ATURAN:
 7) Packing List adalah anchor pendukung untuk membantu memilih pasangan row PL yang paling cocok.
 8) PL TIDAK BOLEH membuat row baru.
 9) Jangan ikutkan BL / COO ke index.
-10) inv_invoice_no WAJIB diisi pada setiap object index karena field ini akan dipakai Python untuk menghubungkan header dan content.
 
 SCHEMA OUTPUT (INDEX):
 [
@@ -257,7 +257,6 @@ SCHEMA OUTPUT (INDEX):
     "idx": number,
 
     "inv_page_no": number,
-    "inv_invoice_no": "string",
     "inv_customer_po_no": "string",
     "inv_spart_item_no": "string",
     "inv_description": "string",
@@ -273,12 +272,6 @@ SCHEMA OUTPUT (INDEX):
     "pl_quantity": number
   }}
 ]
-
-GENERAL KNOWLEDGE:
-- Invoice anchor digunakan untuk menjaga identitas row:
-  inv_invoice_no, inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
-
-- Field inv_invoice_no WAJIB selalu ada di setiap row output dan nilainya HARUS sama persis dengan inv_invoice_no pada anchor row yang bersesuaian.
 
 CATATAN:
 - inv_* anchor diambil dari Invoice.
@@ -299,88 +292,81 @@ Ekstrak HEADER (doc-level) dari dokumen yang tersedia:
 3) Bill of Lading (opsional)
 4) COO (opsional)
 
-Lakukan grouping per inv_invoice_no.
-Jika terdapat multiple invoice / multiple PL / multiple COO, pisahkan header menjadi beberapa object berdasarkan invoice number yang sama.
-Hubungkan header dokumen lain ke invoice yang sesuai menggunakan inv_invoice_no.
-
 ATURAN:
-1) Output HANYA JSON ARRAY, tanpa teks lain.
-2) Setiap object header merepresentasikan 1 invoice group.
-3) KEY GROUP utama adalah inv_invoice_no.
-4) Jika hanya ada 1 invoice, tetap output sebagai ARRAY dengan 1 object.
+1) Output HANYA 1 JSON OBJECT, tanpa teks lain.
+2) DILARANG markdown / plan / penjelasan.
+3) Tidak boleh JSON literal null → gunakan string "null".
+4) Format tanggal: YYYY-MM-DD.
+5) Jika dokumen tidak ada → semua field prefix dokumen tersebut = "null".
 
 OUTPUT SCHEMA (HEADER ONLY):
-[
-  {
-    "inv_invoice_no": "string",
-    "inv_invoice_date": "string",
-    "inv_messrs": "string",
-    "inv_messrs_address": "string",
-    "inv_vendor_name": "string",
-    "inv_vendor_address": "string",
-    "inv_incoterms_terms": "string",
-    "inv_terms": "string",
-    "inv_coo_commodity_origin": "string",
-    "inv_price_unit": "string",
-    "inv_amount_unit": "string",
-    "inv_total_quantity": "number",
-    "inv_total_amount": "number", 
-    "inv_total_nw": "number", 
-    "inv_total_gw": "number", 
-    "inv_total_volume": "number", 
-    "inv_total_package": "number",
+{
+  "inv_invoice_no": "string",
+  "inv_invoice_date": "string",
+  "inv_messrs": "string",
+  "inv_messrs_address": "string",
+  "inv_vendor_name": "string",
+  "inv_vendor_address": "string",
+  "inv_incoterms_terms": "string",
+  "inv_terms": "string",
+  "inv_coo_commodity_origin": "string",
+  "inv_price_unit": "string",
+  "inv_amount_unit": "string",
+  "inv_total_quantity": "number",
+  "inv_total_amount": "number", 
+  "inv_total_nw": "number", 
+  "inv_total_gw": "number", 
+  "inv_total_volume": "number", 
+  "inv_total_package": "number",
 
-    "pl_invoice_no": "string",
-    "pl_invoice_date": "string",
-    "pl_messrs": "string",
-    "pl_messrs_address": "string",
-    "pl_total_quantity": "number", 
-    "pl_total_amount": "number",
-    "pl_total_nw": "number", 
-    "pl_total_gw": "number", 
-    "pl_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
-    "pl_weight_unit": "string",
-    "pl_total_volume": "number",
-    "pl_volume_unit": "string",
-    "pl_total_package": "number",
+  "pl_invoice_no": "string",
+  "pl_invoice_date": "string",
+  "pl_messrs": "string",
+  "pl_messrs_address": "string",
+  "pl_total_quantity": "number", 
+  "pl_total_amount": "number",
+  "pl_total_nw": "number", 
+  "pl_total_gw": "number", 
+  "pl_weight_unit": "string",
+  "pl_total_volume": "number",
+  "pl_volume_unit": "string",
+  "pl_total_package": "number",
 
-    "bl_shipper_name": "string",
-    "bl_shipper_address": "string",
-    "bl_no": "string",
-    "bl_date": "string",
-    "bl_consignee_name": "string",
-    "bl_consignee_address": "string",
-    "bl_consignee_tax_id": "string",
-    "bl_seller_name": "string",
-    "bl_seller_address": "string",
-    "bl_lc_number": "string",
-    "bl_notify_party": "string",
-    "bl_vessel": "string",
-    "bl_voyage_no": "string",
-    "bl_port_of_loading": "string",
-    "bl_port_of_destination": "string",
+  "bl_shipper_name": "string",
+  "bl_shipper_address": "string",
+  "bl_no": "string",
+  "bl_date": "string",
+  "bl_consignee_name": "string",
+  "bl_consignee_address": "string",
+  "bl_consignee_tax_id": "string",
+  "bl_seller_name": "string",
+  "bl_seller_address": "string",
+  "bl_lc_number": "string",
+  "bl_notify_party": "string",
+  "bl_vessel": "string",
+  "bl_voyage_no": "string",
+  "bl_port_of_loading": "string",
+  "bl_port_of_destination": "string",
 
-    "coo_no": "string",
-    "coo_form_type": "string",
-    "coo_invoice_no": "string",
-    "coo_invoice_date": "string",
-    "coo_shipper_name": "string",
-    "coo_shipper_address": "string",
-    "coo_consignee_name": "string",
-    "coo_consignee_address": "string",
-    "coo_consignee_tax_id": "string",
-    "coo_producer_name": "string",
-    "coo_producer_address": "string",
-    "coo_departure_date": "string",
-    "coo_vessel": "string",
-    "coo_voyage_no": "string",
-    "coo_port_of_discharge": "string",
-    "coo_package_unit": {"type": "string", "enum": """,ALLOWED_PACKAGE_UNIT,"""},
-    "coo_gw_unit": "string",
-    "coo_amount_unit": "string",
-    "coo_origin_country": "string",
-  }
-]
+  "coo_no": "string",
+  "coo_form_type": "string",
+  "coo_invoice_no": "string",
+  "coo_invoice_date": "string",
+  "coo_shipper_name": "string",
+  "coo_shipper_address": "string",
+  "coo_consignee_name": "string",
+  "coo_consignee_address": "string",
+  "coo_consignee_tax_id": "string",
+  "coo_producer_name": "string",
+  "coo_producer_address": "string",
+  "coo_departure_date": "string",
+  "coo_vessel": "string",
+  "coo_voyage_no": "string",
+  "coo_port_of_discharge": "string"
+  "coo_gw_unit": "string",
+  "coo_amount_unit": "string",
+  "coo_origin_country": "string",
+}
 
 GENERAL KNOWLEDGE:
 
@@ -440,39 +426,12 @@ GENERAL KNOWLEDGE:
 8. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-9. pl_package_unit:
-    - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
-    - Sumber bukti yang VALID untuk pl_package_unit hanya:
-      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail (Contoh: pada dokumen ada header bernama "Carton No.")
-      2) unit yang menempel langsung pada package_count
-      3) header rasio kemasan seperti PCS/CTN, SET/CTN, PCS/BOX, QTY/CARTON -> ambil unit kemasannya, BUKAN unit quantity
-
-    - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
-      1) kolom quantity / qty / pcs / sets / units
-      2) inv_quantity_unit
-      3) unit penjualan barang
-      4) unit yang hanya menjelaskan isi per kemasan
-
-    - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
-
-    - pl_package_unit harus final dalam canonical value berikut saja:
-      """, {ALLOWED_PACKAGE_UNIT}, """
-      pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
-
-    - Mapping canonical:
-      CTN / CARTON / CARTONS -> CT
-      PLT / PALLET / PALLETS -> PX
-      BALE / BALES -> BL
-      mixed standalone package types -> PK
-
-    - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
-
-10. pl_volume_unit
+9. pl_volume_unit
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
 
-11. coo_gw_unit:
+10. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -486,7 +445,7 @@ GENERAL KNOWLEDGE:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-12. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
+11. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
@@ -515,9 +474,8 @@ ANCHOR INDEX (JSON):
   2) PL anchor (pendukung)
 
 - Invoice anchor digunakan untuk menjaga identitas row:
-  inv_invoice_no, inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
+  inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
 
-- Field inv_invoice_no WAJIB selalu ada di setiap row output dan nilainya HARUS sama persis dengan inv_invoice_no pada anchor row yang bersesuaian.
 - PL anchor digunakan sebagai bukti pendukung agar model memilih pasangan row Packing List yang benar:
   pl_customer_po_no, pl_description, pl_quantity.
 
@@ -547,20 +505,8 @@ ATURAN:
   bl_* → Bill of Lading, tidak boleh dari dokumen lain
   coo_* → Certificate of Origin, tidak boleh dari dokumen lain
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
-- Jika terdapat merged cell vertikal yang mencakup beberapa line item / beberapa row, maka nilai pada merged cell tersebut HANYA boleh diassign ke line item paling atas dalam merge group.
-- Semua line item lain yang berada di bawah merged cell yang sama WAJIB diisi 0 untuk field numerik yang berasal dari merged cell tersebut.
-- Jangan melakukan pembagian proporsional, jangan melakukan averaging, dan jangan menduplikasi nilai merged cell ke semua row.
-- Merge group harus ditentukan berdasarkan cakupan visual merge vertikal pada tabel.
-- "Top row" adalah row pertama / paling atas yang secara visual bersinggungan dengan merged cell tersebut.
-- Rule ini berlaku untuk field numerik yang berasal dari merged cell, termasuk namun tidak terbatas pada:
-  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
-- Contoh:
-  Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut, maka:
-  - row paling atas: pl_volume = 13.5
-  - row ke-2: pl_volume = 0
-  - row ke-3: pl_volume = 0
-- Jika merged cell berada pada kolom non-numerik, hanya row paling atas yang boleh membawa value tersebut, sedangkan row lain di bawahnya isi "null".
-- Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
+- Jika terdapat merged cell pada kolom total yang mencakup beberapa line item, jangan menggabungkan line item.
+- Untuk merged total, identifikasi dulu seluruh row dalam merge group berdasarkan cakupan visual merge vertikalnya, lalu validasi dengan total quantity group jika tersedia, dan gunakan quantity seluruh row dalam group tersebut sebagai basis alokasi proporsional.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
 - Saat membaca OCR, bedakan angka "0" dan huruf kapital "O" berdasarkan konteks field.
 - Untuk field code / part number / article number yang bersifat alfanumerik, tentukan "0" atau "O" berdasarkan pola code, posisi karakter, dan kemunculan berulang pada row lain.
@@ -587,10 +533,7 @@ GENERAL KNOWLEDGE DETAIL:
       - 45295893
       - 45297175
   - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
-  - INGAT BAHWA customer_po_no HARUS DIAWALI DENGAN ANGKA 4 jadi jika ada kasus:
-    Po No:
-    C25-1544U/45323564
-    Maka value dari customer_po_no adalah "45323564". ABAIKAN Code depannya (C25-1544U) dan "/" juga
+  - Misal value PO Number pada dokumen begini: No.C25-1544U/45323564, maka value yang diambil adalah "45323564".
   - customer_po_no terkadang exist tidak sesuai dengan kolomnya nama kolom Item No. tapi valuenya PO No. JADI PAHAMI FORMAT DARI customer_po_no
 
 3. inv_spart_item_no:
@@ -601,11 +544,10 @@ GENERAL KNOWLEDGE DETAIL:
       3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
       4. MODEL -> Biasanya terdapat pada header kolom tersebut.
       
-   - Jika terdapat kolom khusus Item No dan juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
-     Contoh:
+    - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no diambil dari CODE pada kolom deskripsi.
+      Contoh:
         Item No: 
         CWSSXAF38D0002-165
-
         Description:
         SAMOX CHAINWHEEL MODEL: 
         AF38-D28NS-BG31, BLACK
@@ -613,9 +555,7 @@ GENERAL KNOWLEDGE DETAIL:
         49MM 0T, W/CG, W/O SPIDER, SQUARE, C/CAPLESS BOLT
         W/O LOGO , W/BCD76, ALLOY CG
         ** CODE: CWSSXAF38D0002
-
-        Maka inv_spart_item_no = CWSSXAF38D0002,
-        BUKAN CWSSXAF38D0002-165 (karena ambil dari CODE di Description BUKAN dari kolom khusus Item No)
+        Maka inv_spart_item_no = CWSSXAF38D0002 dan BUKAN CWSSXAF38D0002-165 (karena prioritas CODE lebih tinggi daripada Item No)
 
    - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
      - angka pendek tersebut biasanya adalah index / item number / nomor urut
@@ -707,8 +647,35 @@ GENERAL KNOWLEDGE DETAIL:
      Box#2
      Box#4
      maka pl_package_count = 3.
+
+8. pl_package_unit:
+    - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
+    - Sumber bukti yang VALID untuk pl_package_unit hanya:
+      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail
+      2) unit yang menempel langsung pada package_count
+      3) header rasio kemasan seperti PCS/CTN, SET/CTN, PCS/BOX, QTY/CARTON -> ambil unit kemasannya, BUKAN unit quantity
+
+    - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
+      1) kolom quantity / qty / pcs / sets / units
+      2) inv_quantity_unit
+      3) unit penjualan barang
+      4) unit yang hanya menjelaskan isi per kemasan
+
+    - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
+
+    - pl_package_unit harus final dalam canonical value berikut saja:
+      {ALLOWED_PACKAGE_UNIT}
+
+    - Mapping canonical:
+      CTN / CARTON / CARTONS -> CT
+      PLT / PALLET / PALLETS -> PX
+      BALE / BALES -> BL
+      mixed standalone package types -> PK
+
+    - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
+
    
-8. pl_volume:
+9. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -727,7 +694,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-9. bl_description dan bl_hs_code:
+10. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -741,14 +708,14 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-10. coo_description:
+11. coo_description:
     - Jika description diawali dengan jumlah package dan jenis packagenya, maka exclude jumlah package dan jenis packagenya dan ambil hanya deskripsi itemnya saja.
       - Contoh:
         - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF SAMOX CHAINWHEEL AND CRANK MODEL: ...
           - Maka coo_description: SAMOX CHAINWHEEL AND CRANK MODEL: ...
           - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF DI EXCLUDE
 
-11. coo_customer_po_no:
+12. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:

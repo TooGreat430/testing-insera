@@ -1327,85 +1327,15 @@ def _is_missing_num(v) -> bool:
     except:
         return True
 
-def _group_rows_by_key(rows: list, key: str):
-    groups = {}
+def _apply_header_to_rows(rows: list, header_obj: dict):
+    if not isinstance(header_obj, dict):
+        header_obj = {}
     for r in rows:
         if not isinstance(r, dict):
             continue
-
-        group_value = r.get(key)
-        if _is_null(group_value):
-            group_key = "__UNGROUPED__"
-        else:
-            group_key = str(group_value).strip()
-
-        groups.setdefault(group_key, []).append(r)
-
-    return groups
-
-def _normalize_header_list(header_data):
-    if header_data is None:
-        return []
-
-    if isinstance(header_data, dict):
-        header_data = [header_data]
-
-    if not isinstance(header_data, list):
-        return []
-
-    normalized = []
-    for h in header_data:
-        if not isinstance(h, dict):
-            continue
-
-        item = {}
-        for k in HEADER_FIELDS:
-            v = h.get(k)
-            item[k] = "null" if v is None else v
-
-        normalized.append(item)
-
-    return normalized
-
-def _attach_inv_invoice_no_from_index(rows: list, index_items: list):
-    if not isinstance(rows, list) or not isinstance(index_items, list):
-        return
-
-    for i, row in enumerate(rows):
-        if not isinstance(row, dict):
-            continue
-        if i >= len(index_items):
-            break
-
-        anchor = index_items[i]
-        if not isinstance(anchor, dict):
-            continue
-
-        anchor_inv_no = anchor.get("inv_invoice_no")
-        if not _is_null(anchor_inv_no):
-            row["inv_invoice_no"] = anchor_inv_no
-
-def _apply_header_list_to_rows(rows: list, header_data):
-    header_list = _normalize_header_list(header_data)
-    header_map = {}
-
-    for h in header_list:
-        inv_no = str(h.get("inv_invoice_no") or "").strip()
-        if not inv_no or inv_no.lower() == "null":
-            continue
-        header_map[inv_no] = h
-
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-
-        inv_no = str(r.get("inv_invoice_no") or "").strip()
-        header_obj = header_map.get(inv_no)
-        if not header_obj:
-            continue
-
         for k in HEADER_FIELDS:
             v = header_obj.get(k, "null")
+            # overwrite biar konsisten antar row
             r[k] = v if v is not None else "null"
 
 def _validate_po(detail_rows):
@@ -1452,69 +1382,71 @@ def _validate_po(detail_rows):
     return detail_rows
 
 def _validate_invoice_rows(rows: list):
-    invoice_groups = _group_rows_by_key(rows, "inv_invoice_no")
+    required = [
+        "inv_invoice_no","inv_invoice_date","inv_customer_po_no","inv_vendor_name",
+        "inv_vendor_address","inv_spart_item_no","inv_description","inv_quantity",
+        "inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
+    ]
 
-    for _, group_rows in invoice_groups.items():
-        required = [
+    for i, r in enumerate(rows, start=1):
+        if not isinstance(r, dict):
+            continue
+
+        # required fields
+        required_str = [
             "inv_invoice_no","inv_invoice_date","inv_customer_po_no","inv_vendor_name",
-            "inv_vendor_address","inv_spart_item_no","inv_description","inv_quantity",
-            "inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
+            "inv_vendor_address","inv_spart_item_no","inv_description",
+            "inv_quantity_unit","inv_price_unit","inv_amount_unit",
         ]
+        required_num = ["inv_quantity","inv_unit_price","inv_amount"]
 
-        for i, r in enumerate(group_rows, start=1):
-            if not isinstance(r, dict):
-                continue
+        for k in required_str:
+            if _is_null(r.get(k)):
+                _append_err(r, f"Invoice: missing {k}")
 
-            required_str = [
-                "inv_invoice_no","inv_invoice_date","inv_customer_po_no","inv_vendor_name",
-                "inv_vendor_address","inv_spart_item_no","inv_description",
-                "inv_quantity_unit","inv_price_unit","inv_amount_unit",
-            ]
-            required_num = ["inv_quantity","inv_unit_price","inv_amount"]
+        for k in required_num:
+            if _is_missing_num(r.get(k)):
+                _append_err(r, f"Invoice: missing {k}")
 
-            for k in required_str:
-                if _is_null(r.get(k)):
-                    _append_err(r, f"Invoice: missing {k}")
+        # aritmatika: amount = qty * unit_price
+        qty = _to_float(r.get("inv_quantity"))
+        up  = _to_float(r.get("inv_unit_price"))
+        amt = _to_float(r.get("inv_amount"))
+        if qty is not None and up is not None and amt is not None:
+            expected = qty * up
+            # toleransi 0.01 untuk rounding
+            if abs(expected - amt) > 0.01:
+                _append_err(r, f"Invoice: inv_amount != inv_quantity*inv_unit_price (exp {expected}, got {amt})")
 
-            for k in required_num:
-                if _is_missing_num(r.get(k)):
-                    _append_err(r, f"Invoice: missing {k}")
+    # validasi total (pakai declared total di dokumen yang diekstrak Gemini)
+    declared_qty = _to_float(_first_non_null_nonzero(rows, "inv_total_quantity"))
+    declared_amt = _to_float(_first_non_null_nonzero(rows, "inv_total_amount"))
 
-            qty = _to_float(r.get("inv_quantity"))
-            up  = _to_float(r.get("inv_unit_price"))
-            amt = _to_float(r.get("inv_amount"))
-            if qty is not None and up is not None and amt is not None:
-                expected = qty * up
-                if abs(expected - amt) > 0.01:
-                    _append_err(r, f"Invoice: inv_amount != inv_quantity*inv_unit_price (exp {expected}, got {amt})")
+    sum_qty = 0.0
+    sum_amt = 0.0
+    qty_ok = False
+    amt_ok = False
 
-        declared_qty = _to_float(_first_non_null_nonzero(group_rows, "inv_total_quantity"))
-        declared_amt = _to_float(_first_non_null_nonzero(group_rows, "inv_total_amount"))
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        q = _to_float(r.get("inv_quantity"))
+        a = _to_float(r.get("inv_amount"))
+        if q is not None:
+            sum_qty += q
+            qty_ok = True
+        if a is not None:
+            sum_amt += a
+            amt_ok = True
 
-        sum_qty = 0.0
-        sum_amt = 0.0
-        qty_ok = False
-        amt_ok = False
-
-        for r in group_rows:
-            if not isinstance(r, dict):
-                continue
-            q = _to_float(r.get("inv_quantity"))
-            a = _to_float(r.get("inv_amount"))
-            if q is not None:
-                sum_qty += q
-                qty_ok = True
-            if a is not None:
-                sum_amt += a
-                amt_ok = True
-
-        for r in group_rows:
-            if not isinstance(r, dict):
-                continue
-            if declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01:
-                _append_err(r, f"Invoice: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-            if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
-                _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
+    # apply ke semua row (biar match_score konsisten per row)
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01:
+            _append_err(r, f"Invoice: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
+        if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
+            _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
 
 
 def _validate_packing_rows(rows: list):
@@ -1563,6 +1495,7 @@ def _validate_packing_rows(rows: list):
             if _is_missing_num(r.get(k)):
                 _append_err(r, f"PackingList: missing {k}")
 
+        # PL harus match Invoice
         if not _is_null(r.get("pl_invoice_no")) and not _is_null(r.get("inv_invoice_no")):
             if str(r["pl_invoice_no"]).strip() != str(r["inv_invoice_no"]).strip():
                 _append_err(r, "PackingList: pl_invoice_no != inv_invoice_no")
@@ -1574,34 +1507,32 @@ def _validate_packing_rows(rows: list):
         if norm(r.get("pl_messrs")) and "PT INSERA SENA" not in norm(r.get("pl_messrs")):
             _append_err(r, "PackingList: pl_messrs bukan PT Insera Sena")
 
-    packing_groups = _group_rows_by_key(rows, "inv_invoice_no")
+    # totals PL
+    declared_qty = _to_float(_first_non_null_nonzero(rows, "pl_total_quantity"))
+    declared_nw  = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
+    declared_gw  = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
+    declared_vol = _to_float(_first_non_null_nonzero(rows, "pl_total_volume"))
+    declared_pkg = _to_float(_first_non_null_nonzero(rows, "pl_total_package"))
 
-    for _, group_rows in packing_groups.items():
-        declared_qty = _to_float(_first_non_null_nonzero(group_rows, "pl_total_quantity"))
-        declared_nw  = _to_float(_first_non_null_nonzero(group_rows, "pl_total_nw"))
-        declared_gw  = _to_float(_first_non_null_nonzero(group_rows, "pl_total_gw"))
-        declared_vol = _to_float(_first_non_null_nonzero(group_rows, "pl_total_volume"))
-        declared_pkg = _to_float(_first_non_null_nonzero(group_rows, "pl_total_package"))
+    sum_qty = sum(_to_float(r.get("pl_quantity")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_nw  = sum(_to_float(r.get("pl_nw")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_gw  = sum(_to_float(r.get("pl_gw")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
 
-        sum_qty = sum(_to_float(r.get("pl_quantity")) or 0.0 for r in group_rows if isinstance(r, dict))
-        sum_nw  = sum(_to_float(r.get("pl_nw")) or 0.0 for r in group_rows if isinstance(r, dict))
-        sum_gw  = sum(_to_float(r.get("pl_gw")) or 0.0 for r in group_rows if isinstance(r, dict))
-        sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in group_rows if isinstance(r, dict))
-        sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in group_rows if isinstance(r, dict))
-
-        for r in group_rows:
-            if not isinstance(r, dict):
-                continue
-            if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
-                _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-            if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
-                _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
-            if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
-                _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
-            if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
-                _append_err(r, f"PackingList: total_volume mismatch (sum {sum_vol}, doc {declared_vol})")
-            if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
-                _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
+            _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
+        if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
+            _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
+        if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
+            _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
+        if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
+            _append_err(r, f"PackingList: total_volume mismatch (sum {sum_vol}, doc {declared_vol})")
+        if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
+            _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
 
 
 
@@ -2077,14 +2008,14 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
-        header_list = _call_gemini_json_uri(
+        header_obj = _call_gemini_json_uri(
             detail_input_uri,
             build_header_prompt(),
-            expect_array=True,
+            expect_array=False,
             retries=3
         )
-        if not isinstance(header_list, list):
-            header_list = []
+        if not isinstance(header_obj, dict):
+            header_obj = {}
 
         # GET TOTAL ROW FROM GEMINI
         data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
@@ -2111,10 +2042,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
             total_row = len(index_items)
 
-        _fill_forward(index_items, "inv_invoice_no")
         _fill_forward(index_items, "inv_customer_po_no")
         _fill_forward(index_items, "pl_customer_po_no")
-
 
         # BATCH DETAIL EXTRACTION
         jobs = []
@@ -2159,15 +2088,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         if not all_rows:
             raise Exception("Tidak ada data detail hasil Gemini")
 
-        if len(all_rows) != len(index_items):
-            raise Exception(
-                f"Jumlah detail rows ({len(all_rows)}) tidak sama dengan jumlah index_items ({len(index_items)})."
-            )
-
-        _attach_inv_invoice_no_from_index(all_rows, index_items)
         _ensure_all_detail_keys(all_rows)
 
-        _apply_header_list_to_rows(all_rows, header_list)
+        _apply_header_to_rows(all_rows, header_obj)
 
         _postprocess_inv_spart_item_no(all_rows)
         _postprocess_pl_package_unit(all_rows)
