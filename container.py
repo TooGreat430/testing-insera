@@ -139,6 +139,12 @@ GENERAL KNOWLEDGE CONTAINER
    - bl_volume
    - bl_volume_unit
 
+10. bl_voyage_no:
+   - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
+   - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode
+     Contoh:
+     V.S018
+
 ============================================
 VALIDASI CONTAINER
 ============================================

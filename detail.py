@@ -669,7 +669,7 @@ GENERAL KNOWLEDGE DETAIL:
 8. pl_package_unit:
     - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
     - Sumber bukti yang VALID untuk pl_package_unit hanya:
-      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail
+      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail (Contoh: pada dokumen ada header bernama "Carton No.")
       2) unit yang menempel langsung pada package_count
       3) header rasio kemasan seperti PCS/CTN, SET/CTN, PCS/BOX, QTY/CARTON -> ambil unit kemasannya, BUKAN unit quantity
 
@@ -683,6 +683,7 @@ GENERAL KNOWLEDGE DETAIL:
 
     - pl_package_unit harus final dalam canonical value berikut saja:
       {ALLOWED_PACKAGE_UNIT}
+      pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
 
     - Mapping canonical:
       CTN / CARTON / CARTONS -> CT
