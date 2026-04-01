@@ -1219,6 +1219,54 @@ def _first_non_null_nonzero(rows: list, key: str):
         return v
     return None
 
+def _normalize_customer_po_no(value):
+    """
+    Rules:
+    - 'No.C25-1544U/45323564'   -> '45323564'
+    - '45323564-1'              -> '45323564'
+    - 'No.C25-1544U/45323564-1' -> '45323564'
+
+    Kalau tidak match pola target, kembalikan value asli yang sudah di-trim.
+    """
+    if value is None:
+        return "null"
+
+    raw = str(value).strip()
+
+    if raw == "" or raw.lower() == "null":
+        return "null"
+
+    # Prioritas: ambil bagian setelah slash terakhir
+    candidate = raw.split("/")[-1].strip()
+
+    # Kasus:
+    # - 45323564
+    # - 45323564-1
+    m = re.fullmatch(r"(\d+)(?:-\d+)?", candidate)
+    if m:
+        return m.group(1)
+
+    # Fallback: cari digit terakhir yang relevan di seluruh string
+    m = re.search(r"(\d+)(?:-\d+)?\s*$", raw)
+    if m:
+        return m.group(1)
+
+    return raw
+
+
+def _postprocess_customer_po_no(rows: list):
+    """
+    Terapkan ke SEMUA field yang namanya berakhiran customer_po_no,
+    jadi future-proof kalau nanti ada field baru.
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for key in list(row.keys()):
+            if key.endswith("customer_po_no"):
+                row[key] = _normalize_customer_po_no(row.get(key))
+
 def _fill_forward(rows: list, key: str):
     """Rule: kalau 'null' pakai nilai terakhir yang valid dari row sebelumnya."""
     last = None
@@ -2092,6 +2140,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         _apply_header_to_rows(all_rows, header_obj)
 
+        _postprocess_customer_po_no(all_rows)
         _postprocess_inv_spart_item_no(all_rows)
         _postprocess_pl_package_unit(all_rows)
 
