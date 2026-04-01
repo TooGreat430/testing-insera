@@ -1978,12 +1978,16 @@ def _convert_to_csv(invoice_name, rows):
     return f"gs://{BUCKET_NAME}/{blob_path}"
 
 
-def _normalize_inv_spart_item_no(value):
+def _normalize_item_no_whitespace(value):
     """
-    Gabungkan whitespace di item code OCR.
+    Rules:
+    - gabungkan semua whitespace
+    - jika suffix terakhir adalah 'R' dan belum ada '-R', ubah jadi '-R'
+
     Contoh:
-    - 'BAXVLPLG38802 OR' -> 'BAXVLPLG38802OR'
-    - ' BAXV LP LG38802   OR ' -> 'BAXVLPLG38802OR'
+    - 'BAXVLPLG38802 OR'   -> 'BAXVLPLG38802OR' -> 'BAXVLPLG38802-OR' (tidak kena rule ini)
+    - 'BAXVLPLG388020R'    -> 'BAXVLPLG388020-R'
+    - 'BAXVLPLG388020-R'   -> tetap 'BAXVLPLG388020-R'
     """
     if value is None:
         return "null"
@@ -1993,19 +1997,30 @@ def _normalize_inv_spart_item_no(value):
     if s == "" or s.lower() == "null":
         return "null"
 
-    # hapus semua whitespace: spasi, tab, newline, non-breaking space, dll
+    # hapus semua whitespace
     s = re.sub(r"[\s\u00A0]+", "", s)
+
+    # jika berakhir dengan R dan sebelumnya belum '-R', sisipkan dash sebelum R
+    if re.fullmatch(r".+[^-]R", s):
+        s = s[:-1] + "-R"
 
     return s
 
 
-def _postprocess_inv_spart_item_no(rows: list):
+def _postprocess_item_no_fields(rows: list):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        row["inv_spart_item_no"] = _normalize_inv_spart_item_no(
-            row.get("inv_spart_item_no")
-        )
+
+        if "inv_spart_item_no" in row:
+            row["inv_spart_item_no"] = _normalize_item_no_whitespace(
+                row.get("inv_spart_item_no")
+            )
+
+        if "pl_item_no" in row:
+            row["pl_item_no"] = _normalize_item_no_whitespace(
+                row.get("pl_item_no")
+            )
 
 
 # ==============================
@@ -2140,7 +2155,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         _apply_header_to_rows(all_rows, header_obj)
 
-        _postprocess_inv_spart_item_no(all_rows)
         _postprocess_pl_package_unit(all_rows)
 
         # 0) reset match fields (Gemini tidak validasi)
@@ -2170,6 +2184,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
 
         _postprocess_customer_po_no(all_rows)
+        _postprocess_item_no_fields(all_rows)
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
