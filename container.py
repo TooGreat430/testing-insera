@@ -139,11 +139,25 @@ GENERAL KNOWLEDGE CONTAINER
    - bl_volume
    - bl_volume_unit
 
-10. bl_voyage_no:
+10. bl_shipper dan bl_seller
+   - Penempatan bl_shipper selalu diatas dari bl_seller
+   - Jika bingung, terdapat tulisan "O/B" Untuk memisahkan antara bl_shipper dan bl_seller
+     contoh:
+   SUZHOU GEYA TRADING CO.,LTD.
+   NO.6 DONGYANLI RD., SUZHOU INDUSTRIAL 
+   PARK 215125,SUZHOU CHINA 
+   O/B BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
+   KOVEL 11, 5431 ST CUIJK, THE NETHERLANDS 
+
+   Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
+
+11. bl_voyage_no:
    - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
    - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode
      Contoh:
      V.S018
+
+
 
 ============================================
 VALIDASI CONTAINER
