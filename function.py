@@ -198,15 +198,14 @@ def _convert_unit_value(value):
 def _postprocess_unit_fields(rows: list):
     """
     Terapkan converter ke field-field unit yang relevan.
-    Aman kalau field belum ada.
+    Tidak membuat field baru coo_quantity_unit.
+    COO quantity unit tetap diwakili oleh coo_unit.
     """
     UNIT_FIELDS = [
         "inv_quantity_unit",
         "pl_weight_unit",
-        "coo_quantity_unit",
-        "coo_quantity_unit",
         "coo_unit",
-        "coo_gw_unit"
+        "coo_gw_unit",
     ]
 
     for row in rows:
@@ -216,12 +215,6 @@ def _postprocess_unit_fields(rows: list):
         for key in UNIT_FIELDS:
             if key in row:
                 row[key] = _convert_unit_value(row.get(key))
-
-        # fallback:
-        # jika schema existing masih pakai coo_unit dan coo_quantity_unit kosong,
-        # isi coo_quantity_unit dari coo_unit agar validasi konsisten
-        if ("coo_quantity_unit" not in row or _is_null(row.get("coo_quantity_unit"))) and not _is_null(row.get("coo_unit")):
-            row["coo_quantity_unit"] = row.get("coo_unit")
 
 def _sum_numeric(rows: list, key: str) -> float:
     total = 0.0
@@ -1857,7 +1850,7 @@ def _validate_coo_rows(rows: list):
         "coo_description",
         "coo_hs_code",
         "coo_quantity",
-        "coo_quantity_unit",
+        "coo_unit",
         "coo_criteria",
         "coo_origin_country",
     ]
@@ -1865,9 +1858,6 @@ def _validate_coo_rows(rows: list):
     for r in rows:
         if not isinstance(r, dict):
             continue
-
-        if _is_null(r.get("coo_quantity_unit")) and not _is_null(r.get("coo_unit")):
-            r["coo_quantity_unit"] = r.get("coo_unit")
 
         for k in required:
             if _is_null(r.get(k)):
@@ -1897,9 +1887,9 @@ def _validate_coo_rows(rows: list):
         _compare_text_values(
             r,
             r.get("inv_quantity_unit"),
-            r.get("coo_quantity_unit"),
-            f"COO: coo_quantity_unit != inv_quantity_unit "
-            f"(inv {r.get('inv_quantity_unit')}, coo {r.get('coo_quantity_unit')})",
+            r.get("coo_unit"),
+            f"COO: coo_unit != inv_quantity_unit "
+            f"(inv {r.get('inv_quantity_unit')}, coo {r.get('coo_unit')})",
             normalize_fn=norm
         )
 
