@@ -1154,8 +1154,9 @@ def _map_po_to_details(po_lines, detail_rows):
        inv_customer_po_no <-> po_no
        + inv_description <-> po_text
 
-    Normalisasi hanya untuk matching.
-    Data output tetap pakai value asli dari po_line.
+    Tambahan sync field:
+    - jika match source = inv_spart_item_no -> pl_item_no disamakan ke inv_spart_item_no
+    - jika match source = pl_item_no -> inv_spart_item_no disamakan ke pl_item_no
     """
 
     # index article: (po_no_norm, article_norm) -> list[(idx, po_line)]
@@ -1237,6 +1238,18 @@ def _map_po_to_details(po_lines, detail_rows):
             used.add(chosen_key)
             row["_po_mapped"] = True
             row["_po_data"] = chosen
+
+            # sync value antar invoice item no dan packing list item no
+            match_source = row.get("_po_match_source")
+
+            if match_source == "inv_spart_item_no":
+                if not _is_null(row.get("inv_spart_item_no")):
+                    row["pl_item_no"] = row.get("inv_spart_item_no")
+
+            elif match_source == "pl_item_no":
+                if not _is_null(row.get("pl_item_no")):
+                    row["inv_spart_item_no"] = row.get("pl_item_no")
+
         else:
             row["_po_mapped"] = False
 
