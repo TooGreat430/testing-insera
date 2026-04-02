@@ -1497,7 +1497,7 @@ def _validate_po(detail_rows):
         row["po_sap_article_no"] = sap_article or "null"
         row["po_line"] = po_data.get("po_line", "null")
         row["po_quantity"] = po_data.get("po_quantity", "null")
-        row["po_unit"] = po_data.get("po_unit", "null")
+        row["po_unit"] = _convert_unit_value(po_data.get("po_unit"))
         row["po_price"] = po_data.get("po_price", "null")
         row["po_currency"] = po_data.get("po_currency", "null")
         row["po_info_record_price"] = po_data.get("po_info_record_price", "null")
@@ -1514,6 +1514,17 @@ def _validate_po(detail_rows):
 
         if inv_currency and po_currency and inv_currency != po_currency:
             _append_err(row, f"po_currency mismatch (inv: {inv_currency}, po: {po_currency})")
+
+        # validasi unit quantity invoice vs unit PO
+        inv_qty_unit = _convert_unit_value(row.get("inv_quantity_unit"))
+        po_unit = _convert_unit_value(po_data.get("po_unit"))
+
+        if not _is_null(inv_qty_unit) and not _is_null(po_unit):
+            if inv_qty_unit != po_unit:
+                _append_err(
+                    row,
+                    f"po_unit mismatch (inv_quantity_unit: {inv_qty_unit}, po_unit: {po_unit})"
+                )
 
         row.pop("_po_data", None)
         row.pop("_po_mapped", None)
