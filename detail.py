@@ -466,6 +466,18 @@ GENERAL KNOWLEDGE:
       mixed standalone package types -> PK
 
     - Jika bukti package unit tidak ada atau yang ditemukan hanya quantity unit -> "null".
+
+13. bl_shipper dan bl_seller
+   - Penempatan bl_shipper selalu diatas dari bl_seller
+   - Jika bingung, terdapat tulisan "O/B" Untuk memisahkan antara bl_shipper dan bl_seller
+     contoh:
+      SUZHOU GEYA TRADING CO.,LTD.
+      NO.6 DONGYANLI RD., SUZHOU INDUSTRIAL 
+      PARK 215125,SUZHOU CHINA 
+      O/B BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
+      KOVEL 11, 5431 ST CUIJK, THE NETHERLANDS 
+
+   Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:

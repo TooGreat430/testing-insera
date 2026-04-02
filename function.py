@@ -135,6 +135,91 @@ TOTAL_NUM_FIELDS = {
     "bl_package_count",
 }
 
+# ==============================
+# SANITIZER: generic quantity/unit normalizer
+# ==============================
+
+UNIT_CONVERSION_MAP = {
+    "PCS": "PC",
+    "PCE": "PC",
+    "PIECE": "PC",
+    "PIECES": "PC",
+    "H87": "PC",
+
+    "SETS": "SET",
+
+    "NPR": "PRS",
+    "PAIRS": "PRS",
+
+    "GROSS": "GRO",
+
+    "BTL": "BT",
+    "BOT": "BT",
+
+    "KGS": "KG",
+    "KGM": "KG",
+}
+
+def _normalize_unit_key(value):
+    """
+    Normalisasi untuk kebutuhan converter:
+    - trim
+    - uppercase
+    - buang semua selain A-Z dan 0-9
+    Contoh:
+    - ' pcs '   -> 'PCS'
+    - 'Piece.'  -> 'PIECE'
+    - 'kgm'     -> 'KGM'
+    """
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return ""
+
+    s = s.upper()
+    s = re.sub(r"[^A-Z0-9]", "", s)
+    return s
+
+def _convert_unit_value(value):
+    """
+    Convert value B -> A setelah dinormalisasi.
+    Kalau tidak ada mapping, kembalikan value yang sudah dinormalisasi.
+    Kalau kosong/null, return 'null'
+    """
+    normalized = _normalize_unit_key(value)
+
+    if normalized == "":
+        return "null"
+
+    return UNIT_CONVERSION_MAP.get(normalized, normalized)
+
+def _postprocess_unit_fields(rows: list):
+    """
+    Terapkan converter ke field-field unit yang relevan.
+    Aman kalau field belum ada.
+    """
+    UNIT_FIELDS = [
+        "inv_quantity_unit",
+        "coo_quantity_unit",
+        "coo_unit",            # backward compatibility dengan schema existing
+    ]
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for key in UNIT_FIELDS:
+            if key in row:
+                row[key] = _convert_unit_value(row.get(key))
+
+        # fallback:
+        # jika schema existing masih pakai coo_unit dan coo_quantity_unit kosong,
+        # isi coo_quantity_unit dari coo_unit agar validasi konsisten
+        if ("coo_quantity_unit" not in row or _is_null(row.get("coo_quantity_unit"))) and not _is_null(row.get("coo_unit")):
+            row["coo_quantity_unit"] = row.get("coo_unit")
+
 def _sum_numeric(rows: list, key: str) -> float:
     total = 0.0
     for r in rows or []:
@@ -1064,6 +1149,9 @@ def _map_po_to_details(po_lines, detail_rows):
        + inv_spart_item_no <-> vendor_article_no OR sap_article_no
     2. fallback:
        inv_customer_po_no <-> po_no
+       + pl_item_no <-> vendor_article_no OR sap_article_no
+    3. fallback:
+       inv_customer_po_no <-> po_no
        + inv_description <-> po_text
 
     Normalisasi hanya untuk matching.
@@ -1102,6 +1190,7 @@ def _map_po_to_details(po_lines, detail_rows):
 
         inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
         inv_article_norm = _norm_key(row.get("inv_spart_item_no"))
+        pl_article_norm = _norm_key(row.get("pl_item_no"))
         inv_desc_norm = _norm_desc(row.get("inv_description"))
 
         if not inv_po_norm:
@@ -1111,36 +1200,38 @@ def _map_po_to_details(po_lines, detail_rows):
         chosen = None
         chosen_key = None
 
-        # =========================
-        # PRIORITAS 1: match by article
-        # =========================
-        candidates = []
-        if inv_article_norm:
-            candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
-
-        for idx, po_line in candidates:
-            key = (inv_po_norm, idx)
-            if key in used:
-                continue
-            chosen = po_line
-            chosen_key = key
-            row["_po_match_source"] = "article"
-            break
-
-        # =========================
-        # PRIORITAS 2: fallback by description
-        # =========================
-        if chosen is None and inv_desc_norm:
-            candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
-
+        def _pick_first_unused(candidates, match_source):
+            nonlocal chosen, chosen_key
             for idx, po_line in candidates:
                 key = (inv_po_norm, idx)
                 if key in used:
                     continue
                 chosen = po_line
                 chosen_key = key
-                row["_po_match_source"] = "description"
-                break
+                row["_po_match_source"] = match_source
+                return True
+            return False
+
+        # =========================
+        # PRIORITAS 1: inv_spart_item_no
+        # =========================
+        if chosen is None and inv_article_norm:
+            candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
+            _pick_first_unused(candidates, "inv_spart_item_no")
+
+        # =========================
+        # PRIORITAS 2: pl_item_no
+        # =========================
+        if chosen is None and pl_article_norm:
+            candidates = po_article_index.get((inv_po_norm, pl_article_norm), [])
+            _pick_first_unused(candidates, "pl_item_no")
+
+        # =========================
+        # PRIORITAS 3: inv_description
+        # =========================
+        if chosen is None and inv_desc_norm:
+            candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
+            _pick_first_unused(candidates, "description")
 
         if chosen:
             used.add(chosen_key)
@@ -1716,12 +1807,10 @@ def _validate_coo_rows(rows: list):
     - Conditional required berdasarkan coo_criteria (RVC => amount required, PE => gw required)
     - Validasi terhadap invoice: qty, amount, unit, gw, gw_unit match (jika field ada)
     - Mapping: COO harus match invoice line (coo_invoice_no match inv_invoice_no).
-      Similarity description tidak bisa 100% deterministik tanpa NLP berat,
-      jadi implement minimal yang deterministic: invoice_no match + (optional) simple token overlap.
     """
     coo_keys_presence = ["coo_no", "coo_form_type", "coo_invoice_no", "coo_origin_country", "coo_hs_code"]
     if not _doc_present(rows, coo_keys_presence):
-        return  # COO tidak tersedia -> skip semua validasi COO
+        return
 
     def norm(s):
         if _is_null(s):
@@ -1741,7 +1830,7 @@ def _validate_coo_rows(rows: list):
         "coo_description",
         "coo_hs_code",
         "coo_quantity",
-        "coo_unit",
+        "coo_quantity_unit",   # pakai field baru
         "coo_criteria",
         "coo_origin_country",
     ]
@@ -1749,6 +1838,10 @@ def _validate_coo_rows(rows: list):
     for r in rows:
         if not isinstance(r, dict):
             continue
+
+        # backward compatibility kalau extractor lama masih isi coo_unit
+        if _is_null(r.get("coo_quantity_unit")) and not _is_null(r.get("coo_unit")):
+            r["coo_quantity_unit"] = r.get("coo_unit")
 
         # 1) Required fields
         for k in required:
@@ -1768,29 +1861,34 @@ def _validate_coo_rows(rows: list):
             if _is_null(r.get("coo_gw")):
                 _append_err(r, "COO: missing coo_gw for PE")
 
-        # 3) Validasi terhadap invoice (only if both sides exist)
+        # 3) Validasi terhadap invoice
+        # qty
         inv_qty = _to_float(r.get("inv_quantity"))
         coo_qty = _to_float(r.get("coo_quantity"))
         if inv_qty is not None and coo_qty is not None and abs(inv_qty - coo_qty) > 0.01:
             _append_err(r, f"COO: coo_quantity != inv_quantity (inv {inv_qty}, coo {coo_qty})")
 
+        # quantity unit
+        if not _is_null(r.get("inv_quantity_unit")) and not _is_null(r.get("coo_quantity_unit")):
+            if norm(r.get("inv_quantity_unit")) != norm(r.get("coo_quantity_unit")):
+                _append_err(
+                    r,
+                    f"COO: coo_quantity_unit != inv_quantity_unit "
+                    f"(inv {r.get('inv_quantity_unit')}, coo {r.get('coo_quantity_unit')})"
+                )
+
+        # amount
         inv_amt = _to_float(r.get("inv_amount"))
         coo_amt = _to_float(r.get("coo_amount"))
         if inv_amt is not None and coo_amt is not None and abs(inv_amt - coo_amt) > 0.01:
             _append_err(r, f"COO: coo_amount != inv_amount (inv {inv_amt}, coo {coo_amt})")
 
+        # amount unit
         if not _is_null(r.get("inv_amount_unit")) and not _is_null(r.get("coo_amount_unit")):
             if norm(r.get("inv_amount_unit")) != norm(r.get("coo_amount_unit")):
                 _append_err(r, "COO: coo_amount_unit != inv_amount_unit")
 
-        # note: di schema invoice kamu tidak ada inv_gw/inv_gw_unit per line.
-        # Yang ada total inv_total_gw. Jadi rule coo_gw==inv_gw tidak bisa diterapkan 1:1.
-        # Implementasi aman: bandingkan coo_gw dengan inv_total_gw hanya jika masuk akal,
-        # atau skip supaya tidak bikin false positive.
-        # Saya SKIP validasi gw vs inv_* karena field inv_gw tidak tersedia.
-
-        # 4) Mapping minimal deterministic:
-        # coo_invoice_no harus sama dengan inv_invoice_no
+        # 4) coo_invoice_no harus sama dengan inv_invoice_no
         if not _is_null(r.get("coo_invoice_no")) and not _is_null(r.get("inv_invoice_no")):
             if str(r["coo_invoice_no"]).strip() != str(r["inv_invoice_no"]).strip():
                 _append_err(r, "COO: coo_invoice_no != inv_invoice_no")
@@ -2185,6 +2283,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         _postprocess_customer_po_no(all_rows)
         _postprocess_item_no_fields(all_rows)
+        _postprocess_unit_fields(all_rows)
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
