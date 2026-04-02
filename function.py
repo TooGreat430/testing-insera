@@ -1143,26 +1143,7 @@ def _norm_desc(x):
     return s
 
 def _map_po_to_details(po_lines, detail_rows):
-    """
-    Join key priority:
-    1. inv_customer_po_no <-> po_no
-       + inv_spart_item_no <-> vendor_article_no OR sap_article_no
-    2. fallback:
-       inv_customer_po_no <-> po_no
-       + pl_item_no <-> vendor_article_no OR sap_article_no
-    3. fallback:
-       inv_customer_po_no <-> po_no
-       + inv_description <-> po_text
-
-    Tambahan sync field:
-    - jika match source = inv_spart_item_no -> pl_item_no disamakan ke inv_spart_item_no
-    - jika match source = pl_item_no -> inv_spart_item_no disamakan ke pl_item_no
-    """
-
-    # index article: (po_no_norm, article_norm) -> list[(idx, po_line)]
     po_article_index = {}
-
-    # index description: (po_no_norm, desc_norm) -> list[(idx, po_line)]
     po_desc_index = {}
 
     for idx, line in enumerate(po_lines):
@@ -1176,14 +1157,12 @@ def _map_po_to_details(po_lines, detail_rows):
 
         if v_norm:
             po_article_index.setdefault((po_no_norm, v_norm), []).append((idx, line))
-
         if s_norm:
             po_article_index.setdefault((po_no_norm, s_norm), []).append((idx, line))
-
         if d_norm:
             po_desc_index.setdefault((po_no_norm, d_norm), []).append((idx, line))
 
-    used = set()  # (po_no_norm, idx_in_po_lines)
+    used = set()
 
     for row in detail_rows:
         if not isinstance(row, dict):
@@ -1200,8 +1179,9 @@ def _map_po_to_details(po_lines, detail_rows):
 
         chosen = None
         chosen_key = None
+        matched_by = None
 
-        def _pick_first_unused(candidates, match_source):
+        def _pick_first_unused(candidates):
             nonlocal chosen, chosen_key
             for idx, po_line in candidates:
                 key = (inv_po_norm, idx)
@@ -1212,43 +1192,30 @@ def _map_po_to_details(po_lines, detail_rows):
                 return True
             return False
 
-        # =========================
-        # PRIORITAS 1: inv_spart_item_no
-        # =========================
         if chosen is None and inv_article_norm:
             candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
-            _pick_first_unused(candidates, "inv_spart_item_no")
+            if _pick_first_unused(candidates):
+                matched_by = "inv_spart_item_no"
 
-        # =========================
-        # PRIORITAS 2: pl_item_no
-        # =========================
         if chosen is None and pl_article_norm:
             candidates = po_article_index.get((inv_po_norm, pl_article_norm), [])
-            _pick_first_unused(candidates, "pl_item_no")
+            if _pick_first_unused(candidates):
+                matched_by = "pl_item_no"
 
-        # =========================
-        # PRIORITAS 3: inv_description
-        # =========================
         if chosen is None and inv_desc_norm:
             candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
-            _pick_first_unused(candidates, "description")
+            if _pick_first_unused(candidates):
+                matched_by = "description"
 
         if chosen:
             used.add(chosen_key)
             row["_po_mapped"] = True
             row["_po_data"] = chosen
 
-            # sync value antar invoice item no dan packing list item no
-            match_source = row.get("_po_match_source")
-
-            if match_source == "inv_spart_item_no":
-                if not _is_null(row.get("inv_spart_item_no")):
-                    row["pl_item_no"] = row.get("inv_spart_item_no")
-
-            elif match_source == "pl_item_no":
-                if not _is_null(row.get("pl_item_no")):
-                    row["inv_spart_item_no"] = row.get("pl_item_no")
-
+            if matched_by == "inv_spart_item_no" and not _is_null(row.get("inv_spart_item_no")):
+                row["pl_item_no"] = row.get("inv_spart_item_no")
+            elif matched_by == "pl_item_no" and not _is_null(row.get("pl_item_no")):
+                row["inv_spart_item_no"] = row.get("pl_item_no")
         else:
             row["_po_mapped"] = False
 
