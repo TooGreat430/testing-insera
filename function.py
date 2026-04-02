@@ -1752,7 +1752,7 @@ def _validate_invoice_vs_packing_extra(rows: list):
             r,
             pl_gw,
             coo_gw,
-            f"Invoice vs COO: pl_gw != coo_gw (inv {_to_float(pl_gw)}, coo {_to_float(coo_gw)})"
+            f"PL vs COO: pl_gw != coo_gw (PL {_to_float(pl_gw)}, coo {_to_float(coo_gw)})"
         )
 
         _compare_text_values(
@@ -2107,6 +2107,41 @@ def _convert_to_csv(invoice_name, rows):
 
     return f"gs://{BUCKET_NAME}/{blob_path}"
 
+def _is_zero_like(value) -> bool:
+    """
+    Anggap zero jika:
+    - int/float 0
+    - string seperti: '0', '0.0', '000', '000.00', '0,000'
+    Tidak menganggap text lain seperti '000123' sebagai zero.
+    """
+    if value is None:
+        return False
+
+    if isinstance(value, (int, float)):
+        return float(value) == 0.0
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return False
+
+    normalized = s.replace(",", "")
+    return bool(re.fullmatch(r"[+-]?0+(?:\.0+)?", normalized))
+
+
+def _postprocess_bl_coo_zero_to_null(rows: list):
+    """
+    Hanya untuk field prefix bl_ dan coo_:
+    jika valuenya 0 -> ubah jadi 'null'
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for key in list(row.keys()):
+            if key.startswith("bl_") or key.startswith("coo_"):
+                if _is_zero_like(row.get(key)):
+                    row[key] = "null"
+
 
 def _normalize_item_no_whitespace(value):
     """
@@ -2337,6 +2372,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         # =========================
         # VALIDASI (python-based)
         # =========================
+
+        _postprocess_bl_coo_zero_to_null(all_rows)
+
         all_rows = _validate_po(all_rows)
 
         _validate_invoice_rows(all_rows)
