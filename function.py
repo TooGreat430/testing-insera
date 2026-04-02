@@ -202,8 +202,11 @@ def _postprocess_unit_fields(rows: list):
     """
     UNIT_FIELDS = [
         "inv_quantity_unit",
+        "pl_weight_unit",
         "coo_quantity_unit",
-        "coo_unit",            # backward compatibility dengan schema existing
+        "coo_quantity_unit",
+        "coo_unit",
+        "coo_gw_unit"
     ]
 
     for row in rows:
