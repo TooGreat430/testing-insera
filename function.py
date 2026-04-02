@@ -1209,7 +1209,6 @@ def _map_po_to_details(po_lines, detail_rows):
                     continue
                 chosen = po_line
                 chosen_key = key
-                row["_po_match_source"] = match_source
                 return True
             return False
 
@@ -1490,6 +1489,46 @@ def _apply_header_to_rows(rows: list, header_obj: dict):
             # overwrite biar konsisten antar row
             r[k] = v if v is not None else "null"
 
+def _has_text_value(v) -> bool:
+    return not _is_null(v)
+
+def _has_num_value(v) -> bool:
+    return _to_float(v) is not None
+
+def _compare_text_values(row: dict, left_value, right_value, err_msg: str, normalize_fn=None):
+    """
+    Rule:
+    - jika salah satu sisi null/kosong -> skip, tidak perlu check
+    - kalau dua-duanya ada -> compare
+    """
+    if not _has_text_value(left_value) or not _has_text_value(right_value):
+        return
+
+    lv = left_value
+    rv = right_value
+
+    if normalize_fn is not None:
+        lv = normalize_fn(lv)
+        rv = normalize_fn(rv)
+
+    if lv != rv:
+        _append_err(row, err_msg)
+
+def _compare_num_values(row: dict, left_value, right_value, err_msg: str, eps=0.01):
+    """
+    Rule:
+    - jika salah satu sisi null / bukan angka -> skip, tidak perlu check
+    - kalau dua-duanya ada -> compare numerik
+    """
+    lv = _to_float(left_value)
+    rv = _to_float(right_value)
+
+    if lv is None or rv is None:
+        return
+
+    if abs(lv - rv) > eps:
+        _append_err(row, err_msg)
+
 def _validate_po(detail_rows):
     for row in detail_rows:
         if not row.get("_po_mapped"):
@@ -1709,14 +1748,6 @@ def _doc_present(rows: list, keys: list) -> bool:
                 return True
     return False
 def _validate_invoice_vs_packing_extra(rows: list):
-    """
-    Validasi tambahan:
-    - inv_messrs == pl_messrs (compare 20 huruf pertama setelah normalisasi)
-    - inv_messrs_address == pl_messrs_address
-    - inv_gw == coo_gw
-    - inv_gw_unit == coo_gw_unit
-    """
-
     def norm_prefix_20(s):
         return _normalize_compare_prefix(s, 20)
 
@@ -1729,33 +1760,41 @@ def _validate_invoice_vs_packing_extra(rows: list):
         if not isinstance(r, dict):
             continue
 
-        # inv_messrs vs pl_messrs -> compare 20 huruf pertama setelah normalisasi
-        if not _is_null(r.get("inv_messrs")) and not _is_null(r.get("pl_messrs")):
-            if norm_prefix_20(r.get("inv_messrs")) != norm_prefix_20(r.get("pl_messrs")):
-                _append_err(r, "Invoice vs PL: inv_messrs != pl_messrs")
+        _compare_text_values(
+            r,
+            r.get("inv_messrs"),
+            r.get("pl_messrs"),
+            "Invoice vs PL: inv_messrs != pl_messrs",
+            normalize_fn=norm_prefix_20
+        )
 
-        # inv_messrs_address vs pl_messrs_address
         inv_messrs_address = r.get("inv_messrs_address")
         pl_messrs_address = r.get("pl_messrs_address")
-        if not _is_null(inv_messrs_address) and not _is_null(pl_messrs_address):
-            if norm_prefix_20(inv_messrs_address) != norm_prefix_20(pl_messrs_address):
-                _append_err(
-                    r,
-                    f"Invoice vs PL: inv_messrs_address != pl_messrs_address "
-                    f"(inv {inv_messrs_address}, pl {pl_messrs_address})"
-                )
+        _compare_text_values(
+            r,
+            inv_messrs_address,
+            pl_messrs_address,
+            f"Invoice vs PL: inv_messrs_address != pl_messrs_address "
+            f"(inv {inv_messrs_address}, pl {pl_messrs_address})",
+            normalize_fn=norm_prefix_20
+        )
 
-        # inv_gw vs coo_gw (hanya jika COO ada nilainya)
-        pl_gw = _to_float(r.get("pl_gw"))
-        coo_gw = _to_float(r.get("coo_gw"))
-        if pl_gw is not None and coo_gw is not None:
-            if abs(pl_gw - coo_gw) > 0.01:
-                _append_err(r, f"Invoice vs COO: pl_gw != coo_gw (inv {pl_gw}, coo {coo_gw})")
+        pl_gw = r.get("pl_gw")
+        coo_gw = r.get("coo_gw")
+        _compare_num_values(
+            r,
+            pl_gw,
+            coo_gw,
+            f"Invoice vs COO: pl_gw != coo_gw (inv {_to_float(pl_gw)}, coo {_to_float(coo_gw)})"
+        )
 
-        # pl_gw_unit vs coo_gw_unit (hanya jika COO ada nilainya)
-        if not _is_null(r.get("pl_gw_unit")) and not _is_null(r.get("coo_gw_unit")):
-            if norm(r.get("pl_gw_unit")) != norm(r.get("coo_gw_unit")):
-                _append_err(r, "Invoice vs COO: pl_gw_unit != coo_gw_unit")
+        _compare_text_values(
+            r,
+            r.get("pl_weight_unit"),
+            r.get("coo_gw_unit"),
+            "Invoice vs COO: pl_weight_unit != coo_gw_unit",
+            normalize_fn=norm
+        )
 
 def _validate_bl_rows(rows: list):
     """
@@ -1816,22 +1855,16 @@ def _validate_bl_rows(rows: list):
                 _append_err(r, f"BL: missing {k}")
 
         # seller compare 20 huruf pertama setelah normalisasi
-        inv_vendor = r.get("inv_vendor_name")
-        bl_seller = r.get("bl_seller_name")
-
-        if not _is_null(inv_vendor) and not _is_null(bl_seller):
-            if norm_prefix_20(inv_vendor) != norm_prefix_20(bl_seller):
-                _append_err(r, "BL: bl_seller_name != inv_vendor_name")
+        _compare_text_values(
+            r,
+            r.get("inv_vendor_name"),
+            r.get("bl_seller_name"),
+            "BL: bl_seller_name != inv_vendor_name",
+            normalize_fn=norm_prefix_20
+        )
 
 
 def _validate_coo_rows(rows: list):
-    """
-    Implement rule dari prompt:
-    - Required fields jika COO tersedia
-    - Conditional required berdasarkan coo_criteria (RVC => amount required, PE => gw required)
-    - Validasi terhadap invoice: qty, amount, unit, gw, gw_unit match (jika field ada)
-    - Mapping: COO harus match invoice line (coo_invoice_no match inv_invoice_no).
-    """
     coo_keys_presence = ["coo_no", "coo_form_type", "coo_invoice_no", "coo_origin_country", "coo_hs_code"]
     if not _doc_present(rows, coo_keys_presence):
         return
@@ -1854,7 +1887,7 @@ def _validate_coo_rows(rows: list):
         "coo_description",
         "coo_hs_code",
         "coo_quantity",
-        "coo_quantity_unit",   # pakai field baru
+        "coo_quantity_unit",
         "coo_criteria",
         "coo_origin_country",
     ]
@@ -1863,16 +1896,13 @@ def _validate_coo_rows(rows: list):
         if not isinstance(r, dict):
             continue
 
-        # backward compatibility kalau extractor lama masih isi coo_unit
         if _is_null(r.get("coo_quantity_unit")) and not _is_null(r.get("coo_unit")):
             r["coo_quantity_unit"] = r.get("coo_unit")
 
-        # 1) Required fields
         for k in required:
             if _is_null(r.get(k)):
                 _append_err(r, f"COO: missing {k}")
 
-        # 2) Conditional required by coo_criteria
         crit = norm(r.get("coo_criteria"))
         if crit == "RVC":
             if _is_null(r.get("coo_amount_unit")):
@@ -1885,37 +1915,48 @@ def _validate_coo_rows(rows: list):
             if _is_null(r.get("coo_gw")):
                 _append_err(r, "COO: missing coo_gw for PE")
 
-        # 3) Validasi terhadap invoice
-        # qty
-        inv_qty = _to_float(r.get("inv_quantity"))
-        coo_qty = _to_float(r.get("coo_quantity"))
-        if inv_qty is not None and coo_qty is not None and abs(inv_qty - coo_qty) > 0.01:
-            _append_err(r, f"COO: coo_quantity != inv_quantity (inv {inv_qty}, coo {coo_qty})")
+        inv_qty = r.get("inv_quantity")
+        coo_qty = r.get("coo_quantity")
+        _compare_num_values(
+            r,
+            inv_qty,
+            coo_qty,
+            f"COO: coo_quantity != inv_quantity (inv {_to_float(inv_qty)}, coo {_to_float(coo_qty)})"
+        )
 
-        # quantity unit
-        if not _is_null(r.get("inv_quantity_unit")) and not _is_null(r.get("coo_quantity_unit")):
-            if norm(r.get("inv_quantity_unit")) != norm(r.get("coo_quantity_unit")):
-                _append_err(
-                    r,
-                    f"COO: coo_quantity_unit != inv_quantity_unit "
-                    f"(inv {r.get('inv_quantity_unit')}, coo {r.get('coo_quantity_unit')})"
-                )
+        _compare_text_values(
+            r,
+            r.get("inv_quantity_unit"),
+            r.get("coo_quantity_unit"),
+            f"COO: coo_quantity_unit != inv_quantity_unit "
+            f"(inv {r.get('inv_quantity_unit')}, coo {r.get('coo_quantity_unit')})",
+            normalize_fn=norm
+        )
 
-        # amount
-        inv_amt = _to_float(r.get("inv_amount"))
-        coo_amt = _to_float(r.get("coo_amount"))
-        if inv_amt is not None and coo_amt is not None and abs(inv_amt - coo_amt) > 0.01:
-            _append_err(r, f"COO: coo_amount != inv_amount (inv {inv_amt}, coo {coo_amt})")
+        inv_amt = r.get("inv_amount")
+        coo_amt = r.get("coo_amount")
+        _compare_num_values(
+            r,
+            inv_amt,
+            coo_amt,
+            f"COO: coo_amount != inv_amount (inv {_to_float(inv_amt)}, coo {_to_float(coo_amt)})"
+        )
 
-        # amount unit
-        if not _is_null(r.get("inv_amount_unit")) and not _is_null(r.get("coo_amount_unit")):
-            if norm(r.get("inv_amount_unit")) != norm(r.get("coo_amount_unit")):
-                _append_err(r, "COO: coo_amount_unit != inv_amount_unit")
+        _compare_text_values(
+            r,
+            r.get("inv_amount_unit"),
+            r.get("coo_amount_unit"),
+            "COO: coo_amount_unit != inv_amount_unit",
+            normalize_fn=norm
+        )
 
-        # 4) coo_invoice_no harus sama dengan inv_invoice_no
-        if not _is_null(r.get("coo_invoice_no")) and not _is_null(r.get("inv_invoice_no")):
-            if str(r["coo_invoice_no"]).strip() != str(r["inv_invoice_no"]).strip():
-                _append_err(r, "COO: coo_invoice_no != inv_invoice_no")
+        _compare_text_values(
+            r,
+            r.get("coo_invoice_no"),
+            r.get("inv_invoice_no"),
+            "COO: coo_invoice_no != inv_invoice_no",
+            normalize_fn=lambda x: str(x).strip()
+        )
 
 # ==============================
 # (NEW) MAP PO -> TOTAL

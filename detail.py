@@ -478,6 +478,13 @@ GENERAL KNOWLEDGE:
       KOVEL 11, 5431 ST CUIJK, THE NETHERLANDS 
 
    Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
+
+14. bl_voyage_no:
+   - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
+   - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode. Tugas anda ambil setelah V nya
+     Contoh:
+     V.S018
+     Berarti value tersebut adalah S018
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
