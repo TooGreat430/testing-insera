@@ -300,7 +300,7 @@ if menu == "Upload":
     
     invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
     packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
-    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=False)
+    bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"])
     coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
 
     output_name = st.text_input("Output file name (default invoice name)")
