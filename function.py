@@ -49,6 +49,7 @@ PL_PACKAGE_UNIT_MAP = {
     "ctns": "CT",
     "carton": "CT",
     "cartons": "CT",
+    "c/t": "CT",
 
     "plt": "PX",
     "plts": "PX",
