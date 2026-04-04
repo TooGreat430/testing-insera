@@ -25,11 +25,13 @@ import shutil
 from detail import (
     build_index_prompt,
     build_header_prompt,
+    build_multi_header_prompt,
     build_detail_prompt_from_index,
-    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
-    DETAIL_CSV_FIELD_ORDER_FINAL
+    DETAIL_CSV_FIELD_ORDER_FINAL,
+    HEADER_TOTAL_NUM_FIELDS,
 )
 from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
@@ -1452,6 +1454,215 @@ def _apply_header_to_rows(rows: list, header_obj: dict):
             # overwrite biar konsisten antar row
             r[k] = v if v is not None else "null"
 
+def _normalize_invoice_no(value) -> str:
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return ""
+
+    s = s.upper()
+    s = re.sub(r"\s+", "", s)
+    return s
+
+def _normalize_header_obj(header_obj: dict) -> dict:
+    if not isinstance(header_obj, dict):
+        header_obj = {}
+
+    normalized = {}
+    for k in HEADER_FIELDS:
+        v = header_obj.get(k)
+        if v is None:
+            normalized[k] = 0 if k in HEADER_TOTAL_NUM_FIELDS else "null"
+        else:
+            normalized[k] = v
+    return normalized
+
+def _extract_multi_header_rows(detail_input_uri: str, invoice_doc_count: int) -> list:
+    header_rows = _call_gemini_json_uri(
+        detail_input_uri,
+        build_multi_header_prompt(invoice_doc_count),
+        expect_array=True,
+        retries=3
+    )
+
+    if not isinstance(header_rows, list):
+        raise Exception("Output multi header tidak valid")
+
+    cleaned = []
+    seen = set()
+
+    for row in header_rows:
+        if not isinstance(row, dict):
+            continue
+
+        row = _normalize_header_obj(row)
+        inv_no = _normalize_invoice_no(row.get("inv_invoice_no"))
+
+        if not inv_no:
+            continue
+
+        if inv_no in seen:
+            continue
+
+        seen.add(inv_no)
+        cleaned.append(row)
+
+    if not cleaned:
+        raise Exception("Header multiple kosong / inv_invoice_no tidak ditemukan")
+
+    return cleaned
+
+def _apply_headers_by_invoice_no(rows: list, header_rows: list):
+    header_map = {}
+
+    for h in header_rows:
+        if not isinstance(h, dict):
+            continue
+
+        inv_no = _normalize_invoice_no(h.get("inv_invoice_no"))
+        if inv_no:
+            header_map[inv_no] = _normalize_header_obj(h)
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+
+        inv_no = _normalize_invoice_no(r.get("inv_invoice_no"))
+        if not inv_no:
+            continue
+
+        header_obj = header_map.get(inv_no)
+        if not header_obj:
+            continue
+
+        for k in HEADER_FIELDS:
+            v = header_obj.get(k)
+            r[k] = v if v is not None else (0 if k in HEADER_TOTAL_NUM_FIELDS else "null")
+
+def _group_rows_by_key(rows: list, key: str) -> dict:
+    groups = {}
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+
+        group_value = _normalize_invoice_no(r.get(key))
+        if not group_value:
+            continue
+
+        groups.setdefault(group_value, []).append(r)
+
+    return groups
+
+def _validate_invoice_rows_grouped(rows: list):
+    groups = _group_rows_by_key(rows, "inv_invoice_no")
+
+    if not groups:
+        _validate_invoice_rows(rows)
+        return
+
+    for _, group_rows in groups.items():
+        _validate_invoice_rows(group_rows)
+
+def _validate_packing_rows_grouped(rows: list):
+    groups = _group_rows_by_key(rows, "pl_invoice_no")
+
+    if not groups:
+        _validate_packing_rows(rows)
+        return
+
+    for _, group_rows in groups.items():
+        _validate_packing_rows(group_rows)
+
+def _build_total_from_headers_and_container(header_rows: list, detail_rows: list, container_rows):
+    if container_rows is None:
+        return None
+
+    if isinstance(container_rows, dict):
+        container_rows = [container_rows]
+
+    if not isinstance(container_rows, list):
+        raise Exception("container_data tidak valid untuk membentuk total")
+
+    container_rows = [r for r in container_rows if isinstance(r, dict)]
+
+    if not container_rows:
+        raise Exception("container_data kosong, total tidak bisa dibentuk")
+
+    unique_headers = []
+    seen = set()
+
+    for h in header_rows or []:
+        if not isinstance(h, dict):
+            continue
+
+        h = _normalize_header_obj(h)
+        inv_no = _normalize_invoice_no(h.get("inv_invoice_no"))
+
+        if not inv_no or inv_no in seen:
+            continue
+
+        seen.add(inv_no)
+        unique_headers.append(h)
+
+    total_obj = {
+        "match_score": "true",
+        "match_description": "null",
+
+        # detail-level aggregates tetap dari detail rows
+        "inv_quantity": _sum_numeric(detail_rows, "inv_quantity"),
+        "inv_amount": _sum_numeric(detail_rows, "inv_amount"),
+
+        # header-level totals -> SUM semua invoice yang matched
+        "inv_total_quantity": sum((_to_float(h.get("inv_total_quantity")) or 0) for h in unique_headers),
+        "inv_total_amount": sum((_to_float(h.get("inv_total_amount")) or 0) for h in unique_headers),
+        "inv_total_nw": sum((_to_float(h.get("inv_total_nw")) or 0) for h in unique_headers),
+        "inv_total_gw": sum((_to_float(h.get("inv_total_gw")) or 0) for h in unique_headers),
+        "inv_total_volume": sum((_to_float(h.get("inv_total_volume")) or 0) for h in unique_headers),
+        "inv_total_package": sum((_to_float(h.get("inv_total_package")) or 0) for h in unique_headers),
+
+        "pl_package_unit": _first_text(unique_headers, "pl_package_unit"),
+        "pl_package_count": _sum_numeric(detail_rows, "pl_package_count"),
+        "pl_nw": _sum_numeric(detail_rows, "pl_nw"),
+        "pl_gw": _sum_numeric(detail_rows, "pl_gw"),
+        "pl_volume": _sum_numeric(detail_rows, "pl_volume"),
+
+        "pl_total_quantity": sum((_to_float(h.get("pl_total_quantity")) or 0) for h in unique_headers),
+        "pl_total_amount": sum((_to_float(h.get("pl_total_amount")) or 0) for h in unique_headers),
+        "pl_total_nw": sum((_to_float(h.get("pl_total_nw")) or 0) for h in unique_headers),
+        "pl_total_gw": sum((_to_float(h.get("pl_total_gw")) or 0) for h in unique_headers),
+        "pl_total_volume": sum((_to_float(h.get("pl_total_volume")) or 0) for h in unique_headers),
+        "pl_total_package": sum((_to_float(h.get("pl_total_package")) or 0) for h in unique_headers),
+
+        # container/global BL
+        "bl_shipper_name": _first_text(container_rows, "bl_shipper_name"),
+        "bl_shipper_address": _first_text(container_rows, "bl_shipper_address"),
+        "bl_no": _first_text(container_rows, "bl_no"),
+        "bl_date": _first_text(container_rows, "bl_date"),
+        "bl_consignee_name": _first_text(container_rows, "bl_consignee_name"),
+        "bl_consignee_address": _first_text(container_rows, "bl_consignee_address"),
+        "bl_consignee_tax_id": _first_text(container_rows, "bl_consignee_tax_id"),
+        "bl_seller_name": _first_text(container_rows, "bl_seller_name"),
+        "bl_seller_address": _first_text(container_rows, "bl_seller_address"),
+        "bl_lc_number": _first_text(container_rows, "bl_lc_number"),
+        "bl_notify_party": _first_text(container_rows, "bl_notify_party"),
+        "bl_vessel": _first_text(container_rows, "bl_vessel"),
+        "bl_voyage_no": _first_text(container_rows, "bl_voyage_no"),
+        "bl_port_of_loading": _first_text(container_rows, "bl_port_of_loading"),
+        "bl_port_of_destination": _first_text(container_rows, "bl_port_of_destination"),
+        "bl_gw_unit": _first_text(container_rows, "bl_gw_unit"),
+        "bl_gw": _sum_numeric(container_rows, "bl_gw"),
+        "bl_volume_unit": _first_text(container_rows, "bl_volume_unit"),
+        "bl_volume": _sum_numeric(container_rows, "bl_volume"),
+        "bl_package_count": _sum_numeric(container_rows, "bl_package_count"),
+        "bl_package_unit": _first_text(container_rows, "bl_package_unit"),
+    }
+
+    _ensure_total_keys(total_obj)
+    return [total_obj]
+
 def _has_text_value(v) -> bool:
     return not _is_null(v)
 
@@ -2185,7 +2396,7 @@ def _postprocess_item_no_fields(rows: list):
 # MAIN RUN OCR
 # ==============================
 
-def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
+def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, invoice_doc_count=1):
 
     # Guard backend supaya COO tidak pernah diproses tanpa Bill of Lading.
     # Kontrak dari UI: jika ada 3 file tetapi with_total_container=False,
@@ -2229,14 +2440,25 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
-        header_obj = _call_gemini_json_uri(
-            detail_input_uri,
-            build_header_prompt(),
-            expect_array=False,
-            retries=3
-        )
-        if not isinstance(header_obj, dict):
-            header_obj = {}
+        header_obj = {}
+        header_rows = []
+
+        if int(invoice_doc_count or 1) > 1:
+            header_rows = _extract_multi_header_rows(
+                detail_input_uri=detail_input_uri,
+                invoice_doc_count=int(invoice_doc_count),
+            )
+        else:
+            header_obj = _call_gemini_json_uri(
+                detail_input_uri,
+                build_header_prompt(),
+                expect_array=False,
+                retries=3
+            )
+            if not isinstance(header_obj, dict):
+                header_obj = {}
+            header_obj = _normalize_header_obj(header_obj)
+            header_rows = [header_obj]
 
         # GET TOTAL ROW FROM GEMINI
         data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
@@ -2311,7 +2533,10 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         _ensure_all_detail_keys(all_rows)
 
-        _apply_header_to_rows(all_rows, header_obj)
+        if int(invoice_doc_count or 1) > 1:
+            _apply_headers_by_invoice_no(all_rows, header_rows)
+        else:
+            _apply_header_to_rows(all_rows, header_obj)
 
         _postprocess_pl_package_unit(all_rows)
 
@@ -2370,8 +2595,13 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         all_rows = _validate_po(all_rows)
 
-        _validate_invoice_rows(all_rows)
-        _validate_packing_rows(all_rows)
+        if int(invoice_doc_count or 1) > 1:
+            _validate_invoice_rows_grouped(all_rows)
+            _validate_packing_rows_grouped(all_rows)
+        else:
+            _validate_invoice_rows(all_rows)
+            _validate_packing_rows(all_rows)
+
         _validate_invoice_vs_packing_extra(all_rows)
 
         _validate_bl_rows(all_rows)
@@ -2381,8 +2611,16 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
 
         if with_total_container:
+        if int(invoice_doc_count or 1) > 1:
+            total_data = _build_total_from_headers_and_container(
+                header_rows=header_rows,
+                detail_rows=all_rows,
+                container_rows=container_data
+            )
+        else:
             total_data = _build_total_from_detail_and_container(all_rows, container_data)
-            total_data = _validate_total_rows(total_data, all_rows)
+
+        total_data = _validate_total_rows(total_data, all_rows)
 
         _rename_final_fields(all_rows)
         # CONVERT TO CSV
