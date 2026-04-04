@@ -2603,7 +2603,6 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, invoice_doc_
             _validate_packing_rows(all_rows)
 
         _validate_invoice_vs_packing_extra(all_rows)
-
         _validate_bl_rows(all_rows)
         _validate_coo_rows(all_rows)
 
@@ -2611,22 +2610,19 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, invoice_doc_
         _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
 
         if with_total_container:
-        if int(invoice_doc_count or 1) > 1:
-            total_data = _build_total_from_headers_and_container(
-                header_rows=header_rows,
-                detail_rows=all_rows,
-                container_rows=container_data
-            )
-        else:
-            total_data = _build_total_from_detail_and_container(all_rows, container_data)
+            if int(invoice_doc_count or 1) > 1:
+                total_data = _build_total_from_headers_and_container(
+                    header_rows=header_rows,
+                    detail_rows=all_rows,
+                    container_rows=container_data
+                )
+            else:
+                total_data = _build_total_from_detail_and_container(all_rows, container_data)
 
-        total_data = _validate_total_rows(total_data, all_rows)
+            total_data = _validate_total_rows(total_data, all_rows)
 
         _rename_final_fields(all_rows)
-        # CONVERT TO CSV
-        # ==============================
-        # (NEW) OUTPUT PER FOLDER
-        # ==============================
+
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             all_rows,
@@ -2644,7 +2640,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, invoice_doc_
         container_csv_uri = None
         if container_data is not None:
             container_csv_uri = _convert_to_csv_path(
-                f"output/container/{invoice_name}_container.csv", container_data
+                f"output/container/{invoice_name}_container.csv",
+                container_data
             )
 
         return {
