@@ -262,6 +262,8 @@ SCHEMA OUTPUT (INDEX):
     "idx": number,
 
     "inv_page_no": number,
+    "inv_invoice_no": "string",
+    "inv_invoice_date": "string",
     "inv_customer_po_no": "string",
     "inv_spart_item_no": "string",
     "inv_description": "string",
@@ -272,6 +274,8 @@ SCHEMA OUTPUT (INDEX):
     "inv_amount": number,
 
     "pl_page_no": number,
+    "pl_invoice_no": "string",
+    "pl_invoice_date": "string",
     "pl_customer_po_no": "string",
     "pl_description": "string",
     "pl_quantity": number
@@ -281,6 +285,8 @@ SCHEMA OUTPUT (INDEX):
 CATATAN:
 - inv_* anchor diambil dari Invoice.
 - pl_* anchor diambil dari Packing List.
+- inv_invoice_no dan inv_invoice_date WAJIB diekstrak di level index sebagai identity anchor.
+- pl_invoice_no dan pl_invoice_date diambil jika ada pada Packing List.
 - Jika pasangan row PL tidak ditemukan dengan yakin, isi field pl_* dengan "null"/0.
 """
 

@@ -1556,6 +1556,38 @@ def _group_rows_by_key(rows: list, key: str) -> dict:
 
     return groups
 
+def _attach_identity_from_index(rows: list, index_items: list):
+    """
+    Copy identity fields dari index -> detail rows berdasarkan urutan.
+    Aman karena build_detail_prompt_from_index sudah mewajibkan
+    jumlah dan urutan output sama dengan anchor index.
+    """
+    if not isinstance(rows, list) or not isinstance(index_items, list):
+        return
+
+    limit = min(len(rows), len(index_items))
+
+    for i in range(limit):
+        row = rows[i]
+        idx = index_items[i]
+
+        if not isinstance(row, dict) or not isinstance(idx, dict):
+            continue
+
+        # invoice identity
+        if _is_null(row.get("inv_invoice_no")) and not _is_null(idx.get("inv_invoice_no")):
+            row["inv_invoice_no"] = idx.get("inv_invoice_no")
+
+        if _is_null(row.get("inv_invoice_date")) and not _is_null(idx.get("inv_invoice_date")):
+            row["inv_invoice_date"] = idx.get("inv_invoice_date")
+
+        # packing identity
+        if _is_null(row.get("pl_invoice_no")) and not _is_null(idx.get("pl_invoice_no")):
+            row["pl_invoice_no"] = idx.get("pl_invoice_no")
+
+        if _is_null(row.get("pl_invoice_date")) and not _is_null(idx.get("pl_invoice_date")):
+            row["pl_invoice_date"] = idx.get("pl_invoice_date")
+
 def _validate_invoice_rows_grouped(rows: list):
     groups = _group_rows_by_key(rows, "inv_invoice_no")
 
@@ -2532,6 +2564,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, invoice_doc_
             raise Exception("Tidak ada data detail hasil Gemini")
 
         _ensure_all_detail_keys(all_rows)
+
+        # inject invoice identity dari anchor index -> detail rows
+        _attach_identity_from_index(all_rows, index_items)
 
         if int(invoice_doc_count or 1) > 1:
             _apply_headers_by_invoice_no(all_rows, header_rows)
