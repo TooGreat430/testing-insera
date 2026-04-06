@@ -47,6 +47,7 @@ PL_PACKAGE_UNIT_MAP = {
     "ctns": "CT",
     "carton": "CT",
     "cartons": "CT",
+    "ct": "CT",
 
     "plt": "PX",
     "plts": "PX",
@@ -158,6 +159,12 @@ UNIT_CONVERSION_MAP = {
 
     "KGS": "KG",
     "KGM": "KG",
+
+    "DRM": "DR",
+    "DRUM": "DR",
+
+    "BAREL": "BLL",
+    "BARREL": "BLL",
 }
 
 def _normalize_unit_key(value):

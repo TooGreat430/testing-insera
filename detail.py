@@ -555,16 +555,6 @@ ATURAN:
 - Contoh:
   Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut, seperti:
 
-  ----------------------
-  |ITEM NAME | VOLUME  |
-  |--------------------|
-  |row 1     |         |
-  |----------|         |
-  |row 2     |   13.5  |
-  |----------|         |
-  |row 3     |         |
-  ----------------------
-
   Maka:
   - row paling atas: pl_volume = 13.5
   - row ke-2: pl_volume = 0
