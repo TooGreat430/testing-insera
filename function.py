@@ -33,6 +33,7 @@ from detail import (
 )
 from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
+from decimal import Decimal, InvalidOperation
 
 BATCH_SIZE = 30
 storage_client = storage.Client() 
@@ -203,16 +204,14 @@ def _convert_unit_value(value):
     return UNIT_CONVERSION_MAP.get(normalized, normalized)
 
 def _postprocess_unit_fields(rows: list):
-    """
-    Terapkan converter ke field-field unit yang relevan.
-    Tidak membuat field baru coo_quantity_unit.
-    COO quantity unit tetap diwakili oleh coo_unit.
-    """
     UNIT_FIELDS = [
         "inv_quantity_unit",
         "pl_weight_unit",
+        "pl_volume_unit",
         "coo_unit",
         "coo_gw_unit",
+        "bl_gw_unit",
+        "bl_volume_unit",
     ]
 
     for row in rows:
@@ -369,6 +368,33 @@ def _validate_total_rows(total_data, detail_rows: list):
                 f"Total: {left_label} != {right_label} ({left_val} vs {right_val})"
             )
 
+    def _cmp_volume_num_with_unit_fallback(left_key: str, right_key: str, eps=0.01, factor=35.315):
+        lv = _to_float(total_obj.get(left_key))
+        rv = _to_float(total_obj.get(right_key))
+        if lv is None or rv is None:
+            return False
+
+        # step 1: compare langsung
+        if abs(lv - rv) <= eps:
+            return True
+
+        # step 2: coba dikali 35.315
+        multiplied = rv * factor
+        if abs(lv - multiplied) <= eps:
+            return True
+
+        # step 3: kalau masih beda, coba dibagi 35.315
+        divided = rv / factor
+        if abs(lv - divided) <= eps:
+            return True
+
+        _append_total_error(
+            total_obj,
+            f"Total: {left_key} != {right_key} even after volume conversion check "
+            f"({lv} vs {rv}; {right_key}*{factor}={multiplied}; {right_key}/{factor}={divided})"
+        )
+        return False
+
     # 1) cek total bl_package_count vs total pl_package_count
     _cmp_num("bl_package_count", "pl_package_count")
 
@@ -384,9 +410,6 @@ def _validate_total_rows(total_data, detail_rows: list):
     _cmp_num("bl_gw", "pl_gw")
 
     # 4) cek bl_gw_unit vs pl_gw_unit
-    # NOTE:
-    # di output total yang Anda minta tidak ada field pl_gw_unit,
-    # jadi validasi diambil dari source detail: pl_weight_unit
     _cmp_text(
         "bl_gw_unit",
         total_obj.get("bl_gw_unit"),
@@ -394,16 +417,28 @@ def _validate_total_rows(total_data, detail_rows: list):
         _first_non_null(detail_rows, "pl_weight_unit")
     )
 
-    # 5) cek total bl_volume vs total pl_volume
-    _cmp_num("bl_volume", "pl_volume")
+    # 5) cek total bl_volume vs total pl_total_volume
+    pl_total_volume = _to_float(total_obj.get("pl_total_volume"))
+    if pl_total_volume is not None:
+        volume_match = _cmp_volume_num_with_unit_fallback("bl_volume", "pl_total_volume")
+    else:
+        volume_match = _cmp_volume_num_with_unit_fallback("bl_volume", "pl_volume")
 
-    # 6) cek bl_volume_unit vs pl_volume_unit
-    _cmp_text(
-        "bl_volume_unit",
-        total_obj.get("bl_volume_unit"),
-        "pl_volume_unit",
-        _first_non_null(detail_rows, "pl_volume_unit")
-    )
+    # 6) cek unit volume HANYA kalau angka match tanpa perlu konversi beda unit
+    # kalau volume_match karena konversi unit, jangan fail hanya karena unit beda
+    bl_volume_unit = total_obj.get("bl_volume_unit")
+    pl_volume_unit = _first_non_null(detail_rows, "pl_volume_unit")
+
+    if not _is_null(bl_volume_unit) and not _is_null(pl_volume_unit):
+        if _normalize_compare_text(bl_volume_unit) == _normalize_compare_text(pl_volume_unit):
+            pass
+        else:
+            # beda unit diperbolehkan selama angka volume sudah match lewat konversi
+            if not volume_match:
+                _append_total_error(
+                    total_obj,
+                    f"Total: bl_volume_unit != pl_volume_unit ({bl_volume_unit} vs {pl_volume_unit})"
+                )
 
     if total_obj.get("match_score") == "true":
         total_obj["match_description"] = "null"
@@ -1363,6 +1398,52 @@ def _fill_inv_price_unit_from_amount_unit(rows: list):
 
         if _is_null(r.get("inv_price_unit")) and not _is_null(r.get("inv_amount_unit")):
             r["inv_price_unit"] = r.get("inv_amount_unit")
+
+def _to_decimal_or_zero(value) -> Decimal:
+    """
+    Konversi aman ke Decimal.
+    None / empty / 'null' / non-numeric -> Decimal('0').
+    """
+    if value is None:
+        return Decimal("0")
+
+    if isinstance(value, Decimal):
+        return value
+
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+
+    raw = str(value).strip()
+    if raw == "" or raw.lower() == "null":
+        return Decimal("0")
+
+    raw = raw.replace(",", "")
+
+    try:
+        return Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def _generate_inv_amount_before_validation(rows: list):
+    """
+    Generate / overwrite inv_amount = inv_quantity * inv_unit_price.
+    Wajib dipanggil sebelum validasi.
+    """
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        qty = _to_decimal_or_zero(row.get("inv_quantity"))
+        unit_price = _to_decimal_or_zero(row.get("inv_unit_price"))
+        amount = qty * unit_price
+
+        if amount == amount.to_integral_value():
+            row["inv_amount"] = int(amount)
+        else:
+            row["inv_amount"] = float(amount)
+
+    return rows
 
 def _recompute_seq_by_key(rows: list, group_key: str, seq_key: str):
     """Hitung ulang seq global berdasarkan group_key (misal inv_customer_po_no)."""
@@ -2354,6 +2435,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
+
+        all_rows = _generate_inv_amount_before_validation(all_rows)
 
         # =========================
         # OPTIONAL: total/container
