@@ -553,7 +553,19 @@ ATURAN:
 - Rule ini berlaku untuk field numerik yang berasal dari merged cell, termasuk namun tidak terbatas pada:
   pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
 - Contoh:
-  Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut, maka:
+  Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut, seperti:
+
+  ----------------------
+  |ITEM NAME | VOLUME  |
+  |--------------------|
+  |row 1     |         |
+  |----------|         |
+  |row 2     |   13.5  |
+  |----------|         |
+  |row 3     |         |
+  ----------------------
+
+  Maka:
   - row paling atas: pl_volume = 13.5
   - row ke-2: pl_volume = 0
   - row ke-3: pl_volume = 0
