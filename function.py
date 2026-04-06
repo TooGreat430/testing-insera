@@ -973,6 +973,8 @@ def _call_gemini_uri(file_uri: str, prompt: str):
     if not response:
         raise Exception("Empty response from Gemini")
 
+    print(f"(Gemini Run ID: {response.response_id})")
+
     if hasattr(response, "text") and response.text:
         return response.text.strip()
 
@@ -2327,6 +2329,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 
         detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
+        print("OCR Header")
+
         header_obj = _call_gemini_json_uri(
             detail_input_uri,
             build_header_prompt(),
@@ -2390,6 +2394,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         MAX_WORKERS = max(1, min(MAX_WORKERS, len(jobs)))
 
         results = {}
+        print("OCR Batching")
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = [
                 ex.submit(_run_one_detail_batch, detail_input_uri, run_prefix, bn, prm)
