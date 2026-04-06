@@ -1839,6 +1839,16 @@ def _validate_invoice_vs_packing_extra(rows: list):
             f"PL vs COO: pl_gw != coo_gw (PL {_to_float(pl_gw)}, coo {_to_float(coo_gw)})"
         )
 
+        pl_package_count = r.get("pl_package_count")
+        coo_package_count = r.get("coo_package_count")
+        _compare_num_values(
+            r,
+            pl_package_count,
+            coo_package_count,
+            f"PL vs COO: pl_package_count != coo_package_count "
+            f"(PL {_to_float(pl_package_count)}, coo {_to_float(coo_package_count)})"
+        )
+
         _compare_text_values(
             r,
             r.get("pl_weight_unit"),
