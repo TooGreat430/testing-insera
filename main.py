@@ -72,7 +72,7 @@ menu = st.sidebar.radio("Menu", ["Upload", "Report"])
 storage_client = storage.Client()
 bucket = storage_client.bucket(BUCKET_NAME)
 
-def _launch_ocr_process(invoice_name, pdf_paths, with_total_container, invoice_doc_count: int = 1):
+def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
     worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_worker.py")
 
     cmd = [
@@ -81,7 +81,6 @@ def _launch_ocr_process(invoice_name, pdf_paths, with_total_container, invoice_d
         invoice_name,
         "true" if with_total_container else "false",
         json.dumps(pdf_paths),
-        str(int(invoice_doc_count or 1)),
     ]
 
     return subprocess.Popen(
@@ -368,8 +367,7 @@ if menu == "Upload":
                 _launch_ocr_process(
                     invoice_name=final_invoice_name,
                     pdf_paths=pdf_paths,
-                    with_total_container=with_total_container,
-                    invoice_doc_count=len(invoice_files),
+                    with_total_container=with_total_container
                 )
 
                 st.success("OCR sedang diproses. Silakan cek menu Report untuk status RUNNING / DONE.")

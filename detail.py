@@ -4,20 +4,7 @@ import json
 # HEADER FIELDS (doc-level)
 # =========================
 
-HEADER_TOTAL_NUM_FIELDS = {
-    "inv_total_quantity",
-    "inv_total_amount",
-    "inv_total_nw",
-    "inv_total_gw",
-    "inv_total_volume",
-    "inv_total_package",
-    "pl_total_quantity",
-    "pl_total_amount",
-    "pl_total_nw",
-    "pl_total_gw",
-    "pl_total_volume",
-    "pl_total_package",
-}
+
 
 DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_score",
@@ -262,8 +249,6 @@ SCHEMA OUTPUT (INDEX):
     "idx": number,
 
     "inv_page_no": number,
-    "inv_invoice_no": "string",
-    "inv_invoice_date": "string",
     "inv_customer_po_no": "string",
     "inv_spart_item_no": "string",
     "inv_description": "string",
@@ -274,8 +259,6 @@ SCHEMA OUTPUT (INDEX):
     "inv_amount": number,
 
     "pl_page_no": number,
-    "pl_invoice_no": "string",
-    "pl_invoice_date": "string",
     "pl_customer_po_no": "string",
     "pl_description": "string",
     "pl_quantity": number
@@ -285,8 +268,6 @@ SCHEMA OUTPUT (INDEX):
 CATATAN:
 - inv_* anchor diambil dari Invoice.
 - pl_* anchor diambil dari Packing List.
-- inv_invoice_no dan inv_invoice_date WAJIB diekstrak di level index sebagai identity anchor.
-- pl_invoice_no dan pl_invoice_date diambil jika ada pada Packing List.
 - Jika pasangan row PL tidak ditemukan dengan yakin, isi field pl_* dengan "null"/0.
 """
 
@@ -504,43 +485,6 @@ GENERAL KNOWLEDGE:
      Contoh:
      V.S018
      Berarti value tersebut adalah S018
-"""
-
-def build_multi_header_prompt(invoice_doc_count: int) -> str:
-    header_fields_json = json.dumps(HEADER_SCHEMA_TEXT, ensure_ascii=False)
-    numeric_fields_json = json.dumps(sorted(HEADER_TOTAL_NUM_FIELDS), ensure_ascii=False)
-
-    return f"""
-ROLE:
-Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
-Rule-based, deterministik, anti-halusinasi.
-
-TUGAS:
-Ekstrak HEADER untuk kasus MULTIPLE dokumen dengan baseline jumlah dokumen invoice = {invoice_doc_count}.
-
-ATURAN:
-1) Output HANYA JSON ARRAY, tanpa teks lain.
-2) Panjang array WAJIB = {invoice_doc_count}.
-3) Satu object mewakili satu dokumen invoice.
-4) JANGAN menambah key baru.
-5) JANGAN menghapus key yang sudah ada.
-6) Tidak boleh JSON literal null → gunakan string "null".
-7) Format tanggal: YYYY-MM-DD.
-8) Connect Invoice, Packing List, dan COO berdasarkan invoice_no.
-9) Bill of Lading tetap bersifat global. Jika BL tersedia, field bl_* yang sama boleh muncul pada setiap object.
-10) Jika dokumen tidak ada → isi "null" untuk string, 0 untuk numeric header.
-
-SEMUA OBJECT WAJIB memiliki key persis berikut ini:
-{header_fields_json}
-
-FIELD NUMERIK HEADER (jika tidak ada isi 0):
-{numeric_fields_json}
-
-PENTING:
-- Header field harus tetap sama seperti mode single.
-- Fokus utama connect adalah inv_invoice_no.
-- pl_invoice_no dan coo_invoice_no harus mengikuti invoice yang sama.
-- Output HANYA JSON ARRAY valid.
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
