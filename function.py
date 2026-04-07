@@ -1430,11 +1430,24 @@ def _to_decimal_or_zero(value) -> Decimal:
 
 def _generate_inv_amount_before_validation(rows: list):
     """
-    Generate / overwrite inv_amount = inv_quantity * inv_unit_price.
-    Wajib dipanggil sebelum validasi.
+    Rule inv_amount:
+    - kalau inv_amount null/kosong -> jangan generate, biarkan apa adanya
+    - kalau inv_amount = 0 -> biarkan 0
+    - kalau inv_amount ada nilainya dan bukan 0 -> apply math rule:
+      inv_amount = inv_quantity * inv_unit_price
     """
     for row in rows or []:
         if not isinstance(row, dict):
+            continue
+
+        current_amount = row.get("inv_amount")
+
+        # kalau null / kosong -> skip
+        if _is_null(current_amount):
+            continue
+
+        # kalau 0 -> biarkan apa adanya
+        if _is_zero_like(current_amount):
             continue
 
         qty = _to_decimal_or_zero(row.get("inv_quantity"))
