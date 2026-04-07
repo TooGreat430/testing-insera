@@ -18,9 +18,6 @@ from config import *
 from total import TOTAL_SYSTEM_INSTRUCTION 
 from container import CONTAINER_SYSTEM_INSTRUCTION
 from pathlib import Path
-from email import policy
-from email.parser import BytesParser
-from weasyprint import HTML
 import shutil
 from detail import (
     build_index_prompt,
@@ -948,104 +945,119 @@ def _compress_pdf_if_needed(input_path, max_mb=45):
 
     return compressed_path
 
-HTML_LIKE_MARKERS = (
-    b"content-type: multipart/",
-    b"content-type: text/html",
-    b"<!doctype html",
-    b"<html",
-    b"quoted-printable",
-)
+import csv
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.styles import Alignment
+from PyPDF2 import PdfReader
 
-def _read_head(path, n=8192):
-    with open(path, "rb") as f:
-        return f.read(n)
+RAW_MARKUP_MARKERS = [
+    "content-type:",
+    "multipart/mixed",
+    "quoted-printable",
+    "<html",
+    "<!doctype",
+    "style type=",
+    ".c0 {",
+]
 
-def _looks_like_xlsx(head: bytes) -> bool:
-    return head.startswith(b"PK\x03\x04")
+def _count_pdf_pages(pdf_path: str) -> int:
+    reader = PdfReader(pdf_path)
+    return len(reader.pages)
 
-def _looks_like_ole_xls(head: bytes) -> bool:
-    return head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+def _get_soffice_path() -> str:
+    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice_path:
+        raise Exception(
+            "LibreOffice headless tidak ditemukan. "
+            "Install libreoffice/soffice agar file xls/xlsx/csv bisa dikonversi ke PDF."
+        )
+    return soffice_path
 
-def _looks_like_html_wrapped_xls(head: bytes) -> bool:
-    low = head.lower()
-    return any(marker in low for marker in HTML_LIKE_MARKERS)
+def _run_soffice_convert(local_input_path: str, out_dir: str, convert_to: str):
+    soffice_path = _get_soffice_path()
 
-def _extract_html_from_wrapped_xls(src_path, workdir):
-    raw = Path(src_path).read_bytes()
-    html_path = Path(workdir) / f"{Path(src_path).stem}_extracted.html"
+    profile_dir = tempfile.mkdtemp(prefix="lo-profile-")
+    profile_uri = Path(profile_dir).as_uri()
 
     try:
-        msg = BytesParser(policy=policy.default).parsebytes(raw)
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.is_multipart():
-                    continue
-                if part.get_content_type() == "text/html":
-                    html = part.get_content()
-                    html_path.write_text(html, encoding="utf-8")
-                    return str(html_path)
-    except Exception:
-        pass
+        cmd = [
+            soffice_path,
+            f"-env:UserInstallation={profile_uri}",
+            "--headless",
+            "--nologo",
+            "--nolockcheck",
+            "--nodefault",
+            "--convert-to", convert_to,
+            "--outdir", out_dir,
+            local_input_path,
+        ]
 
-    text = raw.decode("utf-8", errors="replace")
-    m = re.search(r"(?is)(<!DOCTYPE html.*|<html.*)</html>", text)
-    if m:
-        html_path.write_text(m.group(0), encoding="utf-8")
-        return str(html_path)
+        result = subprocess.run(cmd, capture_output=True, text=True)
 
-    raise Exception("HTML part tidak ditemukan dari file .xls")
+        if result.returncode != 0:
+            raise Exception(
+                f"Gagal convert file ke PDF. stdout={result.stdout} stderr={result.stderr}"
+            )
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
-def _inject_print_css(html: str) -> str:
-    extra_css = """
-    <style>
-    @page { size: Letter landscape; margin: 0.18in; }
-    html, body {
-        print-color-adjust: exact;
-        -webkit-print-color-adjust: exact;
-    }
-    table, tr, td, th { page-break-inside: avoid; }
-    img { max-width: 100%; }
-    </style>
-    """
-
-    if "</head>" in html:
-        return html.replace("</head>", extra_css + "\n</head>", 1)
-    return extra_css + "\n" + html
-
-def _render_html_to_pdf(html_path, output_pdf):
-    html = Path(html_path).read_text(encoding="utf-8", errors="replace")
-    html = _inject_print_css(html)
-    HTML(string=html, base_url=str(Path(html_path).parent)).write_pdf(output_pdf)
-
-def _convert_with_libreoffice(src_path, output_pdf):
-    outdir = str(Path(output_pdf).parent)
-
-    subprocess.run([
-        "soffice",
-        "--headless",
-        "--convert-to", "pdf",
-        "--outdir", outdir,
-        src_path,
-    ], check=True)
-
-    produced = str(Path(outdir) / f"{Path(src_path).stem}.pdf")
-    if os.path.abspath(produced) != os.path.abspath(output_pdf):
-        shutil.move(produced, output_pdf)
-
-def _pdf_contains_raw_markup(pdf_path) -> bool:
-    reader = PdfReader(str(pdf_path))
-    text = "\n".join((page.extract_text() or "") for page in reader.pages[:2]).lower()
-
-    markers = [
-        "content-type:",
-        "multipart/mixed",
-        "quoted-printable",
-        "<html",
-        "<!doctype",
-        "style type=",
-        ".c0 {",
+def _find_first_output_file(out_dir: str, ext: str) -> str:
+    files = [
+        os.path.join(out_dir, f)
+        for f in os.listdir(out_dir)
+        if f.lower().endswith(ext.lower())
     ]
-    return any(m in text for m in markers)
+    if not files:
+        raise Exception(f"Konversi selesai tapi file output {ext} tidak ditemukan.")
+    files.sort()
+    return files[0]
+
+def _csv_to_xlsx(local_csv_path: str) -> str:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+
+    with open(local_csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            ws.append(row)
+
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx").name
+    wb.save(out_path)
+    return out_path
+
+def _xls_to_xlsx(local_xls_path: str) -> str:
+    out_dir = tempfile.mkdtemp(prefix="xls-to-xlsx-")
+    _run_soffice_convert(local_xls_path, out_dir, "xlsx")
+    return _find_first_output_file(out_dir, ".xlsx")
+
+def _pdf_contains_raw_markup(pdf_path: str) -> bool:
+    try:
+        reader = PdfReader(pdf_path)
+        text = "\n".join((page.extract_text() or "") for page in reader.pages[:2]).lower()
+        return any(marker in text for marker in RAW_MARKUP_MARKERS)
+    except Exception:
+        return False
+
+def _validate_spreadsheet_pdf_result(pdf_path: str, source_name: str):
+    total_pages = _count_pdf_pages(pdf_path)
+
+    if total_pages == 0:
+        raise Exception(f"Hasil convert PDF untuk '{source_name}' kosong.")
+
+    if _pdf_contains_raw_markup(pdf_path):
+        raise Exception(
+            f"Hasil convert PDF untuk '{source_name}' masih berisi markup HTML/MIME."
+        )
 
 def _ensure_input_is_pdf(src_path: str) -> str:
     ext = Path(src_path).suffix.lower()
@@ -1053,46 +1065,48 @@ def _ensure_input_is_pdf(src_path: str) -> str:
     if ext == ".pdf":
         return src_path
 
-    tmp_pdf_path = None
-
-    try:
-        tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        tmp_pdf.close()
-        tmp_pdf_path = tmp_pdf.name
-
-        head = _read_head(src_path)
-
-        if _looks_like_html_wrapped_xls(head):
-            workdir = tempfile.mkdtemp()
-            try:
-                html_path = _extract_html_from_wrapped_xls(src_path, workdir)
-                _render_html_to_pdf(html_path, tmp_pdf_path)
-            finally:
-                shutil.rmtree(workdir, ignore_errors=True)
-            return tmp_pdf_path
-
-        if ext in (".xls", ".xlsx") or _looks_like_xlsx(head) or _looks_like_ole_xls(head):
-            _convert_with_libreoffice(src_path, tmp_pdf_path)
-
-            if _pdf_contains_raw_markup(tmp_pdf_path):
-                try:
-                    workdir = tempfile.mkdtemp()
-                    try:
-                        html_path = _extract_html_from_wrapped_xls(src_path, workdir)
-                        _render_html_to_pdf(html_path, tmp_pdf_path)
-                    finally:
-                        shutil.rmtree(workdir, ignore_errors=True)
-                except Exception:
-                    pass
-
-            return tmp_pdf_path
-
+    if ext not in [".xls", ".xlsx", ".csv"]:
         raise Exception(f"Format file tidak didukung: {src_path}")
 
+    temp_created = []
+
+    try:
+        source_for_pdf = src_path
+
+        if ext == ".csv":
+            source_for_pdf = _csv_to_xlsx(src_path)
+            temp_created.append(source_for_pdf)
+
+        elif ext == ".xls":
+            source_for_pdf = _xls_to_xlsx(src_path)
+            temp_created.append(source_for_pdf)
+
+        out_dir = tempfile.mkdtemp(prefix="sheet-to-pdf-")
+        temp_created.append(out_dir)
+
+        _run_soffice_convert(
+            source_for_pdf,
+            out_dir,
+            "pdf:calc_pdf_Export"
+        )
+
+        produced_pdf = _find_first_output_file(out_dir, ".pdf")
+
+        final_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        final_pdf.close()
+        shutil.copy2(produced_pdf, final_pdf.name)
+
+        _validate_spreadsheet_pdf_result(final_pdf.name, os.path.basename(src_path))
+
+        return final_pdf.name
+
     except Exception:
-        if tmp_pdf_path and os.path.exists(tmp_pdf_path):
+        for p in temp_created:
             try:
-                os.remove(tmp_pdf_path)
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                elif os.path.exists(p):
+                    os.remove(p)
             except Exception:
                 pass
         raise

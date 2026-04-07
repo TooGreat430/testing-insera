@@ -2,7 +2,11 @@ import streamlit as st
 import tempfile
 import subprocess
 import sys
-from function import create_running_markers, delete_running_markers
+from function import (
+    create_running_markers,
+    delete_running_markers,
+    _ensure_input_is_pdf,
+)
 from google.cloud import storage
 from config import BUCKET_NAME, TMP_PREFIX, PO_PREFIX
 import os
@@ -217,41 +221,7 @@ def _validate_spreadsheet_pdf_result(pdf_path: str, source_name: str):
 
 
 def _convert_file_to_pdf(local_input_path):
-    """
-    Convert xls/xlsx/csv -> pdf
-    Prinsip:
-    - xlsx: convert langsung, jangan rewrite workbook
-    - xls : convert ke xlsx via soffice, lalu convert langsung ke pdf
-    - csv : buat xlsx sederhana dulu, lalu convert ke pdf
-    """
-    ext = os.path.splitext(local_input_path)[1].lower()
-
-    if ext == ".pdf":
-        return local_input_path
-
-    if ext not in [".xls", ".xlsx", ".csv"]:
-        raise Exception(f"Format file tidak didukung untuk conversion ke PDF: {ext}")
-
-    source_for_pdf = local_input_path
-
-    if ext == ".csv":
-        source_for_pdf = _csv_to_xlsx(local_input_path)
-
-    elif ext == ".xls":
-        source_for_pdf = _xls_to_xlsx(local_input_path)
-
-    out_dir = tempfile.mkdtemp()
-
-    _run_soffice_convert(
-        source_for_pdf,
-        out_dir,
-        "pdf:calc_pdf_Export"
-    )
-
-    pdf_path = _find_first_output_file(out_dir, ".pdf")
-    _validate_spreadsheet_pdf_result(pdf_path, os.path.basename(local_input_path))
-
-    return pdf_path
+    return _ensure_input_is_pdf(local_input_path)
 
 def _prepare_uploaded_file_as_pdf(uploaded_file):
     """
