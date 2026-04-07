@@ -1337,6 +1337,82 @@ def _norm_desc(x):
     s = re.sub(r"[^A-Z0-9]", "", s)
     return s
 
+def _get_extracted_qty_for_po(row: dict):
+    """
+    Prioritas quantity untuk logic PO:
+    1) inv_quantity
+    2) pl_quantity
+    """
+    if not isinstance(row, dict):
+        return None
+
+    q = _to_float(row.get("inv_quantity"))
+    if q is not None:
+        return q
+
+    q = _to_float(row.get("pl_quantity"))
+    if q is not None:
+        return q
+
+    return None
+
+
+def _copy_po_line_with_adjusted_qty(po_line: dict, adjusted_qty):
+    """
+    Copy PO line dan replace po_quantity dengan hasil final adjustment.
+    """
+    copied = dict(po_line or {})
+
+    if adjusted_qty is None:
+        copied["po_quantity"] = po_line.get("po_quantity", "null") if isinstance(po_line, dict) else "null"
+        return copied
+
+    if abs(adjusted_qty - round(adjusted_qty)) <= 1e-9:
+        copied["po_quantity"] = int(round(adjusted_qty))
+    else:
+        copied["po_quantity"] = adjusted_qty
+
+    return copied
+
+
+def _pick_best_po_candidate(candidates, extracted_qty, min_candidate_qty=None):
+    """
+    Pilih candidate PO quantity yang paling dekat dengan extracted_qty.
+
+    Rules:
+    - kalau min_candidate_qty ada, prioritaskan candidate dengan po_quantity > min_candidate_qty
+    - tie-break: pilih po_quantity yang lebih besar
+    """
+    if not candidates:
+        return None, None
+
+    enriched = []
+    for idx, line in candidates:
+        po_qty = _to_float(line.get("po_quantity"))
+        enriched.append((idx, line, po_qty))
+
+    filtered = enriched
+    if min_candidate_qty is not None:
+        gt_filtered = [x for x in enriched if x[2] is not None and x[2] > min_candidate_qty]
+        if gt_filtered:
+            filtered = gt_filtered
+
+    if extracted_qty is None:
+        idx, line, _ = filtered[0]
+        return idx, line
+
+    def _sort_key(item):
+        idx, line, po_qty = item
+        if po_qty is None:
+            return (float("inf"), float("inf"), idx)
+
+        # absolute diff paling kecil menang
+        # tie -> po_qty lebih besar menang
+        return (abs(po_qty - extracted_qty), -po_qty, idx)
+
+    idx, line, _ = sorted(filtered, key=_sort_key)[0]
+    return idx, line
+
 def _map_po_to_details(po_lines, detail_rows):
     po_article_index = {}
     po_desc_index = {}
@@ -1357,7 +1433,12 @@ def _map_po_to_details(po_lines, detail_rows):
         if d_norm:
             po_desc_index.setdefault((po_no_norm, d_norm), []).append((idx, line))
 
-    used = set()
+    # global_used = supaya PO line yang sudah dipakai tidak dipilih lagi sebagai candidate baru
+    global_used = set()
+
+    # state per bucket (po_no + article/desc key)
+    # dipakai untuk carry-forward "po_quantity hasil sebelumnya"
+    group_state = {}
 
     for row in detail_rows:
         if not isinstance(row, dict):
@@ -1372,47 +1453,114 @@ def _map_po_to_details(po_lines, detail_rows):
             row["_po_mapped"] = False
             continue
 
+        extracted_qty = _get_extracted_qty_for_po(row)
+
         chosen = None
-        chosen_key = None
+        chosen_idx = None
         matched_by = None
+        bucket_key = None
+        candidates = []
 
-        def _pick_first_unused(candidates):
-            nonlocal chosen, chosen_key
-            for idx, po_line in candidates:
-                key = (inv_po_norm, idx)
-                if key in used:
-                    continue
-                chosen = po_line
-                chosen_key = key
-                return True
-            return False
-
-        if chosen is None and inv_article_norm:
+        # prioritas matching tetap sama
+        if inv_article_norm:
             candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
-            if _pick_first_unused(candidates):
+            if candidates:
                 matched_by = "inv_spart_item_no"
+                bucket_key = (inv_po_norm, "ARTICLE", inv_article_norm)
 
-        if chosen is None and pl_article_norm:
+        if not candidates and pl_article_norm:
             candidates = po_article_index.get((inv_po_norm, pl_article_norm), [])
-            if _pick_first_unused(candidates):
+            if candidates:
                 matched_by = "pl_item_no"
+                bucket_key = (inv_po_norm, "ARTICLE", pl_article_norm)
 
-        if chosen is None and inv_desc_norm:
+        if not candidates and inv_desc_norm:
             candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
-            if _pick_first_unused(candidates):
+            if candidates:
                 matched_by = "description"
+                bucket_key = (inv_po_norm, "DESC", inv_desc_norm)
 
-        if chosen:
-            used.add(chosen_key)
+        if not candidates:
+            row["_po_mapped"] = False
+            continue
+
+        state = group_state.setdefault(
+            bucket_key,
+            {
+                "carry_qty": 0.0,
+                "last_po_data": None,
+            }
+        )
+
+        carry_qty = _to_float(state.get("carry_qty")) or 0.0
+        last_po_data = state.get("last_po_data")
+
+        # =====================================================
+        # RULE BARU:
+        # kalau qty extracted <= carry sebelumnya, pakai carry sebelumnya
+        # lalu kurangi lagi
+        # =====================================================
+        if extracted_qty is not None and carry_qty > 0 and extracted_qty <= carry_qty and last_po_data is not None:
+            new_carry = max(carry_qty - extracted_qty, 0.0)
+
+            chosen = _copy_po_line_with_adjusted_qty(last_po_data, new_carry)
+
+            state["carry_qty"] = new_carry
+            state["last_po_data"] = chosen
+
             row["_po_mapped"] = True
             row["_po_data"] = chosen
+            continue
 
-            if matched_by == "inv_spart_item_no" and not _is_null(row.get("inv_spart_item_no")):
-                row["pl_item_no"] = row.get("inv_spart_item_no")
-            elif matched_by == "pl_item_no" and not _is_null(row.get("pl_item_no")):
-                row["inv_spart_item_no"] = row.get("pl_item_no")
-        else:
+        # =====================================================
+        # kalau extracted > carry sebelumnya,
+        # cari candidate baru yang quantity-nya mendekati extracted
+        # dan jika carry ada, prioritaskan po_quantity > carry
+        # =====================================================
+        available_candidates = [
+            (idx, line)
+            for idx, line in candidates
+            if (inv_po_norm, idx) not in global_used
+        ]
+
+        if not available_candidates:
             row["_po_mapped"] = False
+            continue
+
+        min_candidate_qty = carry_qty if (extracted_qty is not None and carry_qty > 0 and extracted_qty > carry_qty) else None
+
+        chosen_idx, chosen_line = _pick_best_po_candidate(
+            available_candidates,
+            extracted_qty=extracted_qty,
+            min_candidate_qty=min_candidate_qty
+        )
+
+        if chosen_line is None:
+            row["_po_mapped"] = False
+            continue
+
+        base_po_qty = _to_float(chosen_line.get("po_quantity"))
+
+        if extracted_qty is not None and base_po_qty is not None:
+            adjusted_qty = abs(base_po_qty - extracted_qty)
+        else:
+            adjusted_qty = base_po_qty
+
+        chosen = _copy_po_line_with_adjusted_qty(chosen_line, adjusted_qty)
+
+        global_used.add((inv_po_norm, chosen_idx))
+
+        state["carry_qty"] = adjusted_qty if adjusted_qty is not None else 0.0
+        state["last_po_data"] = chosen
+
+        row["_po_mapped"] = True
+        row["_po_data"] = chosen
+
+        # sinkronkan article no seperti logic lama
+        if matched_by == "inv_spart_item_no" and not _is_null(row.get("inv_spart_item_no")):
+            row["pl_item_no"] = row.get("inv_spart_item_no")
+        elif matched_by == "pl_item_no" and not _is_null(row.get("pl_item_no")):
+            row["inv_spart_item_no"] = row.get("pl_item_no")
 
     return detail_rows
 
