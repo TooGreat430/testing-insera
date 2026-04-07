@@ -34,6 +34,7 @@ from detail import (
 from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
 from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher
 
 BATCH_SIZE = 30
 storage_client = storage.Client() 
@@ -2314,6 +2315,68 @@ def _postprocess_coo_description(rows: list):
                 row.get("coo_description")
             )
 
+def _normalize_description_for_similarity(value):
+    """
+    Normalisasi text untuk compare similarity:
+    - uppercase
+    - buang punctuation/non-alnum jadi spasi
+    - rapikan spasi
+    """
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return ""
+
+    s = s.upper()
+    s = re.sub(r"[^A-Z0-9]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _description_similarity(left, right) -> float:
+    """
+    Return similarity 0..1
+    """
+    l = _normalize_description_for_similarity(left)
+    r = _normalize_description_for_similarity(right)
+
+    if not l or not r:
+        return 0.0
+
+    if l == r:
+        return 1.0
+
+    return SequenceMatcher(None, l, r).ratio()
+
+
+def _postprocess_bl_description(rows: list, threshold: float = 0.55):
+    """
+    Rule:
+    - compare bl_description vs inv_description
+    - kalau sangat berbeda (similarity < threshold),
+      maka bl_description, bl_hs_code, bl_mark_number = 'null'
+    - kalau mirip, biarkan
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        inv_desc = row.get("inv_description")
+        bl_desc = row.get("bl_description")
+
+        # kalau salah satu kosong, skip
+        if _is_null(inv_desc) or _is_null(bl_desc):
+            continue
+
+        sim = _description_similarity(inv_desc, bl_desc)
+
+        if sim < threshold:
+            row["bl_description"] = "null"
+            row["bl_hs_code"] = "null"
+            row["bl_mark_number"] = "null"
+
 
 def _postprocess_item_no_fields(rows: list):
     for row in rows:
@@ -2498,6 +2561,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         _postprocess_item_no_fields(all_rows)
         _postprocess_unit_fields(all_rows)
         _postprocess_coo_description(all_rows)
+        _postprocess_bl_description(all_rows)
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
