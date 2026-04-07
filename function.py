@@ -284,6 +284,9 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
     coo_paths = coo_paths or []
 
     groups = {}
+    skipped_packing = []
+    skipped_coo = []
+    dropped_invoice_groups = []
 
     def _ensure_group(group_key, raw_invoice_no):
         if group_key not in groups:
@@ -305,7 +308,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
         grp = _ensure_group(group_key, raw_invoice_no)
         grp["invoice_paths"].append(p)
 
-    # packing harus punya pasangan invoice
+    # packing tanpa pasangan invoice -> SKIP
     for p in packing_paths:
         group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "packing")
 
@@ -313,13 +316,19 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
             raise Exception(f"Gagal membaca pl_invoice_no untuk file packing list: {os.path.basename(p)}")
 
         if group_key not in groups:
-            raise Exception(
-                f"Packing List dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
+            skipped_packing.append({
+                "invoice_no": raw_invoice_no,
+                "file": os.path.basename(p),
+            })
+            print(
+                f"[GROUPING][SKIP] Packing List '{os.path.basename(p)}' "
+                f"dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
             )
+            continue
 
         groups[group_key]["packing_paths"].append(p)
 
-    # COO optional, tapi kalau ada harus nempel ke invoice
+    # COO tanpa pasangan invoice -> SKIP
     for p in coo_paths:
         group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "coo")
 
@@ -327,20 +336,46 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
             raise Exception(f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(p)}")
 
         if group_key not in groups:
-            raise Exception(
-                f"COO dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
+            skipped_coo.append({
+                "invoice_no": raw_invoice_no,
+                "file": os.path.basename(p),
+            })
+            print(
+                f"[GROUPING][SKIP] COO '{os.path.basename(p)}' "
+                f"dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
             )
+            continue
 
         groups[group_key]["coo_paths"].append(p)
 
-    # final validation: setiap invoice group wajib punya packing
+    # invoice group yang tidak punya packing -> DROP
+    valid_groups = {}
     for group_key, grp in groups.items():
         if not grp["packing_paths"]:
-            raise Exception(
-                f"Packing List untuk invoice_no '{grp['invoice_no']}' tidak ditemukan."
+            dropped_invoice_groups.append({
+                "invoice_no": grp["invoice_no"],
+                "invoice_files": [os.path.basename(x) for x in grp["invoice_paths"]],
+            })
+            print(
+                f"[GROUPING][DROP] Invoice group '{grp['invoice_no']}' "
+                f"dibuang karena tidak punya pasangan packing list."
             )
+            continue
 
-    return groups
+        valid_groups[group_key] = grp
+
+    print(f"[GROUPING] valid_groups={len(valid_groups)}")
+    if skipped_packing:
+        print(f"[GROUPING] skipped_packing={skipped_packing}")
+    if skipped_coo:
+        print(f"[GROUPING] skipped_coo={skipped_coo}")
+    if dropped_invoice_groups:
+        print(f"[GROUPING] dropped_invoice_groups={dropped_invoice_groups}")
+
+    if not valid_groups:
+        raise Exception("Tidak ada pasangan Invoice + Packing List yang valid untuk diproses.")
+
+    return valid_groups
 
 def _sum_numeric(rows: list, key: str) -> float:
     total = 0.0
