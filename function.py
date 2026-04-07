@@ -2540,10 +2540,14 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
         "coo_paths": [...],
     }
 
-    Flow:
+    Flow baru:
     - grouping Invoice + PL + COO by invoice_no
     - BL global, dipakai ke semua group
-    - existing run_ocr() tetap dipakai, prompt existing tetap utuh
+    - tiap group diproses in-memory
+    - final output tetap hanya:
+      1 detail file
+      1 total file
+      1 container file
     """
     invoice_paths = uploaded_docs.get("invoice_paths") or []
     packing_paths = uploaded_docs.get("packing_paths") or []
@@ -2555,72 +2559,126 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
     if not packing_paths:
         raise Exception("packing_paths kosong")
 
-    groups = _group_docs_by_invoice_no(
-        invoice_paths=invoice_paths,
-        packing_paths=packing_paths,
-        coo_paths=coo_paths,
-    )
+    create_running_markers(invoice_name, with_total_container)
 
-    total_groups = len(groups)
-    print(f"[GROUPING] total_groups={total_groups}")
-    for gk, grp in groups.items():
-        print(
-            f"[GROUPING] key={gk} invoice_no={grp['invoice_no']} "
-            f"invoice={len(grp['invoice_paths'])} "
-            f"packing={len(grp['packing_paths'])} "
-            f"coo={len(grp['coo_paths'])}"
+    merged_detail_rows = []
+    global_container_rows = []
+
+    try:
+        groups = _group_docs_by_invoice_no(
+            invoice_paths=invoice_paths,
+            packing_paths=packing_paths,
+            coo_paths=coo_paths,
         )
 
-    for _, grp in sorted(groups.items(), key=lambda item: str(item[1]["invoice_no"])):
-        temp_group_paths = []
+        total_groups = len(groups)
+        print(f"[GROUPING] total_groups={total_groups}")
+        for gk, grp in groups.items():
+            print(
+                f"[GROUPING] key={gk} invoice_no={grp['invoice_no']} "
+                f"invoice={len(grp['invoice_paths'])} "
+                f"packing={len(grp['packing_paths'])} "
+                f"coo={len(grp['coo_paths'])}"
+            )
 
+        for _, grp in sorted(groups.items(), key=lambda item: str(item[1]["invoice_no"])):
+            temp_group_paths = []
+
+            try:
+                merged_invoice_pdf = _merge_pdfs(grp["invoice_paths"])
+                temp_group_paths.append(merged_invoice_pdf)
+
+                merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
+                temp_group_paths.append(merged_packing_pdf)
+
+                grouped_pdf_paths = [
+                    merged_invoice_pdf,
+                    merged_packing_pdf,
+                ]
+
+                # BL global (1 file untuk semua OCR)
+                if bl_path:
+                    grouped_pdf_paths.append(bl_path)
+
+                # COO per invoice group
+                if grp["coo_paths"]:
+                    merged_coo_pdf = _merge_pdfs(grp["coo_paths"])
+                    temp_group_paths.append(merged_coo_pdf)
+                    grouped_pdf_paths.append(merged_coo_pdf)
+
+                group_output_name = (
+                    f"{invoice_name}__{_safe_output_suffix(grp['invoice_no'])}"
+                    if total_groups > 1
+                    else (invoice_name or _safe_output_suffix(grp["invoice_no"]))
+                )
+
+                print(f"[GROUPING] run_ocr(in-memory) -> {group_output_name}")
+
+                result = run_ocr(
+                    invoice_name=group_output_name,
+                    uploaded_pdf_paths=grouped_pdf_paths,
+                    with_total_container=with_total_container,
+                    persist_output=False,
+                    manage_markers=False,
+                )
+
+                merged_detail_rows.extend(result.get("detail_rows") or [])
+
+                # BL cuma 1 global -> container cukup ambil sekali
+                if with_total_container and not global_container_rows:
+                    global_container_rows = result.get("container_rows") or []
+
+            finally:
+                for p in temp_group_paths:
+                    try:
+                        if p and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+        if not merged_detail_rows:
+            raise Exception("Tidak ada hasil detail gabungan")
+
+        detail_csv_uri = _convert_to_csv_path(
+            f"output/detail/{invoice_name}_detail.csv",
+            merged_detail_rows,
+            field_order=DETAIL_CSV_FIELD_ORDER_FINAL
+        )
+
+        total_csv_uri = None
+        container_csv_uri = None
+
+        if with_total_container and global_container_rows:
+            total_data = _build_total_from_detail_and_container(
+                merged_detail_rows,
+                global_container_rows
+            )
+            total_data = _validate_total_rows(total_data, merged_detail_rows)
+
+            total_csv_uri = _convert_to_csv_path(
+                f"output/total/{invoice_name}_total.csv",
+                total_data,
+                field_order=TOTAL_CSV_FIELD_ORDER_FINAL
+            )
+
+            container_csv_uri = _convert_to_csv_path(
+                f"output/container/{invoice_name}_container.csv",
+                global_container_rows
+            )
+
+        return {
+            "detail_csv": detail_csv_uri,
+            "total_csv": total_csv_uri,
+            "container_csv": container_csv_uri,
+        }
+
+    finally:
         try:
-            merged_invoice_pdf = _merge_pdfs(grp["invoice_paths"])
-            temp_group_paths.append(merged_invoice_pdf)
+            delete_running_markers(invoice_name, with_total_container)
+        except Exception:
+            pass
 
-            merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
-            temp_group_paths.append(merged_packing_pdf)
-
-            grouped_pdf_paths = [
-                merged_invoice_pdf,
-                merged_packing_pdf,
-            ]
-
-            # BL global (1 file untuk semua OCR)
-            if bl_path:
-                grouped_pdf_paths.append(bl_path)
-
-            # COO per invoice group
-            if grp["coo_paths"]:
-                merged_coo_pdf = _merge_pdfs(grp["coo_paths"])
-                temp_group_paths.append(merged_coo_pdf)
-                grouped_pdf_paths.append(merged_coo_pdf)
-
-            # supaya trace mudah:
-            # output_name__invoice_no
-            group_output_name = (
-                f"{invoice_name}__{_safe_output_suffix(grp['invoice_no'])}"
-                if total_groups > 1
-                else (invoice_name or _safe_output_suffix(grp["invoice_no"]))
-            )
-
-            print(f"[GROUPING] run_ocr -> {group_output_name}")
-
-            run_ocr(
-                invoice_name=group_output_name,
-                uploaded_pdf_paths=grouped_pdf_paths,
-                with_total_container=with_total_container
-            )
-
-        finally:
-            for p in temp_group_paths:
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-
-def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
+def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_output=True, manage_markers=True):
 
     # Guard backend supaya COO tidak pernah diproses tanpa Bill of Lading.
     # Kontrak dari UI: jika ada 3 file tetapi with_total_container=False,
@@ -2635,7 +2693,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
     prefix = TMP_PREFIX.rstrip("/")
     run_prefix = f"{prefix}/{run_id}"
 
-    create_running_markers(invoice_name, with_total_container)
+    if manage_markers:
+        create_running_markers(invoice_name, with_total_container)
 
     bucket = storage_client.bucket(BUCKET_NAME)
 
@@ -2827,41 +2886,54 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
             total_data = _validate_total_rows(total_data, all_rows)
 
         _rename_final_fields(all_rows)
-        # CONVERT TO CSV
-        # ==============================
-        # (NEW) OUTPUT PER FOLDER
-        # ==============================
+
+        # =========================
+        # FINAL RESULT OBJECT
+        # =========================
+        result = {
+            "detail_rows": all_rows,
+            "total_rows": total_data if total_data is not None else [],
+            "container_rows": container_data if container_data is not None else [],
+        }
+
+        if not persist_output:
+            return result
+
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
-            all_rows,
+            result["detail_rows"],
             field_order=DETAIL_CSV_FIELD_ORDER_FINAL
         )
 
         total_csv_uri = None
-        if total_data is not None:
+        if result["total_rows"]:
             total_csv_uri = _convert_to_csv_path(
                 f"output/total/{invoice_name}_total.csv",
-                total_data,
+                result["total_rows"],
                 field_order=TOTAL_CSV_FIELD_ORDER_FINAL
             )
 
         container_csv_uri = None
-        if container_data is not None:
+        if result["container_rows"]:
             container_csv_uri = _convert_to_csv_path(
-                f"output/container/{invoice_name}_container.csv", container_data
+                f"output/container/{invoice_name}_container.csv",
+                result["container_rows"]
             )
 
-        return {
+        result.update({
             "detail_csv": detail_csv_uri,
             "total_csv": total_csv_uri,
             "container_csv": container_csv_uri,
-        }
+        })
+
+        return result
 
     finally:
-        try:
-            delete_running_markers(invoice_name, with_total_container)
-        except Exception:
-            pass
+        if manage_markers:
+            try:
+                delete_running_markers(invoice_name, with_total_container)
+            except Exception:
+                pass
 
         for blob in bucket.list_blobs(prefix=f"{run_prefix}/"):
             blob.delete()
