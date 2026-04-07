@@ -2264,6 +2264,56 @@ def _normalize_item_no_whitespace(value):
 
     return s
 
+def _normalize_coo_description(value):
+    """
+    Ambil isi setelah pola quantity + OF.
+
+    Contoh:
+    ONE HUNDRED (100) CARTONS OF
+    HUB D761DSE 32X14 BLACK W/O
+    LOGO 9X108X100 270:112 ANO
+    BLACK W/O LOGO W/WARNING LOGO
+
+    ->
+
+    HUB D761DSE 32X14 BLACK W/O
+    LOGO 9X108X100 270:112 ANO
+    BLACK W/O LOGO W/WARNING LOGO
+    """
+    if value is None:
+        return "null"
+
+    s = str(value).strip()
+
+    if s == "" or s.lower() == "null":
+        return "null"
+
+    patterns = [
+        # contoh: ONE HUNDRED (100) CARTONS OF ...
+        r"^\s*(?:[A-Z][A-Z\s\-/&,\.]*\s+)?\(\s*\d+\s*\)\s+[A-Z0-9][A-Z0-9\s\-/&,\.]*?\bOF\b\s*",
+        # contoh: 100 CARTONS OF ...
+        r"^\s*\d+\s+[A-Z0-9][A-Z0-9\s\-/&,\.]*?\bOF\b\s*",
+    ]
+
+    for pattern in patterns:
+        m = re.match(pattern, s, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            cleaned = s[m.end():].strip()
+            return cleaned if cleaned else s
+
+    return s
+
+
+def _postprocess_coo_description(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        if "coo_description" in row:
+            row["coo_description"] = _normalize_coo_description(
+                row.get("coo_description")
+            )
+
 
 def _postprocess_item_no_fields(rows: list):
     for row in rows:
@@ -2447,6 +2497,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
         _postprocess_customer_po_no(all_rows)
         _postprocess_item_no_fields(all_rows)
         _postprocess_unit_fields(all_rows)
+        _postprocess_coo_description(all_rows)
 
         # 4) MAP PO TO DETAIL (sekali saja)
         all_rows = _map_po_to_details(po_lines, all_rows)
