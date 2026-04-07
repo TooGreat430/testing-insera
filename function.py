@@ -223,6 +223,125 @@ def _postprocess_unit_fields(rows: list):
             if key in row:
                 row[key] = _convert_unit_value(row.get(key))
 
+def _normalize_invoice_group_key(value):
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return ""
+
+    s = s.upper()
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"[^A-Z0-9]", "", s)
+    return s
+
+
+def _safe_output_suffix(value: str) -> str:
+    raw = str(value or "").strip()
+    if raw == "" or raw.lower() == "null":
+        return uuid.uuid4().hex[:8]
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_")
+    return safe or uuid.uuid4().hex[:8]
+
+
+def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
+    """
+    Pakai prompt existing: build_header_prompt()
+    Tidak mengubah prompt existing.
+    """
+    key_field_map = {
+        "invoice": "inv_invoice_no",
+        "packing": "pl_invoice_no",
+        "coo": "coo_invoice_no",
+    }
+
+    if doc_type not in key_field_map:
+        raise Exception(f"doc_type tidak didukung untuk grouping: {doc_type}")
+
+    grouping_run_prefix = f"{TMP_PREFIX.rstrip('/')}/grouping/{uuid.uuid4().hex}"
+    grouping_name = f"{doc_type}_{uuid.uuid4().hex}"
+    file_uri = _upload_temp_pdf_to_gcs(local_pdf_path, grouping_run_prefix, grouping_name)
+
+    header_obj = _call_gemini_json_uri(
+        file_uri,
+        build_header_prompt(),
+        expect_array=False,
+        retries=3
+    )
+
+    if not isinstance(header_obj, dict):
+        header_obj = {}
+
+    raw_invoice_no = header_obj.get(key_field_map[doc_type], "null")
+    group_key = _normalize_invoice_group_key(raw_invoice_no)
+
+    return group_key, raw_invoice_no, header_obj
+
+
+def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
+    coo_paths = coo_paths or []
+
+    groups = {}
+
+    def _ensure_group(group_key, raw_invoice_no):
+        if group_key not in groups:
+            groups[group_key] = {
+                "invoice_no": raw_invoice_no if not _is_null(raw_invoice_no) else group_key,
+                "invoice_paths": [],
+                "packing_paths": [],
+                "coo_paths": [],
+            }
+        return groups[group_key]
+
+    # invoice = master
+    for p in invoice_paths:
+        group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "invoice")
+
+        if not group_key:
+            raise Exception(f"Gagal membaca inv_invoice_no untuk file invoice: {os.path.basename(p)}")
+
+        grp = _ensure_group(group_key, raw_invoice_no)
+        grp["invoice_paths"].append(p)
+
+    # packing harus punya pasangan invoice
+    for p in packing_paths:
+        group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "packing")
+
+        if not group_key:
+            raise Exception(f"Gagal membaca pl_invoice_no untuk file packing list: {os.path.basename(p)}")
+
+        if group_key not in groups:
+            raise Exception(
+                f"Packing List dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
+            )
+
+        groups[group_key]["packing_paths"].append(p)
+
+    # COO optional, tapi kalau ada harus nempel ke invoice
+    for p in coo_paths:
+        group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "coo")
+
+        if not group_key:
+            raise Exception(f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(p)}")
+
+        if group_key not in groups:
+            raise Exception(
+                f"COO dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
+            )
+
+        groups[group_key]["coo_paths"].append(p)
+
+    # final validation: setiap invoice group wajib punya packing
+    for group_key, grp in groups.items():
+        if not grp["packing_paths"]:
+            raise Exception(
+                f"Packing List untuk invoice_no '{grp['invoice_no']}' tidak ditemukan."
+            )
+
+    return groups
+
 def _sum_numeric(rows: list, key: str) -> float:
     total = 0.0
     for r in rows or []:
@@ -2410,6 +2529,96 @@ def _postprocess_item_no_fields(rows: list):
 # ==============================
 # MAIN RUN OCR
 # ==============================
+
+def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
+    """
+    uploaded_docs format:
+    {
+        "invoice_paths": [...],
+        "packing_paths": [...],
+        "bl_path": "/tmp/xxx.pdf" | None,
+        "coo_paths": [...],
+    }
+
+    Flow:
+    - grouping Invoice + PL + COO by invoice_no
+    - BL global, dipakai ke semua group
+    - existing run_ocr() tetap dipakai, prompt existing tetap utuh
+    """
+    invoice_paths = uploaded_docs.get("invoice_paths") or []
+    packing_paths = uploaded_docs.get("packing_paths") or []
+    bl_path = uploaded_docs.get("bl_path")
+    coo_paths = uploaded_docs.get("coo_paths") or []
+
+    if not invoice_paths:
+        raise Exception("invoice_paths kosong")
+    if not packing_paths:
+        raise Exception("packing_paths kosong")
+
+    groups = _group_docs_by_invoice_no(
+        invoice_paths=invoice_paths,
+        packing_paths=packing_paths,
+        coo_paths=coo_paths,
+    )
+
+    total_groups = len(groups)
+    print(f"[GROUPING] total_groups={total_groups}")
+    for gk, grp in groups.items():
+        print(
+            f"[GROUPING] key={gk} invoice_no={grp['invoice_no']} "
+            f"invoice={len(grp['invoice_paths'])} "
+            f"packing={len(grp['packing_paths'])} "
+            f"coo={len(grp['coo_paths'])}"
+        )
+
+    for _, grp in sorted(groups.items(), key=lambda item: str(item[1]["invoice_no"])):
+        temp_group_paths = []
+
+        try:
+            merged_invoice_pdf = _merge_pdfs(grp["invoice_paths"])
+            temp_group_paths.append(merged_invoice_pdf)
+
+            merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
+            temp_group_paths.append(merged_packing_pdf)
+
+            grouped_pdf_paths = [
+                merged_invoice_pdf,
+                merged_packing_pdf,
+            ]
+
+            # BL global (1 file untuk semua OCR)
+            if bl_path:
+                grouped_pdf_paths.append(bl_path)
+
+            # COO per invoice group
+            if grp["coo_paths"]:
+                merged_coo_pdf = _merge_pdfs(grp["coo_paths"])
+                temp_group_paths.append(merged_coo_pdf)
+                grouped_pdf_paths.append(merged_coo_pdf)
+
+            # supaya trace mudah:
+            # output_name__invoice_no
+            group_output_name = (
+                f"{invoice_name}__{_safe_output_suffix(grp['invoice_no'])}"
+                if total_groups > 1
+                else (invoice_name or _safe_output_suffix(grp["invoice_no"]))
+            )
+
+            print(f"[GROUPING] run_ocr -> {group_output_name}")
+
+            run_ocr(
+                invoice_name=group_output_name,
+                uploaded_pdf_paths=grouped_pdf_paths,
+                with_total_container=with_total_container
+            )
+
+        finally:
+            for p in temp_group_paths:
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container):
 

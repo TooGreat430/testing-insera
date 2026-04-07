@@ -72,7 +72,31 @@ menu = st.sidebar.radio("Menu", ["Upload", "Report"])
 storage_client = storage.Client()
 bucket = storage_client.bucket(BUCKET_NAME)
 
-def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
+def _prepare_uploaded_files_as_pdf_list(uploaded_files):
+    """
+    Convert semua upload menjadi PDF satu per satu.
+    TIDAK merge.
+    Return:
+    - list path PDF final
+    - list temp file untuk cleanup
+    """
+    if not uploaded_files:
+        return [], []
+
+    if not isinstance(uploaded_files, list):
+        uploaded_files = [uploaded_files]
+
+    final_pdf_paths = []
+    temp_paths = []
+
+    for uploaded_file in uploaded_files:
+        final_pdf_path, created_paths = _prepare_uploaded_file_as_pdf(uploaded_file)
+        final_pdf_paths.append(final_pdf_path)
+        temp_paths.extend(created_paths)
+
+    return final_pdf_paths, temp_paths
+
+def _launch_ocr_process(invoice_name, payload, with_total_container):
     worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_worker.py")
 
     cmd = [
@@ -80,7 +104,7 @@ def _launch_ocr_process(invoice_name, pdf_paths, with_total_container):
         worker_path,
         invoice_name,
         "true" if with_total_container else "false",
-        json.dumps(pdf_paths),
+        json.dumps(payload),
     ]
 
     return subprocess.Popen(
@@ -334,43 +358,60 @@ if menu == "Upload":
             temp_cleanup_paths = []
 
             try:
-                # 1) merge semua invoice -> 1 PDF
-                invoice_merged_pdf, created_paths = _prepare_uploaded_files_as_one_pdf(invoice_files)
-                pdf_paths.append(invoice_merged_pdf)
+                invoice_pdf_paths, created_paths = _prepare_uploaded_files_as_pdf_list(invoice_files)
                 temp_cleanup_paths.extend(created_paths)
 
-                # 2) merge semua packing list -> 1 PDF
-                packing_merged_pdf, created_paths = _prepare_uploaded_files_as_one_pdf(packing_files)
-                pdf_paths.append(packing_merged_pdf)
+                packing_pdf_paths, created_paths = _prepare_uploaded_files_as_pdf_list(packing_files)
                 temp_cleanup_paths.extend(created_paths)
 
-                # 3) BL tetap single file
+                bl_pdf_path = None
                 if bl:
-                    bl_pdf, created_paths = _prepare_uploaded_files_as_one_pdf([bl])
-                    pdf_paths.append(bl_pdf)
+                    bl_pdf_paths, created_paths = _prepare_uploaded_files_as_pdf_list([bl])
                     temp_cleanup_paths.extend(created_paths)
+                    bl_pdf_path = bl_pdf_paths[0] if bl_pdf_paths else None
 
-                # 4) merge semua COO -> 1 PDF
-                if coo_files:
-                    coo_merged_pdf, created_paths = _prepare_uploaded_files_as_one_pdf(coo_files)
-                    pdf_paths.append(coo_merged_pdf)
-                    temp_cleanup_paths.extend(created_paths)
+                coo_pdf_paths, created_paths = _prepare_uploaded_files_as_pdf_list(coo_files)
+                temp_cleanup_paths.extend(created_paths)
 
-                # ambil nama default dari file invoice pertama
                 base_name = os.path.splitext(invoice_files[0].name)[0]
                 final_invoice_name = (output_name or "").strip() or base_name
 
-                # bikin marker RUNNING lebih dulu supaya Report langsung bisa baca status
-                create_running_markers(final_invoice_name, with_total_container)
+                payload = {
+                    "invoice_paths": invoice_pdf_paths,
+                    "packing_paths": packing_pdf_paths,
+                    "bl_path": bl_pdf_path,
+                    "coo_paths": coo_pdf_paths,
+                }
 
-                # jalankan OCR di process terpisah
+                # marker tidak dibuat di UI lagi.
+                # marker akan dibuat oleh run_ocr() per group supaya nama output sesuai group.
                 _launch_ocr_process(
                     invoice_name=final_invoice_name,
-                    pdf_paths=pdf_paths,
+                    payload=payload,
                     with_total_container=with_total_container
                 )
 
-                st.success("OCR sedang diproses. Silakan cek menu Report untuk status RUNNING / DONE.")
+                st.success("OCR sedang diproses. Silakan cek menu Report.")
+
+            except Exception as e:
+                for p in temp_cleanup_paths:
+                    try:
+                        if os.path.isfile(p) and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+                st.error(f"Gagal memulai OCR: {e}")
+
+            except Exception as e:
+                for p in temp_cleanup_paths:
+                    try:
+                        if os.path.isfile(p) and os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+                st.error(f"Gagal memulai OCR: {e}")
 
             except Exception as e:
                 try:
