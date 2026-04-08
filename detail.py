@@ -573,6 +573,7 @@ ATURAN:
 - Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
 - Saat membaca OCR, bedakan angka "0" dan huruf kapital "O" berdasarkan konteks field.
+- Untuk field code / part number / article number yang bersifat alfanumerik, tentukan "0" atau "O" berdasarkan pola code, posisi karakter, dan kemunculan berulang pada row lain.
 - Untuk field pl_quantity dan pl_package_count, pahami makna header kolom terlebih dahulu sebelum mengekstrak value.
 - Jangan menukar quantity dengan package_count.
 - Jika tabel menggunakan format quantity-per-package dan package-count, maka pl_quantity dan pl_package_count harus dipetakan sesuai fungsi masing-masing, bukan sekadar berdasarkan posisi angka.
@@ -588,11 +589,13 @@ GENERAL KNOWLEDGE DETAIL:
 2. customer_po_no pada Invoice dan juga PL:
    - PO No. dapat terletak di atas Description Item atau memiliki kolom tersendiri jadi PAHAMI setiap line item itu PO No nya itu apa.
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
-   - customer_po_no format numerik, biasanya berisi 8 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
+   - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
       Contoh
       - 44200032
       - 49021348
       - 45295210
+      - 45295893
+      - 45297175
   - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
   - INGAT BAHWA customer_po_no HARUS DIAWALI DENGAN ANGKA 4 jadi jika ada kasus:
     Po No:
@@ -672,11 +675,6 @@ GENERAL KNOWLEDGE DETAIL:
      - 20 adalah package count
      - pl_package_count = 20
      - pl_quantity = 10 × 20 = 200
-
-   - Jika terdapat beberapa nilai dan jenis package count atau quantity pada satu line item seperti:
-      ( 1 P/T & 65 C/T)
-      Maka:
-      Package count atau quantity line item tersebut = 1 + 65 = 66
 
 6. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
