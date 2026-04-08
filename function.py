@@ -24,6 +24,7 @@ from detail import (
     build_header_prompt,
     build_detail_prompt_from_index,
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
+    DETAIL_LINE_SCHEMA_TEXT,
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
     DETAIL_CSV_FIELD_ORDER_FINAL
@@ -34,6 +35,15 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 
 BATCH_SIZE = 30
+DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "20"))
+
+DETAIL_RECHECK_SCHEMA = json.loads(DETAIL_LINE_SCHEMA_TEXT)
+DETAIL_RECHECK_FIELDS = list(DETAIL_RECHECK_SCHEMA.keys())
+DETAIL_RECHECK_NUM_FIELDS = {
+    k for k, v in DETAIL_RECHECK_SCHEMA.items()
+    if str(v).strip().lower() == "number"
+}
+
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, )
 
@@ -2965,6 +2975,200 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
         except Exception:
             pass
 
+def _assign_detail_row_numbers(rows: list):
+    for idx, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        row["_detail_row_no"] = idx
+
+
+def _drop_internal_detail_fields(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row.pop("_detail_row_no", None)
+
+
+def _build_detail_line_recheck_rows_payload(rows: list):
+    payload = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        # HANYA kirim row yang gagal precheck
+        if row.get("match_score") != "false":
+            continue
+
+        item = {
+            "_detail_row_no": row.get("_detail_row_no"),
+            "match_description": row.get("match_description", "null"),
+        }
+
+        for key in DETAIL_RECHECK_FIELDS:
+            value = row.get(key)
+
+            if key in DETAIL_RECHECK_NUM_FIELDS:
+                item[key] = 0 if value is None else value
+            else:
+                item[key] = "null" if value is None else value
+
+        payload.append(item)
+
+    return payload
+
+
+def _build_detail_line_recheck_schema():
+    schema = {
+        "_detail_row_no": "number",
+    }
+    schema.update(DETAIL_RECHECK_SCHEMA)
+    return schema
+
+
+def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
+    schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
+    rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
+
+    return f"""
+ROLE:
+Anda adalah AI validator-checker untuk OUTPUT DETAIL OCR.
+
+SOURCE OF TRUTH:
+- PDF pada request ini adalah sumber kebenaran utama.
+- JSON rows di bawah adalah hasil ekstraksi awal.
+- Setiap row di bawah SUDAH gagal precheck Python.
+- match_description adalah alasan kenapa row tersebut gagal.
+
+TUGAS:
+- Cek ulang HANYA row-row yang diberikan.
+- Cek ulang HANYA field-field content yang ada di DETAIL_LINE_SCHEMA_TEXT.
+- Header TIDAK boleh disentuh.
+- Gunakan match_description sebagai petunjuk field mana yang perlu diperiksa.
+
+ATURAN KETAT:
+1) Output HANYA JSON ARRAY valid, tanpa teks lain.
+2) Jumlah row output HARUS sama persis dengan jumlah row input.
+3) Urutan row output HARUS sama persis dengan input.
+4) WAJIB pertahankan _detail_row_no.
+5) Jangan buat row baru.
+6) Jangan hapus row.
+7) Jangan return field header.
+8) Jangan return field po_*.
+9) Jika value memang tidak ada di dokumen:
+   - string -> "null"
+   - number -> 0
+
+OUTPUT SCHEMA:
+{schema_json}
+
+FAILED ROWS YANG HARUS DICEK ULANG:
+{rows_json}
+"""
+
+def _run_detail_precheck_pass(rows: list, header_obj: dict):
+    """
+    Precheck untuk menentukan row mana yang gagal dan perlu dikirim ke Gemini.
+    Tidak melakukan PO mapping supaya struktur row tetap stabil.
+    Final validation tetap dijalankan lagi di flow lama.
+    """
+    _ensure_all_detail_keys(rows)
+
+    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
+    _postprocess_pl_package_unit(rows)
+
+    _reset_match_fields(rows)
+
+    _fill_forward(rows, "inv_customer_po_no")
+    _postprocess_customer_po_no(rows)
+    _fill_inv_price_unit_from_amount_unit(rows)
+
+    _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
+    _recompute_seq_by_key(rows, "coo_no", "coo_seq")
+
+    _postprocess_customer_po_no(rows)
+    _postprocess_inv_description(rows)
+    _postprocess_item_no_fields(rows)
+    _postprocess_unit_fields(rows)
+    _postprocess_coo_description(rows)
+    _postprocess_bl_description(rows)
+
+    _postprocess_bl_coo_zero_to_null(rows)
+
+    # PRECHECK TANPA PO MAPPING
+    _validate_invoice_rows(rows)
+    _validate_packing_rows(rows)
+    _validate_invoice_vs_packing_extra(rows)
+    _validate_bl_rows(rows)
+    _validate_coo_rows(rows)
+
+    _finalize_match_fields(rows)
+    return rows
+
+
+def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
+    rows_payload = _build_detail_line_recheck_rows_payload(rows)
+
+    if not rows_payload:
+        return []
+
+    repaired_rows = []
+    batch_size = max(1, DETAIL_GEMINI_RECHECK_BATCH_SIZE)
+
+    for start in range(0, len(rows_payload), batch_size):
+        batch = rows_payload[start:start + batch_size]
+
+        repaired_batch = _call_gemini_json_uri(
+            file_uri,
+            _build_detail_line_recheck_prompt(batch),
+            expect_array=True,
+            retries=3
+        )
+
+        if not isinstance(repaired_batch, list):
+            raise Exception("Gemini detail line recheck output bukan array")
+
+        if len(repaired_batch) != len(batch):
+            raise Exception(
+                f"Gemini detail line recheck count mismatch. expected={len(batch)} got={len(repaired_batch)}"
+            )
+
+        repaired_rows.extend(repaired_batch)
+
+    return repaired_rows
+
+
+def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
+    repaired_by_no = {}
+
+    for repaired in repaired_rows or []:
+        if not isinstance(repaired, dict):
+            continue
+
+        row_no = repaired.get("_detail_row_no")
+        if row_no is None:
+            continue
+
+        repaired_by_no[int(row_no)] = repaired
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_no = row.get("_detail_row_no")
+        if row_no is None:
+            continue
+
+        repaired = repaired_by_no.get(int(row_no))
+        if not repaired:
+            continue
+
+        for key in DETAIL_RECHECK_FIELDS:
+            if key in repaired:
+                row[key] = repaired.get(key)
+
+    return rows
+
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_output=True, manage_markers=True):
 
     # Guard backend supaya COO tidak pernah diproses tanpa Bill of Lading.
@@ -3093,57 +3297,29 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         if not all_rows:
             raise Exception("Tidak ada data detail hasil Gemini")
 
-        _ensure_all_detail_keys(all_rows)
+        # =========================================
+        # PRECHECK PYTHON
+        # isi match_score + match_description
+        # hanya untuk menentukan row gagal
+        # =========================================
+        all_rows = _run_detail_precheck_pass(all_rows, header_obj)
+        _assign_detail_row_numbers(all_rows)
 
-        _apply_header_to_rows(all_rows, header_obj)
+        # =========================================
+        # GEMINI RECHECK SEKALI
+        # HANYA untuk row yang match_score == false
+        # =========================================
+        repaired_rows = _call_gemini_detail_line_recheck_once(
+            detail_input_uri,
+            all_rows
+        )
 
-        _postprocess_pl_package_unit(all_rows)
-
-        # 0) reset match fields (Gemini tidak validasi)
-        _reset_match_fields(all_rows)
-
-        # 1) apply rule invoice po forward-fill sebelum ambil po_numbers
-        _fill_forward(all_rows, "inv_customer_po_no")
-
-        # 1.1) normalisasi customer PO no lebih awal
-        _postprocess_customer_po_no(all_rows)
-        
-        #  FIX: kalau inv_price_unit null, samakan dengan inv_amount_unit
-        _fill_inv_price_unit_from_amount_unit(all_rows)
-
-        # 2) ambil po_numbers setelah carry-forward
-        po_numbers = {
-            row.get("inv_customer_po_no")
-            for row in all_rows
-            if isinstance(row, dict)
-            and row.get("inv_customer_po_no")
-            and str(row.get("inv_customer_po_no")).strip().lower() != "null"
-        }
-
-        po_lines = _stream_filter_po_lines(po_numbers)
-        print("PO NUMBERS:", po_numbers)
-        print("PO LINES FOUND:", len(po_lines))
-
-        # 3) recompute seq global
-        _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
-        _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
-
-        _postprocess_customer_po_no(all_rows)
-        _postprocess_inv_description(all_rows)
-        _postprocess_item_no_fields(all_rows)
-        _postprocess_unit_fields(all_rows)
-        _postprocess_coo_description(all_rows)
-        _postprocess_bl_description(all_rows)
-
-        # 4) MAP PO TO DETAIL (sekali saja)
-        all_rows = _map_po_to_details(po_lines, all_rows)
-
-        all_rows = _generate_inv_amount_before_validation(all_rows)
+        if repaired_rows:
+            all_rows = _apply_detail_line_recheck_result(all_rows, repaired_rows)
 
         # =========================
         # OPTIONAL: total/container
         # =========================
-        # Total dan container dibuat setiap Bill of Lading tersedia.
         total_data = None
         container_data = None
         if with_total_container:
@@ -3154,9 +3330,39 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
                 retries=3
             )
 
-        # =========================
-        # VALIDASI (python-based)
-        # =========================
+        # =========================================
+        # FLOW VALIDASI FINAL LAMA TETAP JALAN
+        # =========================================
+        _apply_header_to_rows(all_rows, header_obj)
+        _postprocess_pl_package_unit(all_rows)
+
+        _reset_match_fields(all_rows)
+
+        _fill_forward(all_rows, "inv_customer_po_no")
+        _postprocess_customer_po_no(all_rows)
+        _fill_inv_price_unit_from_amount_unit(all_rows)
+
+        po_numbers = {
+            str(r.get("inv_customer_po_no")).strip()
+            for r in all_rows
+            if isinstance(r, dict) and not _is_null(r.get("inv_customer_po_no"))
+        }
+        po_lines = _stream_filter_po_lines(po_numbers)
+        print("PO NUMBERS:", po_numbers)
+        print("PO LINES FOUND:", len(po_lines))
+
+        _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
+        _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
+
+        _postprocess_customer_po_no(all_rows)
+        _postprocess_inv_description(all_rows)
+        _postprocess_item_no_fields(all_rows)
+        _postprocess_unit_fields(all_rows)
+        _postprocess_coo_description(all_rows)
+        _postprocess_bl_description(all_rows)
+
+        all_rows = _map_po_to_details(po_lines, all_rows)
+        all_rows = _generate_inv_amount_before_validation(all_rows)
 
         _postprocess_bl_coo_zero_to_null(all_rows)
 
@@ -3177,6 +3383,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
             total_data = _validate_total_rows(total_data, all_rows)
 
         _rename_final_fields(all_rows)
+        _drop_internal_detail_fields(all_rows)
 
         # =========================
         # FINAL RESULT OBJECT
