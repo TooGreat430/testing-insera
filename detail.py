@@ -589,7 +589,7 @@ GENERAL KNOWLEDGE DETAIL:
 2. customer_po_no pada Invoice dan juga PL:
    - PO No. dapat terletak di atas Description Item atau memiliki kolom tersendiri jadi PAHAMI setiap line item itu PO No nya itu apa.
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
-   - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
+   - customer_po_no format numerik, biasanya berisi 8 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
       Contoh
       - 44200032
       - 49021348
