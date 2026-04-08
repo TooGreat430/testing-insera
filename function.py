@@ -2565,25 +2565,85 @@ def _postprocess_bl_coo_zero_to_null(rows: list):
                 if _is_zero_like(row.get(key)):
                     row[key] = "null"
 
-
-def _normalize_item_no_whitespace(value):
+def _remove_code_prefix(value):
     """
-    Rules:
-    - gabungkan semua whitespace
-    - jika suffix terakhir adalah 'O' / 'o' (huruf), ubah jadi '0' (angka)
-    - jika suffix terakhir adalah 'R' dan belum ada '-R', ubah jadi '-R'
+    Hapus prefix CODE: di awal value.
 
     Contoh:
-    - 'BAXVLPLG388020O'    -> 'BAXVLPLG3880200'
-    - 'BAXVLPLG388020o'    -> 'BAXVLPLG3880200'
-    - 'BAXVLPLG38802 OR'   -> 'BAXVLPLG38802OR' -> 'BAXVLPLG38802-OR' (tidak kena rule O/o)
-    - 'BAXVLPLG388020R'    -> 'BAXVLPLG388020-R'
-    - 'BAXVLPLG388020-R'   -> tetap 'BAXVLPLG388020-R'
+    - CODE:CWSPWA10BPP006 -> CWSPWA10BPP006
+    - code: CWSPWA10BPP006 -> CWSPWA10BPP006
     """
     if value is None:
         return "null"
 
     s = str(value).strip()
+
+    if s == "" or s.lower() == "null":
+        return "null"
+
+    s = re.sub(r"^\s*CODE\s*:\s*", "", s, flags=re.IGNORECASE).strip()
+
+    return s if s else "null"
+
+def _normalize_inv_description(value):
+    """
+    Khusus inv_description:
+    - jika di awal ada pola CODE:<item_no>, hapus bagian itu saja
+    - item_no bisa berubah-ubah, jadi tidak hardcode
+
+    Contoh:
+    - CODE:CWSPWA10BPP006 A10BPP(13),3/32*30T*114mm,CR ST BK
+      -> A10BPP(13),3/32*30T*114mm,CR ST BK
+    - code:ABC123 Remark test
+      -> Remark test
+    """
+    if value is None:
+        return "null"
+
+    s = str(value).strip()
+
+    if s == "" or s.lower() == "null":
+        return "null"
+
+    # hapus token CODE:<kode> di awal string
+    s = re.sub(
+        r"^\s*CODE\s*:\s*\S+\s*",
+        "",
+        s,
+        flags=re.IGNORECASE
+    )
+
+    s = re.sub(r"\s{2,}", " ", s).strip()
+
+    return s if s else "null"
+
+def _postprocess_inv_description(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        if "inv_description" in row:
+            row["inv_description"] = _normalize_inv_description(
+                row.get("inv_description")
+            )
+
+def _normalize_item_no_whitespace(value):
+    """
+    Rules:
+    - hapus prefix CODE:
+    - gabungkan semua whitespace
+    - jika suffix terakhir adalah 'O' / 'o' (huruf), ubah jadi '0' (angka)
+    - jika suffix terakhir adalah 'R' dan belum ada '-R', ubah jadi '-R'
+
+    Contoh:
+    - 'CODE:CWSPWA10BPP006' -> 'CWSPWA10BPP006'
+    - 'BAXVLPLG388020O'     -> 'BAXVLPLG3880200'
+    - 'BAXVLPLG388020R'     -> 'BAXVLPLG388020-R'
+    """
+    if value is None:
+        return "null"
+
+    s = _remove_code_prefix(value)
 
     if s == "" or s.lower() == "null":
         return "null"
@@ -3046,6 +3106,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
 
         _postprocess_customer_po_no(all_rows)
+        _postprocess_inv_description(all_rows)
         _postprocess_item_no_fields(all_rows)
         _postprocess_unit_fields(all_rows)
         _postprocess_coo_description(all_rows)
