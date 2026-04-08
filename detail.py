@@ -589,7 +589,7 @@ GENERAL KNOWLEDGE DETAIL:
 2. customer_po_no pada Invoice dan juga PL:
    - PO No. dapat terletak di atas Description Item atau memiliki kolom tersendiri jadi PAHAMI setiap line item itu PO No nya itu apa.
    - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
-   - customer_po_no format numerik, berisi 8-10 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
+   - customer_po_no format numerik, biasanya berisi 8 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
       Contoh
       - 44200032
       - 49021348
@@ -675,6 +675,11 @@ GENERAL KNOWLEDGE DETAIL:
      - 20 adalah package count
      - pl_package_count = 20
      - pl_quantity = 10 × 20 = 200
+
+   - Jika terdapat beberapa nilai dan jenis package count atau quantity pada satu line item seperti:
+      ( 1 P/T & 65 C/T)
+      Maka:
+      Package count atau quantity line item tersebut = 1 + 65 = 66
 
 6. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
