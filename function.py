@@ -2570,10 +2570,13 @@ def _normalize_item_no_whitespace(value):
     """
     Rules:
     - gabungkan semua whitespace
+    - jika suffix terakhir adalah 'O' / 'o' (huruf), ubah jadi '0' (angka)
     - jika suffix terakhir adalah 'R' dan belum ada '-R', ubah jadi '-R'
 
     Contoh:
-    - 'BAXVLPLG38802 OR'   -> 'BAXVLPLG38802OR' -> 'BAXVLPLG38802-OR' (tidak kena rule ini)
+    - 'BAXVLPLG388020O'    -> 'BAXVLPLG3880200'
+    - 'BAXVLPLG388020o'    -> 'BAXVLPLG3880200'
+    - 'BAXVLPLG38802 OR'   -> 'BAXVLPLG38802OR' -> 'BAXVLPLG38802-OR' (tidak kena rule O/o)
     - 'BAXVLPLG388020R'    -> 'BAXVLPLG388020-R'
     - 'BAXVLPLG388020-R'   -> tetap 'BAXVLPLG388020-R'
     """
@@ -2587,6 +2590,10 @@ def _normalize_item_no_whitespace(value):
 
     # hapus semua whitespace
     s = re.sub(r"[\s\u00A0]+", "", s)
+
+    # jika karakter terakhir adalah huruf O/o, ubah jadi angka 0
+    if re.fullmatch(r".*[Oo]", s):
+        s = s[:-1] + "0"
 
     # jika berakhir dengan R dan sebelumnya belum '-R', sisipkan dash sebelum R
     if re.fullmatch(r".+[^-]R", s):
