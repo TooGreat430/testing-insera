@@ -15,22 +15,20 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
+from total import TOTAL_SYSTEM_INSTRUCTION 
+from container import CONTAINER_SYSTEM_INSTRUCTION
 from pathlib import Path
 import shutil
 from detail import (
-    HEADER_SCHEMA_TEXT as HEADER_FIELDS,
+    build_index_prompt,
+    build_header_prompt,
+    build_detail_prompt_from_index,
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
     DETAIL_CSV_FIELD_ORDER_FINAL
 )
-from prompt_store import (
-    get_row_prompt,
-    get_header_prompt,
-    get_index_prompt,
-    get_detail_prompt,
-    get_total_prompt,
-    get_container_prompt,
-)
+from row import ROW_SYSTEM_INSTRUCTION 
 import uuid
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
@@ -265,7 +263,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
 
     header_obj = _call_gemini_json_uri(
         file_uri,
-        get_header_prompt(),
+        build_header_prompt(),
         expect_array=False,
         retries=3
     )
@@ -1373,71 +1371,61 @@ def _get_extracted_qty_for_po(row: dict):
     return None
 
 
-def _copy_po_line_with_allocated_qty(po_line: dict, allocated_qty):
+def _copy_po_line_with_adjusted_qty(po_line: dict, adjusted_qty):
     """
-    Copy PO line dan isi po_quantity dengan qty yang benar-benar teralokasi ke row ini,
-    BUKAN sisa.
+    Copy PO line dan replace po_quantity dengan hasil final adjustment.
     """
     copied = dict(po_line or {})
 
-    if allocated_qty is None:
+    if adjusted_qty is None:
         copied["po_quantity"] = po_line.get("po_quantity", "null") if isinstance(po_line, dict) else "null"
         return copied
 
-    if abs(allocated_qty - round(allocated_qty)) <= 1e-9:
-        copied["po_quantity"] = int(round(allocated_qty))
+    if abs(adjusted_qty - round(adjusted_qty)) <= 1e-9:
+        copied["po_quantity"] = int(round(adjusted_qty))
     else:
-        copied["po_quantity"] = allocated_qty
+        copied["po_quantity"] = adjusted_qty
 
     return copied
 
 
-def _pick_closest_remaining_candidate(candidates, target_qty):
+def _pick_best_po_candidate(candidates, extracted_qty, min_candidate_qty=None):
     """
-    candidates: list of dict
-      {
-        "idx": int,
-        "line": dict,
-        "remaining_qty": float
-      }
+    Pilih candidate PO quantity yang paling dekat dengan extracted_qty.
 
-    Rule:
-    - pilih remaining_qty yang paling dekat ke target_qty
-    - tie-break: remaining_qty lebih besar menang
-    - tie-break akhir: idx lebih kecil menang
+    Rules:
+    - kalau min_candidate_qty ada, prioritaskan candidate dengan po_quantity > min_candidate_qty
+    - tie-break: pilih po_quantity yang lebih besar
     """
     if not candidates:
-        return None
+        return None, None
 
-    if target_qty is None:
-        return sorted(
-            candidates,
-            key=lambda x: (
-                float("inf") if x.get("remaining_qty") is None else -x.get("remaining_qty", 0),
-                x["idx"]
-            )
-        )[0]
+    enriched = []
+    for idx, line in candidates:
+        po_qty = _to_float(line.get("po_quantity"))
+        enriched.append((idx, line, po_qty))
+
+    filtered = enriched
+    if min_candidate_qty is not None:
+        gt_filtered = [x for x in enriched if x[2] is not None and x[2] > min_candidate_qty]
+        if gt_filtered:
+            filtered = gt_filtered
+
+    if extracted_qty is None:
+        idx, line, _ = filtered[0]
+        return idx, line
 
     def _sort_key(item):
-        remaining_qty = item.get("remaining_qty")
-        if remaining_qty is None:
-            return (float("inf"), float("inf"), item["idx"])
+        idx, line, po_qty = item
+        if po_qty is None:
+            return (float("inf"), float("inf"), idx)
 
-        return (
-            abs(remaining_qty - target_qty),
-            -remaining_qty,
-            item["idx"],
-        )
+        # absolute diff paling kecil menang
+        # tie -> po_qty lebih besar menang
+        return (abs(po_qty - extracted_qty), -po_qty, idx)
 
-    return sorted(candidates, key=_sort_key)[0]
-
-
-def _po_line_sort_key(po_line: dict):
-    raw = po_line.get("po_line")
-    try:
-        return (0, int(str(raw).strip()))
-    except Exception:
-        return (1, str(raw or ""))
+    idx, line, _ = sorted(filtered, key=_sort_key)[0]
+    return idx, line
 
 def _map_po_to_details(po_lines, detail_rows):
     po_article_index = {}
@@ -1459,11 +1447,12 @@ def _map_po_to_details(po_lines, detail_rows):
         if d_norm:
             po_desc_index.setdefault((po_no_norm, d_norm), []).append((idx, line))
 
-    # simpan sisa per bucket:
-    # (po_no + ARTICLE/DESC + key)
-    remaining_state = {}
+    # global_used = supaya PO line yang sudah dipakai tidak dipilih lagi sebagai candidate baru
+    global_used = set()
 
-    expanded_rows = []
+    # state per bucket (po_no + article/desc key)
+    # dipakai untuk carry-forward "po_quantity hasil sebelumnya"
+    group_state = {}
 
     for row in detail_rows:
         if not isinstance(row, dict):
@@ -1476,11 +1465,12 @@ def _map_po_to_details(po_lines, detail_rows):
 
         if not inv_po_norm:
             row["_po_mapped"] = False
-            expanded_rows.append(row)
             continue
 
         extracted_qty = _get_extracted_qty_for_po(row)
 
+        chosen = None
+        chosen_idx = None
         matched_by = None
         bucket_key = None
         candidates = []
@@ -1506,102 +1496,87 @@ def _map_po_to_details(po_lines, detail_rows):
 
         if not candidates:
             row["_po_mapped"] = False
-            expanded_rows.append(row)
             continue
 
-        # init remaining pool untuk bucket ini sekali saja
-        if bucket_key not in remaining_state:
-            bucket_candidates = []
-            for idx, line in candidates:
-                qty = _to_float(line.get("po_quantity"))
-                bucket_candidates.append({
-                    "idx": idx,
-                    "line": dict(line),
-                    "remaining_qty": 0.0 if qty is None else qty,
-                })
+        state = group_state.setdefault(
+            bucket_key,
+            {
+                "carry_qty": 0.0,
+                "last_po_data": None,
+            }
+        )
 
-            remaining_state[bucket_key] = bucket_candidates
+        carry_qty = _to_float(state.get("carry_qty")) or 0.0
+        last_po_data = state.get("last_po_data")
 
-        bucket_candidates = remaining_state[bucket_key]
+        # =====================================================
+        # RULE BARU:
+        # kalau qty extracted <= carry sebelumnya, pakai carry sebelumnya
+        # lalu kurangi lagi
+        # =====================================================
+        if extracted_qty is not None and carry_qty > 0 and extracted_qty <= carry_qty and last_po_data is not None:
+            new_carry = max(carry_qty - extracted_qty, 0.0)
 
-        # ambil candidate yang masih punya sisa
-        available = [
-            item for item in bucket_candidates
-            if (item.get("remaining_qty") or 0.0) > 1e-9
+            chosen = _copy_po_line_with_adjusted_qty(last_po_data, new_carry)
+
+            state["carry_qty"] = new_carry
+            state["last_po_data"] = chosen
+
+            row["_po_mapped"] = True
+            row["_po_data"] = chosen
+            continue
+
+        # =====================================================
+        # kalau extracted > carry sebelumnya,
+        # cari candidate baru yang quantity-nya mendekati extracted
+        # dan jika carry ada, prioritaskan po_quantity > carry
+        # =====================================================
+        available_candidates = [
+            (idx, line)
+            for idx, line in candidates
+            if (inv_po_norm, idx) not in global_used
         ]
 
-        if not available:
+        if not available_candidates:
             row["_po_mapped"] = False
-            expanded_rows.append(row)
             continue
 
-        row_matches = []
+        min_candidate_qty = carry_qty if (extracted_qty is not None and carry_qty > 0 and extracted_qty > carry_qty) else None
 
-        # Kalau qty tidak ada, ambil 1 candidate terdekat/default
-        if extracted_qty is None:
-            chosen = _pick_closest_remaining_candidate(available, None)
-            if chosen is None:
-                row["_po_mapped"] = False
-                expanded_rows.append(row)
-                continue
+        chosen_idx, chosen_line = _pick_best_po_candidate(
+            available_candidates,
+            extracted_qty=extracted_qty,
+            min_candidate_qty=min_candidate_qty
+        )
 
-            alloc_qty = chosen["remaining_qty"]
-            if alloc_qty > 1e-9:
-                chosen["remaining_qty"] = 0.0
-                row_matches.append((chosen["line"], alloc_qty))
+        if chosen_line is None:
+            row["_po_mapped"] = False
+            continue
 
+        base_po_qty = _to_float(chosen_line.get("po_quantity"))
+
+        if extracted_qty is not None and base_po_qty is not None:
+            adjusted_qty = abs(base_po_qty - extracted_qty)
         else:
-            remaining_target = extracted_qty
+            adjusted_qty = base_po_qty
 
-            while remaining_target > 1e-9:
-                available = [
-                    item for item in bucket_candidates
-                    if (item.get("remaining_qty") or 0.0) > 1e-9
-                ]
+        chosen = _copy_po_line_with_adjusted_qty(chosen_line, adjusted_qty)
 
-                if not available:
-                    break
+        global_used.add((inv_po_norm, chosen_idx))
 
-                chosen = _pick_closest_remaining_candidate(available, remaining_target)
-                if chosen is None:
-                    break
+        state["carry_qty"] = adjusted_qty if adjusted_qty is not None else 0.0
+        state["last_po_data"] = chosen
 
-                chosen_remaining = chosen.get("remaining_qty") or 0.0
-                if chosen_remaining <= 1e-9:
-                    break
+        row["_po_mapped"] = True
+        row["_po_data"] = chosen
 
-                # allocate secukupnya
-                alloc_qty = min(remaining_target, chosen_remaining)
-                if alloc_qty <= 1e-9:
-                    break
+        # sinkronkan article no seperti logic lama
+        if matched_by == "inv_spart_item_no" and not _is_null(row.get("inv_spart_item_no")):
+            row["pl_item_no"] = row.get("inv_spart_item_no")
+        elif matched_by == "pl_item_no" and not _is_null(row.get("pl_item_no")):
+            row["inv_spart_item_no"] = row.get("pl_item_no")
 
-                row_matches.append((chosen["line"], alloc_qty))
-
-                chosen["remaining_qty"] = max(chosen_remaining - alloc_qty, 0.0)
-                remaining_target = max(remaining_target - alloc_qty, 0.0)
-
-        if not row_matches:
-            row["_po_mapped"] = False
-            expanded_rows.append(row)
-            continue
-
-        # supaya output rapi seperti contoh, urutkan by po_line
-        row_matches = sorted(row_matches, key=lambda x: _po_line_sort_key(x[0]))
-
-        for matched_line, alloc_qty in row_matches:
-            new_row = dict(row)
-            new_row["_po_mapped"] = True
-            new_row["_po_data"] = _copy_po_line_with_allocated_qty(matched_line, alloc_qty)
-
-            # sinkronkan article no seperti logic lama
-            if matched_by == "inv_spart_item_no" and not _is_null(new_row.get("inv_spart_item_no")):
-                new_row["pl_item_no"] = new_row.get("inv_spart_item_no")
-            elif matched_by == "pl_item_no" and not _is_null(new_row.get("pl_item_no")):
-                new_row["inv_spart_item_no"] = new_row.get("pl_item_no")
-
-            expanded_rows.append(new_row)
-
-    return expanded_rows
+    return detail_rows
 
 # =========================================================
 # VALIDATE PO DATA
@@ -3016,7 +2991,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
         header_obj = _call_gemini_json_uri(
             detail_input_uri,
-            get_header_prompt(),
+            build_header_prompt(),
             expect_array=False,
             retries=3
         )
@@ -3024,7 +2999,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
             header_obj = {}
 
         # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, get_row_prompt(), expect_array=False, retries=3)
+        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -3034,7 +3009,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # NEW: INDEX extraction (anchor line item)
         index_items = _call_gemini_json_uri(
             file_uri_detail,
-            get_index_prompt(total_row),
+            build_index_prompt(total_row),
             expect_array=True,
             retries=3
         )
@@ -3061,7 +3036,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
             index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
 
-            prompt = get_detail_prompt(
+            prompt = build_detail_prompt_from_index(
                 total_row=total_row,
                 index_slice=index_slice,
                 first_index=first_index,
@@ -3151,7 +3126,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         if with_total_container:
             container_data = _call_gemini_json_uri(
                 file_uri_full,
-                get_container_prompt(),
+                CONTAINER_SYSTEM_INSTRUCTION,
                 expect_array=True,
                 retries=3
             )
