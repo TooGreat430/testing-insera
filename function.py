@@ -3012,12 +3012,12 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # 0) reset match fields (Gemini tidak validasi)
         _reset_match_fields(all_rows)
 
-        # 1.1) normalisasi customer PO no lebih awal
-        _postprocess_customer_po_no(all_rows)
-
         # 1) apply rule invoice po forward-fill sebelum ambil po_numbers
         _fill_forward(all_rows, "inv_customer_po_no")
 
+        # 1.1) normalisasi customer PO no lebih awal
+        _postprocess_customer_po_no(all_rows)
+        
         #  FIX: kalau inv_price_unit null, samakan dengan inv_amount_unit
         _fill_inv_price_unit_from_amount_unit(all_rows)
 
