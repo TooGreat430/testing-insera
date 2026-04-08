@@ -676,6 +676,11 @@ GENERAL KNOWLEDGE DETAIL:
      - pl_package_count = 20
      - pl_quantity = 10 × 20 = 200
 
+   - Jika terdapat beberapa nilai dan jenis package count atau quantity pada satu line item seperti:
+      ( 1 P/T & 65 C/T)
+      Maka:
+      Package count = 1 + 65 = 66
+
 6. pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
