@@ -15,20 +15,22 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
-from total import TOTAL_SYSTEM_INSTRUCTION 
-from container import CONTAINER_SYSTEM_INSTRUCTION
 from pathlib import Path
 import shutil
 from detail import (
-    build_index_prompt,
-    build_header_prompt,
-    build_detail_prompt_from_index,
-    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
     DETAIL_CSV_FIELD_ORDER_FINAL
 )
-from row import ROW_SYSTEM_INSTRUCTION 
+from prompt_store import (
+    get_row_prompt,
+    get_header_prompt,
+    get_index_prompt,
+    get_detail_prompt,
+    get_total_prompt,
+    get_container_prompt,
+)
 import uuid
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
@@ -263,7 +265,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
 
     header_obj = _call_gemini_json_uri(
         file_uri,
-        build_header_prompt(),
+        get_header_prompt(),
         expect_array=False,
         retries=3
     )
@@ -3014,7 +3016,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
         header_obj = _call_gemini_json_uri(
             detail_input_uri,
-            build_header_prompt(),
+            get_header_prompt(),
             expect_array=False,
             retries=3
         )
@@ -3022,7 +3024,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
             header_obj = {}
 
         # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
+        data_row = _call_gemini_json_uri(file_uri_detail, get_row_prompt(), expect_array=False, retries=3)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -3032,7 +3034,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # NEW: INDEX extraction (anchor line item)
         index_items = _call_gemini_json_uri(
             file_uri_detail,
-            build_index_prompt(total_row),
+            get_index_prompt(total_row),
             expect_array=True,
             retries=3
         )
@@ -3059,7 +3061,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
             index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
 
-            prompt = build_detail_prompt_from_index(
+            prompt = get_detail_prompt(
                 total_row=total_row,
                 index_slice=index_slice,
                 first_index=first_index,
@@ -3149,7 +3151,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         if with_total_container:
             container_data = _call_gemini_json_uri(
                 file_uri_full,
-                CONTAINER_SYSTEM_INSTRUCTION,
+                get_container_prompt(),
                 expect_array=True,
                 retries=3
             )
