@@ -548,9 +548,9 @@ def _build_total_from_detail_and_container(detail_rows: list, container_rows):
         "bl_voyage_no": _first_text(container_rows, "bl_voyage_no"),
         "bl_port_of_loading": _first_text(container_rows, "bl_port_of_loading"),
         "bl_port_of_destination": _first_text(container_rows, "bl_port_of_destination"),
-        "bl_gw_unit": _first_text(container_rows, "bl_gw_unit"),
+        "bl_gw_unit": _convert_unit_value(_first_text(container_rows, "bl_gw_unit")),
         "bl_gw": _sum_numeric(container_rows, "bl_gw"),
-        "bl_volume_unit": _first_text(container_rows, "bl_volume_unit"),
+        "bl_volume_unit": _convert_unit_value(_first_text(container_rows, "bl_volume_unit")),
         "bl_volume": _sum_numeric(container_rows, "bl_volume"),
         "bl_package_count": _sum_numeric(container_rows, "bl_package_count"),
         "bl_package_unit": _first_text(container_rows, "bl_package_unit"),
@@ -3410,6 +3410,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
                 expect_array=True,
                 retries=3
             )
+
+            _postprocess_unit_fields(container_data)
 
         # =========================================
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
