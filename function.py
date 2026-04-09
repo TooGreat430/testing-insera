@@ -267,9 +267,12 @@ def _safe_output_suffix(value: str) -> str:
 
 def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     """
-    Pakai prompt existing: build_header_prompt()
-    Tidak mengubah prompt existing.
+    Grouping key extractor.
+    - Tahap 1: pakai prompt existing build_header_prompt()
+    - Tahap 2 (khusus invoice): kalau inv_invoice_no belum ketemu,
+      paksa re-check dengan prompt fokus ke invoice number.
     """
+
     key_field_map = {
         "invoice": "inv_invoice_no",
         "packing": "pl_invoice_no",
@@ -283,6 +286,11 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     grouping_name = f"{doc_type}_{uuid.uuid4().hex}"
     file_uri = _upload_temp_pdf_to_gcs(local_pdf_path, grouping_run_prefix, grouping_name)
 
+    target_key = key_field_map[doc_type]
+
+    # =========================
+    # PASS 1: existing header prompt
+    # =========================
     header_obj = _call_gemini_json_uri(
         file_uri,
         build_header_prompt(),
@@ -293,8 +301,58 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     if not isinstance(header_obj, dict):
         header_obj = {}
 
-    raw_invoice_no = header_obj.get(key_field_map[doc_type], "null")
+    raw_invoice_no = header_obj.get(target_key, "null")
     group_key = _normalize_invoice_group_key(raw_invoice_no)
+
+    # =========================
+    # PASS 2: FORCE RECHECK khusus invoice
+    # =========================
+    if doc_type == "invoice" and not group_key:
+        focused_prompt = """
+ROLE:
+Anda hanya mengekstrak nomor invoice dari dokumen invoice.
+
+ATURAN:
+- Dokumen ini adalah INVOICE.
+- Setiap invoice WAJIB punya Invoice No / Invoice Number / No. Invoice.
+- Cari field nomor invoice utama pada dokumen.
+- Jangan ambil PO number.
+- Jangan ambil packing list number.
+- Jangan ambil reference number lain.
+- Output HANYA JSON object valid.
+- Jika benar-benar tidak ditemukan, isi "null".
+
+OUTPUT SCHEMA:
+{
+  "inv_invoice_no": "string"
+}
+"""
+        focused_obj = _call_gemini_json_uri(
+            file_uri,
+            focused_prompt,
+            expect_array=False,
+            retries=3
+        )
+
+        if not isinstance(focused_obj, dict):
+            focused_obj = {}
+
+        focused_invoice_no = focused_obj.get("inv_invoice_no", "null")
+        focused_group_key = _normalize_invoice_group_key(focused_invoice_no)
+
+        if focused_group_key:
+            header_obj["inv_invoice_no"] = focused_invoice_no
+            raw_invoice_no = focused_invoice_no
+            group_key = focused_group_key
+
+    # =========================
+    # HARD FAIL khusus invoice
+    # =========================
+    if doc_type == "invoice" and not group_key:
+        raise Exception(
+            f"Gagal membaca inv_invoice_no untuk file invoice: {os.path.basename(local_pdf_path)}. "
+            f"Invoice wajib punya Invoice No, tetapi tidak berhasil diekstrak saat grouping."
+        )
 
     return group_key, raw_invoice_no, header_obj
 
