@@ -2780,7 +2780,7 @@ def _description_similarity(left, right) -> float:
     return SequenceMatcher(None, l, r).ratio()
 
 
-def _postprocess_bl_description(rows: list, threshold: float = 0.75):
+def _postprocess_bl_description(rows: list, threshold: float = 0.4):
     """
     Rule:
     - compare bl_description vs inv_description
