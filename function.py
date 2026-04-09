@@ -37,7 +37,19 @@ from difflib import SequenceMatcher
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 
-DETAIL_RECHECK_SCHEMA = json.loads(DETAIL_LINE_SCHEMA_TEXT)
+DETAIL_RECHECK_SCHEMA = {
+    "inv_gw_unit": "string",
+    "inv_quantity": "number",
+    "inv_quantity_unit": "string",
+    "inv_unit_price": "number",
+    "inv_amount": "number",
+
+    "pl_quantity": "number",
+    "pl_package_count": "number",
+    "pl_nw": "number",
+    "pl_gw": "number",
+    "pl_volume": "number",
+}
 DETAIL_RECHECK_FIELDS = list(DETAIL_RECHECK_SCHEMA.keys())
 DETAIL_RECHECK_NUM_FIELDS = {
     k for k, v in DETAIL_RECHECK_SCHEMA.items()
@@ -3042,7 +3054,18 @@ SOURCE OF TRUTH:
 
 TUGAS:
 - Cek ulang HANYA row-row yang diberikan.
-- Cek ulang HANYA field-field content yang ada di DETAIL_LINE_SCHEMA_TEXT.
+- Cek ulang HANYA field-field berikut:
+  1. inv_gw_unit
+  2. inv_quantity
+  3. inv_quantity_unit
+  4. inv_unit_price
+  5. inv_amount
+  6. pl_quantity
+  7. pl_package_count
+  8. pl_nw
+  9. pl_gw
+  10. pl_volume
+- JANGAN ubah field lain selain 10 field di atas.
 - Header TIDAK boleh disentuh.
 - Gunakan match_description sebagai petunjuk field mana yang perlu diperiksa.
 
@@ -3053,7 +3076,7 @@ ATURAN KETAT:
 4) WAJIB pertahankan _detail_row_no.
 5) Jangan buat row baru.
 6) Jangan hapus row.
-7) Jangan return field header.
+7) Jangan return field header lain.
 8) Jangan return field po_*.
 9) Jika value memang tidak ada di dokumen:
    - string -> "null"
