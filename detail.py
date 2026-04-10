@@ -485,6 +485,17 @@ GENERAL KNOWLEDGE:
      Contoh:
      V.S018
      Berarti value tersebut adalah S018
+
+15. coo_invoice_no:
+    - Merepresentasikan invoice number yang direferensikan pada dokumen COO.
+    - Ambil seluruh nilai invoice number secara lengkap, termasuk jika invoice number terpisah ke baris berikutnya.
+    - Jika nomor invoice terpotong ke baris berikutnya, semua bagian nomor tetap diambil dan digabungkan menjadi 1 nilai.
+      - Contoh:
+        Invoice Number:
+        SHXM22-2512000
+        393
+
+        Maka, coo_invoice_no: SHXM22-2512000393
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
