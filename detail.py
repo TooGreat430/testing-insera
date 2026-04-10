@@ -424,6 +424,7 @@ GENERAL KNOWLEDGE:
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
+  - JIKA PADA DOKUMEN TIDAK TERTERA VOLUME UNIT DARI Packing List Volume Unit, maka biarkan "null".
 
 10. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
