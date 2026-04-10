@@ -603,31 +603,35 @@ GENERAL KNOWLEDGE DETAIL:
 1. Output DETAIL merepresentasikan DATA PER LINE ITEM.
 
 2. customer_po_no pada Invoice dan juga PL:
-   - PO No. dapat terletak di atas Description Item atau memiliki kolom tersendiri jadi PAHAMI setiap line item itu PO No nya itu apa.
-   - Jika invoice_customer_po_no bernilai "null", gunakan invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
-   - customer_po_no format numerik, biasanya berisi 8 digit (TANPA ALPHABET), Dan biasanya diawali dengan angka 4
-      Contoh
-      - 44200032
-      - 49021348
-      - 45295210
-      - 45295893
-      - 45297175
-  - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
+   - PO No. dapat terletak di atas Description Item atau berada pada kolom tersendiri, jadi PAHAMI setiap line item itu PO No nya itu apa.
+   - JANGAN bergantung pada nama kolom. customer_po_no bisa berada di kolom lain (misalnya "Item No.") selama valuenya sesuai format PO Number.
+   - customer_po_no memiliki format: 
+      - Numerik (TANPA ALPHABET/SIMBOL)
+      - HARUS berisi 8 digit
+      - HARUS diawali dengan angka 4
+      Contoh:
+        - 44200032
+        - 49021348
+        - 45295210
+        - 45295893
+        - 45297175
   - INGAT BAHWA customer_po_no HARUS DIAWALI DENGAN ANGKA 4 jadi jika ada kasus:
     Po No:
     C25-1544U/45323564
-    Maka value dari customer_po_no adalah "45323564". ABAIKAN Code depannya (C25-1544U) dan "/" juga
-  - customer_po_no terkadang exist tidak sesuai dengan kolomnya nama kolom Item No. tapi valuenya PO No. JADI PAHAMI FORMAT DARI customer_po_no
+    Maka value dari customer_po_no adalah "45323564". ABAIKAN prefix, huruf, dan simbol (C25-1544U dan "/")
+  - Jika invoice_customer_po_no bernilai "null", gunakan nilai invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
+  - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
+  - INGAT: customer_po_no harus selalu mengikuti format (numerik 8 digit diawali 4), sehingga prioritaskan pola nilai dibanding posisi atau nama kolom.
 
 3. inv_spart_item_no:
    - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
-   - Berikut adalah list informasi yang bisa diekstrak sebagai inv_spart_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
-      1. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
-      2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
-      3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
-      4. MODEL -> Biasanya terdapat pada header kolom tersebut.
+   - Berikut adalah list prioritas sumber untuk menentukan inv_spart_item_no (dari tertinggi ke terendah):
+      1. Customer Article Number -> Biasanya terdapat pada header kolom
+      2. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      3. MATERIAL -> Biasanya terdapat pada header kolom
+      4. MODEL -> Biasanya terdapat pada header kolom
       
-   - Jika terdapat kolom khusus Item No dan juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
+   - Jika terdapat kolom khusus Item No DAN juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
      Contoh:
         Item No: 
         CWSSXAF38D0002-165
@@ -643,18 +647,17 @@ GENERAL KNOWLEDGE DETAIL:
         Maka inv_spart_item_no = CWSSXAF38D0002,
         BUKAN CWSSXAF38D0002-165 (karena ambil dari CODE di Description BUKAN dari kolom khusus Item No)
 
-   - Jika di dalam 1 area / cell terdapat 2 baris atau lebih, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
-     - angka pendek tersebut biasanya adalah index / item number / nomor urut
+   - Jika di dalam 1 area / cell terdapat lebih dari 1 baris, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
+     - angka pendek (misal: 1, 2, 3) biasanya adalah index / item number / nomor urut
      - code alfanumerik adalah inv_spart_item_no yang benar
-     
-     - Contoh:
-     1
-     CWSFSSH12001-R
-     Maka:
-     - "1" adalah index / nomor urut
-     - "CWSFSSH12001-R" adalah inv_spart_item_no
+    Contoh:
+      1
+      CWSFSSH12001-R
+      Maka:
+      - "1" adalah index / nomor urut (ABAIKAN)
+      - "CWSFSSH12001-R" adalah inv_spart_item_no
 
-   - Jadi untuk inv_spart_item_no, prioritaskan token yang berbentuk code part number, bukan angka urut pendek.
+   - Jadi untuk inv_spart_item_no, prioritaskan token yang berbentuk code part number (alfanumerik), bukan angka urut pendek.
 
    - Ciri umum inv_spart_item_no:
      - Biasanya berbentuk alfanumerik
