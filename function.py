@@ -242,7 +242,17 @@ def _postprocess_unit_fields(rows: list):
             if key in row:
                 row[key] = _convert_unit_value(row.get(key))
 
-def _normalize_invoice_group_key(value):
+def _preprocess_invoice_no_for_grouping(value):
+    """
+    Preprocessing khusus invoice_no sebelum grouping.
+    Rule:
+    - trim
+    - uppercase
+    - hapus semua whitespace
+    - pertahankan huruf, angka, dash, slash
+    Contoh:
+      SHXM22-2512000 393 -> SHXM22-2512000393
+    """
     if value is None:
         return ""
 
@@ -251,9 +261,18 @@ def _normalize_invoice_group_key(value):
         return ""
 
     s = s.upper()
+
+    # gabungkan kalau ada spasi di tengah invoice_no
     s = re.sub(r"\s+", "", s)
-    s = re.sub(r"[^A-Z0-9]", "", s)
+
+    # pertahankan A-Z, 0-9, dash, slash
+    s = re.sub(r"[^A-Z0-9\-/]", "", s)
+
     return s
+
+
+def _normalize_invoice_group_key(value):
+    return _preprocess_invoice_no_for_grouping(value)
 
 
 def _safe_output_suffix(value: str) -> str:
@@ -302,7 +321,16 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
         header_obj = {}
 
     raw_invoice_no = header_obj.get(target_key, "null")
-    group_key = _normalize_invoice_group_key(raw_invoice_no)
+    preprocessed_invoice_no = _preprocess_invoice_no_for_grouping(raw_invoice_no)
+    group_key = _normalize_invoice_group_key(preprocessed_invoice_no)
+
+    print(
+        f"[GROUPING][READ][{doc_type.upper()}] "
+        f"{target_key} raw='{raw_invoice_no}' "
+        f"preprocessed='{preprocessed_invoice_no}' "
+        f"group_key='{group_key}' "
+        f"file='{os.path.basename(local_pdf_path)}'"
+    )
 
     # =========================
     # PASS 2: FORCE RECHECK khusus invoice
@@ -338,12 +366,21 @@ OUTPUT SCHEMA:
             focused_obj = {}
 
         focused_invoice_no = focused_obj.get("inv_invoice_no", "null")
-        focused_group_key = _normalize_invoice_group_key(focused_invoice_no)
+        focused_preprocessed_invoice_no = _preprocess_invoice_no_for_grouping(focused_invoice_no)
+        focused_group_key = _normalize_invoice_group_key(focused_preprocessed_invoice_no)
 
         if focused_group_key:
             header_obj["inv_invoice_no"] = focused_invoice_no
             raw_invoice_no = focused_invoice_no
             group_key = focused_group_key
+
+            print(
+                f"[GROUPING][RECHECK][INVOICE] "
+                f"inv_invoice_no raw='{focused_invoice_no}' "
+                f"preprocessed='{focused_preprocessed_invoice_no}' "
+                f"group_key='{focused_group_key}' "
+                f"file='{os.path.basename(local_pdf_path)}'"
+            )
 
     # =========================
     # HARD FAIL khusus invoice
@@ -382,6 +419,13 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
         if not group_key:
             raise Exception(f"Gagal membaca inv_invoice_no untuk file invoice: {os.path.basename(p)}")
 
+        print(
+            f"[GROUPING][INVOICE] "
+            f"inv_invoice_no='{raw_invoice_no}' "
+            f"group_key='{group_key}' "
+            f"file='{os.path.basename(p)}'"
+        )
+
         grp = _ensure_group(group_key, raw_invoice_no)
         grp["invoice_paths"].append(p)
 
@@ -391,6 +435,13 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
 
         if not group_key:
             raise Exception(f"Gagal membaca pl_invoice_no untuk file packing list: {os.path.basename(p)}")
+
+        print(
+            f"[GROUPING][PACKING] "
+            f"pl_invoice_no='{raw_invoice_no}' "
+            f"group_key='{group_key}' "
+            f"file='{os.path.basename(p)}'"
+        )
 
         if group_key not in groups:
             skipped_packing.append({
@@ -411,6 +462,13 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
 
         if not group_key:
             raise Exception(f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(p)}")
+
+        print(
+            f"[GROUPING][COO] "
+            f"coo_invoice_no='{raw_invoice_no}' "
+            f"group_key='{group_key}' "
+            f"file='{os.path.basename(p)}'"
+        )
 
         if group_key not in groups:
             skipped_coo.append({
