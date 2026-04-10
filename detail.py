@@ -487,6 +487,10 @@ GENERAL KNOWLEDGE:
      V.S018
      Berarti value tersebut adalah S018
 
+inv_invoice_no, pl_invoice_no & coo_invoice_no:
+    - PADA SETIAP DOKUMEN INVOICE, PACKING LIST DAN COO, PASTI ADA INVOICE NO JADI TOLONG CARI DENGAN TELITI.
+    - inv_invoice_no, pl_invoice_no & coo_invoice_no TIDAK BERSIFAT NULLABLE, JADI TOLONG PERHATIKAN DENGAN TELITI
+
 15. coo_invoice_no:
     - Merepresentasikan invoice number yang direferensikan pada dokumen COO.
     - Ambil seluruh nilai invoice number secara lengkap, termasuk jika invoice number terpisah ke baris berikutnya.
