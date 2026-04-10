@@ -33,7 +33,7 @@ from row import ROW_SYSTEM_INSTRUCTION
 import uuid
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
-import fitz
+import pymupdf as fitz
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))

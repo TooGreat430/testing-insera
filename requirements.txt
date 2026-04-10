@@ -9,4 +9,4 @@ openpyxl
 google-cloud-storage
 streamlit-autorefresh
 weasyprint
-fitz
+PyMuPDF
