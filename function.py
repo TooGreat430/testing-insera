@@ -33,6 +33,7 @@ from row import ROW_SYSTEM_INSTRUCTION
 import uuid
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+import fitz
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
@@ -885,6 +886,51 @@ def _parse_json_safe(raw_text):
 # ==============================
 
 # ==============================
+# MERGE PDF PAGES TO ONE PAGE
+# ==============================
+
+def _merge_pdf_pages_to_one_page(input_pdf: str, output_pdf: str, gap: float = 0):
+    src = fitz.open(input_pdf)
+
+    widths = [page.rect.width for page in src]
+    heights = [page.rect.height for page in src]
+
+    max_width = max(widths)
+    total_height = sum(heights) + gap * (src.page_count - 1)
+
+    out = fitz.open()
+    new_page = out.new_page(width=max_width, height=total_height)
+
+    current_y = 0
+    for i, page in enumerate(src):
+        rect = page.rect
+        x0 = (max_width - rect.width) / 2
+        target = fitz.Rect(x0, current_y, x0 + rect.width, current_y + rect.height)
+        new_page.show_pdf_page(target, src, i)
+        current_y += rect.height + gap
+
+    out.save(output_pdf, garbage=4, deflate=True)
+    out.close()
+    src.close()
+
+
+def _preprocess_invoice_or_pl_to_one_page(input_pdf: str, suffix_name: str):
+    """
+    Merge 1 file PDF multi-page menjadi 1 halaman panjang.
+    Dipakai hanya untuk invoice dan packing list.
+    """
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{suffix_name}_onepage.pdf")
+    out.close()
+
+    _merge_pdf_pages_to_one_page(
+        input_pdf=input_pdf,
+        output_pdf=out.name,
+        gap=0
+    )
+
+    return out.name
+
+# ==============================
 # REMOVE TRULY BLANK PAGES
 # ==============================
 
@@ -1274,9 +1320,6 @@ def _call_gemini_uri(file_uri: str, prompt: str):
             seed=42,
             candidate_count = 1,
             max_output_tokens=65535,
-            thinking_config=types.ThinkingConfig(
-                thinking_budget=-1  # dynamic thinking ON untuk Gemini 2.5 Flash
-            ),
         ),
     )
 
@@ -3340,19 +3383,67 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
                 temp_local_paths.append(normalized)
 
         # DETAIL: invoice+packing saja (2 file pertama dari UI)
-        merged_pdf_detail = _merge_pdfs(normalized_pdf_paths[:2])
-        merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
+        if len(normalized_pdf_paths) < 2:
+            raise Exception("Minimal harus ada 2 file: invoice dan packing list.")
 
-        # FULL: semua dokumen yang diupload (untuk total/container)
-        file_uri_detail = _upload_temp_pdf_to_gcs(merged_pdf_detail, run_prefix, name="detail")
+        # ==========================================
+        # PREPROCESS HANYA INVOICE + PACKING LIST
+        # ==========================================
+        invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+            normalized_pdf_paths[0],
+            "invoice"
+        )
+        temp_local_paths.append(invoice_onepage_pdf)
+
+        packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+            normalized_pdf_paths[1],
+            "packing"
+        )
+        temp_local_paths.append(packing_onepage_pdf)
+
+        preprocessed_detail_inputs = [
+            invoice_onepage_pdf,
+            packing_onepage_pdf,
+        ]
+
+        # DETAIL: invoice + packing yang sudah di-merge jadi 1 page masing-masing
+        merged_pdf_detail = _merge_pdfs(preprocessed_detail_inputs)
+        temp_local_paths.append(merged_pdf_detail)
+
+        merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
+        if merged_pdf_detail not in temp_local_paths:
+            temp_local_paths.append(merged_pdf_detail)
+
+        file_uri_detail = _upload_temp_pdf_to_gcs(
+            merged_pdf_detail,
+            run_prefix,
+            name="detail"
+        )
 
         file_uri_full = None
 
+        # FULL:
+        # invoice + packing pakai hasil preprocess
+        # BL / COO / dokumen lain tetap original
         has_extra_docs = len(normalized_pdf_paths) > 2
         if has_extra_docs:
-            merged_pdf_full = _merge_pdfs(normalized_pdf_paths)
+            full_input_paths = [
+                invoice_onepage_pdf,
+                packing_onepage_pdf,
+            ] + normalized_pdf_paths[2:]
+
+            merged_pdf_full = _merge_pdfs(full_input_paths)
+            temp_local_paths.append(merged_pdf_full)
+
             merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
-            file_uri_full = _upload_temp_pdf_to_gcs(merged_pdf_full, run_prefix, name="full")
+            if merged_pdf_full not in temp_local_paths:
+                temp_local_paths.append(merged_pdf_full)
+
+            file_uri_full = _upload_temp_pdf_to_gcs(
+                merged_pdf_full,
+                run_prefix,
+                name="full"
+            )
 
         detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
 
