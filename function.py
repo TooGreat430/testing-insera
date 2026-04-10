@@ -1274,6 +1274,9 @@ def _call_gemini_uri(file_uri: str, prompt: str):
             seed=42,
             candidate_count = 1,
             max_output_tokens=65535,
+            thinking_config=types.ThinkingConfig(
+                thinking_budget=-1  # dynamic thinking ON untuk Gemini 2.5 Flash
+            ),
         ),
     )
 
@@ -3414,19 +3417,21 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
             batch_no += 1
 
         # default 2 worker (aman untuk 2 CPU & mengurangi risiko 429)
-        MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
-        MAX_WORKERS = max(1, min(MAX_WORKERS, len(jobs)))
+        MAX_WORKERS = max(1, len(jobs))
 
         results = {}
-        print("OCR Batching")
+        print(f"OCR Batching | total_jobs={len(jobs)} | max_workers={MAX_WORKERS}")
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = [
                 ex.submit(_run_one_detail_batch, detail_input_uri, run_prefix, bn, prm)
                 for (bn, prm) in jobs
             ]
+
             for f in as_completed(futures):
                 bn, arr = f.result()
                 results[bn] = arr
+                print(f"[BATCH DONE] batch_no={bn} rows={len(arr)}")
 
         # gabungkan hasil batch sesuai urutan batch_no (tanpa download ulang dari GCS)
         all_rows = []
