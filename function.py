@@ -1274,8 +1274,6 @@ def _call_gemini_uri(file_uri: str, prompt: str):
             seed=42,
             candidate_count = 1,
             max_output_tokens=65535,
-            thinking_config=types.ThinkingConfig(
-                thinking_budget=-1  # dynamic thinking ON untuk Gemini 2.5 Flash
             ),
         ),
     )
