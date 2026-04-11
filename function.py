@@ -724,6 +724,175 @@ OUTPUT SCHEMA:
 
     return group_key, raw_invoice_no, header_obj
 
+def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
+    coo_paths = coo_paths or []
+
+    groups = {}
+    skipped_packing = []
+    skipped_coo = []
+    dropped_invoice_groups = []
+
+    def _ensure_group(group_key, raw_invoice_no):
+        if group_key not in groups:
+            groups[group_key] = {
+                "invoice_no": raw_invoice_no if not _is_null(raw_invoice_no) else group_key,
+                "invoice_paths": [],
+                "packing_paths": [],
+                "coo_paths": [],
+                "temp_invoice_split_paths": [],
+                "temp_packing_split_paths": [],
+                "temp_coo_split_paths": [],
+            }
+        return groups[group_key]
+
+    # =========================
+    # INVOICE = MASTER
+    # =========================
+    invoice_entries = _explode_doc_paths_for_grouping(invoice_paths, doc_type="invoice")
+
+    for entry in invoice_entries:
+        p = entry["path"]
+        group_key = entry["group_key"]
+        raw_invoice_no = entry["invoice_no"]
+
+        if not group_key:
+            raise Exception(
+                f"Gagal membaca inv_invoice_no untuk file invoice: "
+                f"{entry.get('source_file') or os.path.basename(p)}"
+            )
+
+        print(
+            f"[GROUPING][INVOICE] "
+            f"source_file='{entry.get('source_file', os.path.basename(p))}' "
+            f"page_range='{entry.get('page_range', 'unknown')}' "
+            f"inv_invoice_no='{raw_invoice_no}' "
+            f"group_key='{group_key}' "
+            f"temp_split={entry.get('is_temp', False)}"
+        )
+
+        grp = _ensure_group(group_key, raw_invoice_no)
+        grp["invoice_paths"].append(p)
+
+        if entry.get("is_temp"):
+            grp["temp_invoice_split_paths"].append(p)
+
+    # =========================
+    # PACKING -> juga bisa multi invoice dalam 1 file
+    # =========================
+    packing_entries = _explode_doc_paths_for_grouping(packing_paths, doc_type="packing")
+
+    for entry in packing_entries:
+        p = entry["path"]
+        group_key = entry["group_key"]
+        raw_invoice_no = entry["invoice_no"]
+
+        if not group_key:
+            raise Exception(
+                f"Gagal membaca pl_invoice_no untuk file packing list: "
+                f"{entry.get('source_file') or os.path.basename(p)}"
+            )
+
+        print(
+            f"[GROUPING][PACKING] "
+            f"source_file='{entry.get('source_file', os.path.basename(p))}' "
+            f"page_range='{entry.get('page_range', 'unknown')}' "
+            f"pl_invoice_no='{raw_invoice_no}' "
+            f"group_key='{group_key}' "
+            f"temp_split={entry.get('is_temp', False)}"
+        )
+
+        if group_key not in groups:
+            skipped_packing.append({
+                "invoice_no": raw_invoice_no,
+                "file": entry.get("source_file", os.path.basename(p)),
+                "page_range": entry.get("page_range", "unknown"),
+            })
+            print(
+                f"[GROUPING][SKIP] Packing List '{entry.get('source_file', os.path.basename(p))}' "
+                f"page_range='{entry.get('page_range', 'unknown')}' "
+                f"dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
+            )
+            continue
+
+        groups[group_key]["packing_paths"].append(p)
+
+        if entry.get("is_temp"):
+            groups[group_key]["temp_packing_split_paths"].append(p)
+
+    # =========================
+    # COO -> juga bisa multi invoice dalam 1 file
+    # =========================
+    coo_entries = _explode_doc_paths_for_grouping(coo_paths, doc_type="coo")
+
+    for entry in coo_entries:
+        p = entry["path"]
+        group_key = entry["group_key"]
+        raw_invoice_no = entry["invoice_no"]
+
+        if not group_key:
+            raise Exception(
+                f"Gagal membaca coo_invoice_no untuk file COO: "
+                f"{entry.get('source_file') or os.path.basename(p)}"
+            )
+
+        print(
+            f"[GROUPING][COO] "
+            f"source_file='{entry.get('source_file', os.path.basename(p))}' "
+            f"page_range='{entry.get('page_range', 'unknown')}' "
+            f"coo_invoice_no='{raw_invoice_no}' "
+            f"group_key='{group_key}' "
+            f"temp_split={entry.get('is_temp', False)}"
+        )
+
+        if group_key not in groups:
+            skipped_coo.append({
+                "invoice_no": raw_invoice_no,
+                "file": entry.get("source_file", os.path.basename(p)),
+                "page_range": entry.get("page_range", "unknown"),
+            })
+            print(
+                f"[GROUPING][SKIP] COO '{entry.get('source_file', os.path.basename(p))}' "
+                f"page_range='{entry.get('page_range', 'unknown')}' "
+                f"dengan invoice_no '{raw_invoice_no}' tidak punya pasangan invoice."
+            )
+            continue
+
+        groups[group_key]["coo_paths"].append(p)
+
+        if entry.get("is_temp"):
+            groups[group_key]["temp_coo_split_paths"].append(p)
+
+    # =========================
+    # invoice group yang tidak punya packing -> DROP
+    # =========================
+    valid_groups = {}
+    for group_key, grp in groups.items():
+        if not grp["packing_paths"]:
+            dropped_invoice_groups.append({
+                "invoice_no": grp["invoice_no"],
+                "invoice_files": [os.path.basename(x) for x in grp["invoice_paths"]],
+            })
+            print(
+                f"[GROUPING][DROP] Invoice group '{grp['invoice_no']}' "
+                f"dibuang karena tidak punya pasangan packing list."
+            )
+            continue
+
+        valid_groups[group_key] = grp
+
+    print(f"[GROUPING] valid_groups={len(valid_groups)}")
+    if skipped_packing:
+        print(f"[GROUPING] skipped_packing={skipped_packing}")
+    if skipped_coo:
+        print(f"[GROUPING] skipped_coo={skipped_coo}")
+    if dropped_invoice_groups:
+        print(f"[GROUPING] dropped_invoice_groups={dropped_invoice_groups}")
+
+    if not valid_groups:
+        raise Exception("Tidak ada pasangan Invoice + Packing List yang valid untuk diproses.")
+
+    return valid_groups
+
 def _first_text(rows: list, key: str, default="null"):
     v = _first_non_null(rows, key)
     return default if _is_null(v) else v
@@ -3256,7 +3425,6 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
         for _, grp in sorted(groups.items(), key=lambda item: str(item[1]["invoice_no"])):
             temp_group_paths = []
 
-            # semua temp split hasil explode perlu ikut dibersihkan
             temp_group_paths.extend(grp.get("temp_invoice_split_paths") or [])
             temp_group_paths.extend(grp.get("temp_packing_split_paths") or [])
             temp_group_paths.extend(grp.get("temp_coo_split_paths") or [])
