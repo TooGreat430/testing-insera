@@ -551,6 +551,12 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
 
         last_known_key = page_key
         page_invoice_keys.append(page_key)
+        print(
+            f"[GROUPING][PAGE_KEY][{doc_type.upper()}] "
+            f"file='{os.path.basename(local_pdf_path)}' "
+            f"page={idx + 1} "
+            f"extracted_invoice_no='{page_key}'"
+        )
 
     segments = []
     seg_start = 0
@@ -561,6 +567,11 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
             seg_start = idx
 
     segments.append((page_invoice_keys[seg_start], seg_start, total_pages - 1))
+    print(
+        f"[GROUPING][PAGE_KEYS][{doc_type.upper()}] "
+        f"file='{os.path.basename(local_pdf_path)}' "
+        f"page_invoice_keys={page_invoice_keys}"
+    )
 
     if len(segments) == 1:
         only_key, start_page, end_page = segments[0]
@@ -617,6 +628,32 @@ def _explode_doc_paths_for_grouping(paths: list, doc_type: str):
         expanded.extend(split_entries)
 
     return expanded
+
+def _log_extracted_invoice_refs(doc_type: str, entries: list):
+    """
+    Print ringkasan invoice reference yang berhasil diekstrak
+    dari hasil explode/split dokumen.
+    """
+    label_map = {
+        "invoice": "inv_invoice_no",
+        "packing": "pl_invoice_no",
+        "coo": "coo_invoice_no",
+    }
+    target_label = label_map.get(doc_type, "invoice_no")
+
+    extracted = []
+    for entry in entries or []:
+        extracted.append({
+            "source_file": entry.get("source_file"),
+            "page_range": entry.get("page_range"),
+            target_label: entry.get("invoice_no"),
+            "temp_split": entry.get("is_temp", False),
+        })
+
+    print(
+        f"[GROUPING][EXTRACTED_SUMMARY][{doc_type.upper()}] "
+        f"count={len(extracted)} values={extracted}"
+    )
 
 
 def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
@@ -749,6 +786,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
     # INVOICE = MASTER
     # =========================
     invoice_entries = _explode_doc_paths_for_grouping(invoice_paths, doc_type="invoice")
+    _log_extracted_invoice_refs("invoice", invoice_entries)
 
     for entry in invoice_entries:
         p = entry["path"]
@@ -780,6 +818,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
     # PACKING -> juga bisa multi invoice dalam 1 file
     # =========================
     packing_entries = _explode_doc_paths_for_grouping(packing_paths, doc_type="packing")
+    _log_extracted_invoice_refs("packing", packing_entries)
 
     for entry in packing_entries:
         p = entry["path"]
@@ -823,6 +862,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
     # COO -> juga bisa multi invoice dalam 1 file
     # =========================
     coo_entries = _explode_doc_paths_for_grouping(coo_paths, doc_type="coo")
+    _log_extracted_invoice_refs("coo", coo_entries)
 
     for entry in coo_entries:
         p = entry["path"]
