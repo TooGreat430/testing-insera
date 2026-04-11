@@ -35,8 +35,8 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 import pymupdf as fitz
 
-BATCH_SIZE = 30
-DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
+BATCH_SIZE = 15
+DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "15"))
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -3160,8 +3160,97 @@ def _drop_internal_detail_fields(rows: list):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        row.pop("_detail_row_no", None)
 
+        for key in DETAIL_RECHECK_INTERNAL_FIELDS:
+            row.pop(key, None)
+
+DETAIL_RECHECK_INTERNAL_FIELDS = [
+    "_detail_row_no",
+    "_recheck_fields",
+]
+
+def _normalize_recheck_field_list(fields):
+    if not fields:
+        return []
+
+    seen = set()
+    result = []
+
+    for f in fields:
+        if not f:
+            continue
+        if f not in DETAIL_RECHECK_FIELDS:
+            continue
+        if f in seen:
+            continue
+        seen.add(f)
+        result.append(f)
+
+    return result
+
+
+def _infer_recheck_fields_from_match_description(match_description: str):
+    """
+    Infer field mana yang perlu dicek ulang dari match_description existing.
+    Tidak mengubah validator lama, hanya parsing string error yang sudah ada.
+    """
+
+    text = str(match_description or "").strip()
+    if text == "" or text.lower() == "null":
+        return []
+
+    failed = []
+
+    # 1) missing field langsung
+    # contoh:
+    # Invoice: missing inv_quantity
+    # PackingList: missing pl_volume
+    # COO: missing coo_gw
+    missing_hits = re.findall(r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", text, flags=re.IGNORECASE)
+    failed.extend(missing_hits)
+
+    # 2) formula invoice
+    if "inv_amount != inv_quantity*inv_unit_price" in text:
+        failed.extend(["inv_amount", "inv_quantity", "inv_unit_price"])
+
+    # 3) compare row-level yang relevan ke recheck fields
+    compare_map = {
+        "pl_gw != coo_gw": ["pl_gw"],
+        "pl_package_count != coo_package_count": ["pl_package_count"],
+        "coo_quantity != inv_quantity": ["inv_quantity"],
+        "coo_amount != inv_amount": ["inv_amount"],
+        "coo_unit != inv_quantity_unit": ["inv_quantity_unit"],
+    }
+
+    upper_text = text.upper()
+    for needle, fields in compare_map.items():
+        if needle.upper() in upper_text:
+            failed.extend(fields)
+
+    # 4) total mismatch -> map ke field kandidat yang memang boleh direcheck
+    total_map = {
+        "INVOICE: TOTAL_QUANTITY MISMATCH": ["inv_quantity"],
+        "INVOICE: TOTAL_AMOUNT MISMATCH": ["inv_amount", "inv_quantity", "inv_unit_price"],
+
+        "PACKINGLIST: TOTAL_QUANTITY MISMATCH": ["pl_quantity"],
+        "PACKINGLIST: TOTAL_NW MISMATCH": ["pl_nw"],
+        "PACKINGLIST: TOTAL_GW MISMATCH": ["pl_gw"],
+        "PACKINGLIST: TOTAL_VOLUME MISMATCH": ["pl_volume"],
+        "PACKINGLIST: TOTAL_PACKAGE MISMATCH": ["pl_package_count"],
+    }
+
+    for needle, fields in total_map.items():
+        if needle in upper_text:
+            failed.extend(fields)
+
+    failed = _normalize_recheck_field_list(failed)
+
+    # fallback konservatif:
+    # kalau gagal infer apa pun, tetap pakai semua field recheck lama
+    if not failed:
+        return list(DETAIL_RECHECK_FIELDS)
+
+    return failed
 
 def _build_detail_line_recheck_rows_payload(rows: list):
     payload = []
@@ -3170,20 +3259,29 @@ def _build_detail_line_recheck_rows_payload(rows: list):
         if not isinstance(row, dict):
             continue
 
-        # HANYA kirim row yang gagal precheck
         if row.get("match_score") != "false":
             continue
 
+        recheck_fields = _infer_recheck_fields_from_match_description(
+            row.get("match_description", "null")
+        )
+
+        # simpan internal agar apply-result tahu field mana yang boleh dioverwrite
+        row["_recheck_fields"] = list(recheck_fields)
+
         item = {
             "_detail_row_no": row.get("_detail_row_no"),
+            "_recheck_fields": list(recheck_fields),
             "match_description": row.get("match_description", "null"),
         }
 
+        # tetap kirim field lama supaya prompt punya konteks,
+        # tapi nanti apply-result hanya boleh overwrite field dalam _recheck_fields
         for key in DETAIL_RECHECK_FIELDS:
             value = row.get(key)
 
             if key in DETAIL_RECHECK_NUM_FIELDS:
-                item[key] = 0 if value is None else value
+                item[key] = 0 if _is_null(value) else value
             else:
                 item[key] = "null" if value is None else value
 
@@ -3191,10 +3289,10 @@ def _build_detail_line_recheck_rows_payload(rows: list):
 
     return payload
 
-
 def _build_detail_line_recheck_schema():
     schema = {
         "_detail_row_no": "number",
+        "_recheck_fields": ["string"],
     }
     schema.update(DETAIL_RECHECK_SCHEMA)
     return schema
@@ -3213,6 +3311,10 @@ SOURCE OF TRUTH:
 - JSON rows di bawah adalah hasil ekstraksi awal.
 - Setiap row di bawah SUDAH gagal precheck Python.
 - match_description adalah alasan kenapa row tersebut gagal.
+- Setiap row memiliki "_recheck_fields".
+- Anda HANYA boleh mengoreksi field yang namanya ada di "_recheck_fields" untuk row tersebut.
+- Untuk field lain yang tidak ada di "_recheck_fields", WAJIB kembalikan nilai yang sama persis seperti input row.
+- Jangan menebak field lain.
 
 TUGAS:
 - Cek ulang HANYA row-row yang diberikan.
@@ -3243,6 +3345,8 @@ ATURAN KETAT:
 9) Jika value memang tidak ada di dokumen:
    - string -> "null"
    - number -> 0
+10) "_recheck_fields" WAJIB dipertahankan persis seperti input.
+11) Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
 
 OUTPUT SCHEMA:
 {schema_json}
@@ -3348,7 +3452,16 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         if not repaired:
             continue
 
-        for key in DETAIL_RECHECK_FIELDS:
+        allowed_fields = _normalize_recheck_field_list(
+            row.get("_recheck_fields") or []
+        )
+        if not allowed_fields:
+            allowed_fields = list(DETAIL_RECHECK_FIELDS)
+
+        if not allowed_fields:
+            allowed_fields = list(DETAIL_RECHECK_FIELDS)
+
+        for key in allowed_fields:
             if key in repaired:
                 row[key] = repaired.get(key)
 
