@@ -470,6 +470,8 @@ Anda hanya mengekstrak nomor invoice referensi dari SATU HALAMAN dokumen {doc_la
 
 ATURAN:
 - Cari nomor invoice utama yang benar-benar terlihat pada halaman ini.
+- Tanda invoice no adalah "INVOICE NO:", "INVOICE:", "INVOICE NUMBER:"
+- INVOICE NO SUDAH PASTI ADA JADI TOLONG DICEK DENGAN BAIK JANGAN ASAL AMBIL
 - Untuk:
   - invoice -> ambil invoice number dokumen invoice
   - packing -> ambil invoice number yang direferensikan pada packing list
