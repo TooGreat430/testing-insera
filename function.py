@@ -512,8 +512,343 @@ OUTPUT SCHEMA:
 
 def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
     """
-    Split 1 PDF menjadi beberapa sub-PDF berdasarkan invoice number per page sequence.
-    Berlaku untuk invoice / packing / coo.
+    Primary:
+      1) Gemini whole-document trace -> invoice_no + page_range
+    Fallback:
+      2) page-by-page extraction lama
+    """
+    reader = PdfReader(local_pdf_path)
+    total_pages = len(reader.pages)
+
+    if total_pages == 0:
+        raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
+
+    # =========================
+    # PRIMARY: WHOLE-DOCUMENT TRACE
+    # =========================
+    try:
+        traced_refs = _trace_invoice_refs_from_document(local_pdf_path, doc_type)
+
+        if traced_refs:
+            traced_entries = _build_split_entries_from_trace(
+                local_pdf_path=local_pdf_path,
+                doc_type=doc_type,
+                traced_refs=traced_refs,
+            )
+
+            if traced_entries:
+                print(
+                    f"[GROUPING][PRIMARY_TRACE_OK][{doc_type.upper()}] "
+                    f"file='{os.path.basename(local_pdf_path)}'"
+                )
+                return traced_entries
+
+        print(
+            f"[GROUPING][PRIMARY_TRACE_EMPTY][{doc_type.upper()}] "
+            f"file='{os.path.basename(local_pdf_path)}' -> fallback page splitter"
+        )
+
+    except Exception as e:
+        print(
+            f"[GROUPING][PRIMARY_TRACE_FAIL][{doc_type.upper()}] "
+            f"file='{os.path.basename(local_pdf_path)}' error='{e}' "
+            f"-> fallback page splitter"
+        )
+
+    # =========================
+    # FALLBACK: PAGE-BY-PAGE
+    # =========================
+    return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type)
+
+
+def _explode_doc_paths_for_grouping(paths: list, doc_type: str):
+    expanded = []
+
+    for path in paths or []:
+        split_entries = _split_pdf_by_invoice_no(path, doc_type=doc_type)
+        expanded.extend(split_entries)
+
+    return expanded
+
+def _log_extracted_invoice_refs(doc_type: str, entries: list):
+    """
+    Print ringkasan invoice reference yang berhasil diekstrak
+    dari hasil explode/split dokumen.
+    """
+    label_map = {
+        "invoice": "inv_invoice_no",
+        "packing": "pl_invoice_no",
+        "coo": "coo_invoice_no",
+    }
+    target_label = label_map.get(doc_type, "invoice_no")
+
+    extracted = []
+    for entry in entries or []:
+        extracted.append({
+            "source_file": entry.get("source_file"),
+            "page_range": entry.get("page_range"),
+            target_label: entry.get("invoice_no"),
+            "temp_split": entry.get("is_temp", False),
+        })
+
+    print(
+        f"[GROUPING][EXTRACTED_SUMMARY][{doc_type.upper()}] "
+        f"count={len(extracted)} values={extracted}"
+    )
+
+def _trace_invoice_refs_from_document(local_pdf_path: str, doc_type: str):
+    """
+    Primary splitter:
+    Minta Gemini membaca seluruh dokumen dan mengembalikan semua invoice reference
+    beserta page range-nya.
+
+    Output normalized:
+    [
+      {
+        "invoice_no": "ABC123",
+        "start_page": 1,
+        "end_page": 2,
+      },
+      ...
+    ]
+    """
+    target_key = _get_grouping_target_key(doc_type)
+    doc_label = _get_doc_label_for_prompt(doc_type)
+
+    grouping_run_prefix = f"{TMP_PREFIX.rstrip('/')}/grouping/doc_trace/{doc_type}/{uuid.uuid4().hex}"
+    grouping_name = f"{doc_type}_trace_{uuid.uuid4().hex}"
+    file_uri = _upload_temp_pdf_to_gcs(local_pdf_path, grouping_run_prefix, grouping_name)
+
+    reader = PdfReader(local_pdf_path)
+    total_pages = len(reader.pages)
+
+    prompt = f"""
+ROLE:
+Anda bertugas membaca SELURUH dokumen {doc_label} dan menelusuri SEMUA invoice number
+yang direferensikan di dokumen tersebut, beserta rentang halaman masing-masing.
+
+TUJUAN:
+- Jika 1 dokumen hanya mereferensikan 1 invoice number -> kembalikan 1 object.
+- Jika 1 dokumen mereferensikan beberapa invoice number -> kembalikan beberapa object.
+- Setiap object HARUS punya page range yang benar: start_page dan end_page.
+- start_page dan end_page menggunakan nomor halaman 1-based.
+
+ATURAN:
+- Untuk doc_type = invoice:
+  ambil invoice number dari dokumen invoice.
+- Untuk doc_type = packing:
+  ambil invoice number yang direferensikan pada packing list.
+- Untuk doc_type = coo:
+  ambil invoice number yang direferensikan pada COO.
+
+- Jangan ambil PO number.
+- Jangan ambil packing list number.
+- Jangan ambil COO number.
+- Jangan ambil LC number.
+- Jangan ambil page number.
+- Jangan mengarang page range.
+- Jika sebuah invoice number berlanjut ke halaman berikutnya, gabungkan dalam 1 range.
+- Jika halaman lanjutan tidak menuliskan ulang invoice number, tetap masukkan ke range invoice sebelumnya.
+- Semua invoice number pasti mengacu ke field: {target_key}
+- Output HANYA JSON OBJECT valid tanpa teks lain.
+- Jangan mengembalikan invoice_refs kosong jika dokumen mengandung invoice reference.
+- Semua halaman harus tercakup dalam salah satu range jika dokumen memang valid.
+
+OUTPUT SCHEMA:
+{{
+  "invoice_refs": [
+    {{
+      "{target_key}": "string",
+      "start_page": "number",
+      "end_page": "number"
+    }}
+  ]
+}}
+
+VALIDATION RULE:
+- start_page >= 1
+- end_page >= start_page
+- end_page <= {total_pages}
+- Jika hanya ada 1 invoice reference untuk seluruh dokumen, start_page=1 dan end_page={total_pages}
+"""
+
+    obj = _call_gemini_json_uri(
+        file_uri,
+        prompt,
+        expect_array=False,
+        retries=3
+    )
+
+    refs = []
+    if isinstance(obj, dict):
+        refs = obj.get("invoice_refs", [])
+
+    if not isinstance(refs, list):
+        refs = []
+
+    normalized = []
+    for item in refs:
+        if not isinstance(item, dict):
+            continue
+
+        raw_invoice_no = item.get(target_key, "null")
+        invoice_no = _preprocess_invoice_no_for_grouping(raw_invoice_no)
+
+        try:
+            start_page = int(item.get("start_page"))
+        except Exception:
+            start_page = 0
+
+        try:
+            end_page = int(item.get("end_page"))
+        except Exception:
+            end_page = 0
+
+        if not invoice_no:
+            continue
+        if start_page < 1 or end_page < start_page or end_page > total_pages:
+            continue
+
+        normalized.append({
+            "invoice_no": invoice_no,
+            "start_page": start_page,
+            "end_page": end_page,
+        })
+
+    # sort & dedup exact duplicates
+    normalized = sorted(
+        normalized,
+        key=lambda x: (x["start_page"], x["end_page"], x["invoice_no"])
+    )
+
+    deduped = []
+    seen = set()
+    for x in normalized:
+        key = (x["invoice_no"], x["start_page"], x["end_page"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(x)
+
+    print(
+        f"[GROUPING][DOC_TRACE][{doc_type.upper()}] "
+        f"file='{os.path.basename(local_pdf_path)}' "
+        f"invoice_refs={deduped}"
+    )
+
+    return deduped
+
+
+def _build_split_entries_from_trace(local_pdf_path: str, doc_type: str, traced_refs: list):
+    """
+    Ubah hasil trace whole-document menjadi entry split PDF.
+    Validasi:
+    - harus ascending
+    - tidak boleh overlap
+    - harus cover SEMUA halaman tanpa gap
+    """
+    reader = PdfReader(local_pdf_path)
+    total_pages = len(reader.pages)
+
+    if not traced_refs:
+        return []
+
+    ordered_refs = sorted(traced_refs, key=lambda x: (x["start_page"], x["end_page"]))
+
+    prev_end = 0
+    cleaned_refs = []
+
+    for idx, ref in enumerate(ordered_refs):
+        start_page = ref["start_page"]
+        end_page = ref["end_page"]
+        invoice_no = ref["invoice_no"]
+
+        # overlap check
+        if start_page <= prev_end:
+            print(
+                f"[GROUPING][DOC_TRACE][{doc_type.upper()}][INVALID_OVERLAP] "
+                f"file='{os.path.basename(local_pdf_path)}' ref={ref}"
+            )
+            return []
+
+        # gap check: page berikutnya harus langsung nyambung
+        expected_start = 1 if idx == 0 else (prev_end + 1)
+        if start_page != expected_start:
+            print(
+                f"[GROUPING][DOC_TRACE][{doc_type.upper()}][INVALID_GAP] "
+                f"file='{os.path.basename(local_pdf_path)}' "
+                f"expected_start={expected_start} actual_start={start_page} ref={ref}"
+            )
+            return []
+
+        cleaned_refs.append(ref)
+        prev_end = end_page
+
+    # final coverage check: halaman terakhir harus menutup seluruh dokumen
+    if prev_end != total_pages:
+        print(
+            f"[GROUPING][DOC_TRACE][{doc_type.upper()}][INVALID_COVERAGE] "
+            f"file='{os.path.basename(local_pdf_path)}' "
+            f"last_covered_page={prev_end} total_pages={total_pages}"
+        )
+        return []
+
+    results = []
+
+    for ref in cleaned_refs:
+        group_key = ref["invoice_no"]
+        start_page = ref["start_page"]
+        end_page = ref["end_page"]
+
+        # kalau satu trace menutup seluruh file, aman pakai file asli
+        if start_page == 1 and end_page == total_pages:
+            results.append({
+                "group_key": group_key,
+                "invoice_no": group_key,
+                "path": local_pdf_path,
+                "source_file": os.path.basename(local_pdf_path),
+                "page_range": f"{start_page}-{end_page}",
+                "is_temp": False,
+                "doc_type": doc_type,
+            })
+            continue
+
+        writer = PdfWriter()
+        for i in range(start_page - 1, end_page):
+            writer.add_page(reader.pages[i])
+
+        out = tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=f"_{doc_type}_{_safe_output_suffix(group_key)}_{start_page}_{end_page}.pdf"
+        )
+        out.close()
+
+        with open(out.name, "wb") as f:
+            writer.write(f)
+
+        results.append({
+            "group_key": group_key,
+            "invoice_no": group_key,
+            "path": out.name,
+            "source_file": os.path.basename(local_pdf_path),
+            "page_range": f"{start_page}-{end_page}",
+            "is_temp": True,
+            "doc_type": doc_type,
+        })
+
+    print(
+        f"[GROUPING][DOC_TRACE_SPLIT][{doc_type.upper()}] "
+        f"file='{os.path.basename(local_pdf_path)}' "
+        f"segments={[{'invoice_no': r['invoice_no'], 'page_range': r['page_range']} for r in results]}"
+    )
+
+    return results
+
+
+def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str):
+    """
+    Fallback lama: page-by-page extraction.
+    Dipakai hanya jika whole-document trace gagal / tidak valid.
     """
     reader = PdfReader(local_pdf_path)
     total_pages = len(reader.pages)
@@ -536,11 +871,9 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
         if not page_key:
             page_key = _extract_invoice_no_from_single_page_for_split(local_pdf_path, idx, doc_type=doc_type)
 
-        # continuation page -> ikut invoice sebelumnya
         if not page_key and last_known_key:
             page_key = last_known_key
 
-        # fallback terakhir untuk halaman pertama: pakai extractor existing whole-doc
         if not page_key and idx == 0:
             doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, doc_type)
             page_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
@@ -553,6 +886,7 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
 
         last_known_key = page_key
         page_invoice_keys.append(page_key)
+
         print(
             f"[GROUPING][PAGE_KEY][{doc_type.upper()}] "
             f"file='{os.path.basename(local_pdf_path)}' "
@@ -569,6 +903,7 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
             seg_start = idx
 
     segments.append((page_invoice_keys[seg_start], seg_start, total_pages - 1))
+
     print(
         f"[GROUPING][PAGE_KEYS][{doc_type.upper()}] "
         f"file='{os.path.basename(local_pdf_path)}' "
@@ -615,47 +950,11 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
         })
 
     print(
-        f"[GROUPING][{doc_type.upper()}_SPLIT] file='{os.path.basename(local_pdf_path)}' "
+        f"[GROUPING][{doc_type.upper()}_SPLIT][PAGE_FALLBACK] file='{os.path.basename(local_pdf_path)}' "
         f"segments={[{'invoice_no': r['invoice_no'], 'page_range': r['page_range']} for r in results]}"
     )
 
     return results
-
-
-def _explode_doc_paths_for_grouping(paths: list, doc_type: str):
-    expanded = []
-
-    for path in paths or []:
-        split_entries = _split_pdf_by_invoice_no(path, doc_type=doc_type)
-        expanded.extend(split_entries)
-
-    return expanded
-
-def _log_extracted_invoice_refs(doc_type: str, entries: list):
-    """
-    Print ringkasan invoice reference yang berhasil diekstrak
-    dari hasil explode/split dokumen.
-    """
-    label_map = {
-        "invoice": "inv_invoice_no",
-        "packing": "pl_invoice_no",
-        "coo": "coo_invoice_no",
-    }
-    target_label = label_map.get(doc_type, "invoice_no")
-
-    extracted = []
-    for entry in entries or []:
-        extracted.append({
-            "source_file": entry.get("source_file"),
-            "page_range": entry.get("page_range"),
-            target_label: entry.get("invoice_no"),
-            "temp_split": entry.get("is_temp", False),
-        })
-
-    print(
-        f"[GROUPING][EXTRACTED_SUMMARY][{doc_type.upper()}] "
-        f"count={len(extracted)} values={extracted}"
-    )
 
 
 def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
