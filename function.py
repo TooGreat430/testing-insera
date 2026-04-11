@@ -284,6 +284,290 @@ def _safe_output_suffix(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_")
     return safe or uuid.uuid4().hex[:8]
 
+def _looks_like_invoice_no_candidate(value: str) -> bool:
+    s = _preprocess_invoice_no_for_grouping(value)
+
+    if not s:
+        return False
+
+    if len(s) < 5 or len(s) > 80:
+        return False
+
+    # invoice no harus alfanumerik
+    if not re.search(r"[A-Z]", s):
+        return False
+    if not re.search(r"\d", s):
+        return False
+
+    # untuk menghindari salah ambil LC / page / date,
+    # kita pakai rule minimal ada separator khas nomor dokumen
+    if "-" not in s and "/" not in s:
+        return False
+
+    blacklist = {
+        "INVOICE", "DATE", "PAGE", "USD", "LC", "TERM",
+        "COMMODITY", "ORIGIN", "INCOTERMS"
+    }
+    if s in blacklist:
+        return False
+
+    return True
+
+
+def _extract_invoice_no_from_text_for_split(page_text: str) -> str:
+    """
+    Fast path: ambil invoice no dari text page tanpa Gemini.
+    Dipakai untuk split invoice PDF per invoice number.
+    """
+    if not page_text:
+        return ""
+
+    text = str(page_text).replace("\r", "\n")
+    lines = [ln.strip() for ln in text.splitlines() if ln and ln.strip()]
+    joined = "\n".join(lines[:150])
+
+    # 1) pola paling eksplisit
+    explicit_patterns = [
+        r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{4,})",
+        r"\bNO\.?\s*INVOICE\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{4,})",
+        r"\bINVOICE NUMBER\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{4,})",
+    ]
+
+    for pattern in explicit_patterns:
+        for m in re.finditer(pattern, joined, flags=re.IGNORECASE):
+            raw = m.group(1).strip()
+
+            # potong tail yang bukan invoice no
+            raw = re.split(r"\bDATE\b|\bPAGE\b", raw, flags=re.IGNORECASE)[0].strip()
+            raw = raw.splitlines()[0].strip()
+
+            normalized = _preprocess_invoice_no_for_grouping(raw)
+            if _looks_like_invoice_no_candidate(normalized):
+                return normalized
+
+    # 2) pola layout seperti page 1 invoice contoh:
+    #    INVOICE
+    #    COMMODITY ORIGIN
+    #    ...
+    #    :
+    #    :
+    #    INS-2QB0542
+    for idx, line in enumerate(lines[:100]):
+        label_norm = re.sub(r"[^A-Z]", "", line.upper())
+        if label_norm != "INVOICE":
+            continue
+
+        for j in range(idx + 1, min(idx + 25, len(lines))):
+            candidate = _preprocess_invoice_no_for_grouping(lines[j])
+            if _looks_like_invoice_no_candidate(candidate):
+                return candidate
+
+    # 3) fallback regex generik untuk token mirip nomor invoice
+    generic_candidates = re.findall(
+        r"\b[A-Z0-9]{2,}(?:[-/][A-Z0-9]+)+\b",
+        joined.upper()
+    )
+    for cand in generic_candidates:
+        normalized = _preprocess_invoice_no_for_grouping(cand)
+        if _looks_like_invoice_no_candidate(normalized):
+            return normalized
+
+    return ""
+
+
+def _create_single_page_pdf(src_pdf_path: str, page_index: int) -> str:
+    reader = PdfReader(src_pdf_path)
+    writer = PdfWriter()
+    writer.add_page(reader.pages[page_index])
+
+    out = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=f"_page_{page_index + 1}.pdf"
+    )
+    out.close()
+
+    with open(out.name, "wb") as f:
+        writer.write(f)
+
+    return out.name
+
+
+def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index: int) -> str:
+    """
+    Slow path fallback: jika regex text gagal, pakai Gemini untuk 1 halaman saja.
+    """
+    single_page_pdf = _create_single_page_pdf(src_pdf_path, page_index)
+
+    try:
+        grouping_run_prefix = f"{TMP_PREFIX.rstrip('/')}/grouping/page_split/{uuid.uuid4().hex}"
+        grouping_name = f"invoice_page_{page_index + 1}_{uuid.uuid4().hex}"
+        file_uri = _upload_temp_pdf_to_gcs(single_page_pdf, grouping_run_prefix, grouping_name)
+
+        prompt = """
+ROLE:
+Anda hanya mengekstrak nomor invoice dari SATU HALAMAN dokumen invoice.
+
+ATURAN:
+- Cari invoice number utama yang benar-benar terlihat pada halaman ini.
+- Jangan ambil PO number.
+- Jangan ambil packing list number.
+- Jangan ambil LC number.
+- Jangan ambil page number.
+- Jika halaman ini hanya continuation page dan invoice number tidak tertulis eksplisit, isi "null".
+- Output HANYA JSON object valid.
+
+OUTPUT SCHEMA:
+{
+  "inv_invoice_no": "string"
+}
+"""
+
+        obj = _call_gemini_json_uri(
+            file_uri,
+            prompt,
+            expect_array=False,
+            retries=3
+        )
+
+        raw_invoice_no = "null"
+        if isinstance(obj, dict):
+            raw_invoice_no = obj.get("inv_invoice_no", "null")
+
+        return _preprocess_invoice_no_for_grouping(raw_invoice_no)
+
+    finally:
+        try:
+            os.remove(single_page_pdf)
+        except Exception:
+            pass
+
+
+def _split_invoice_pdf_by_invoice_no(local_pdf_path: str):
+    """
+    Split 1 PDF invoice menjadi beberapa sub-PDF berdasarkan invoice number per page sequence.
+
+    Return:
+    [
+      {
+        "group_key": "...",
+        "invoice_no": "...",
+        "path": "/tmp/....pdf",
+        "source_file": "abc.pdf",
+        "page_range": "1-2",
+        "is_temp": True/False,
+      }
+    ]
+    """
+    reader = PdfReader(local_pdf_path)
+    total_pages = len(reader.pages)
+
+    if total_pages == 0:
+        raise Exception(f"PDF invoice kosong: {os.path.basename(local_pdf_path)}")
+
+    page_invoice_keys = []
+    last_known_key = ""
+
+    for idx, page in enumerate(reader.pages):
+        page_text = ""
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+
+        page_key = _extract_invoice_no_from_text_for_split(page_text)
+
+        if not page_key:
+            page_key = _extract_invoice_no_from_single_page_for_split(local_pdf_path, idx)
+
+        # continuation page -> ikut invoice sebelumnya
+        if not page_key and last_known_key:
+            page_key = last_known_key
+
+        # fallback terakhir untuk halaman pertama
+        if not page_key and idx == 0:
+            doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, "invoice")
+            page_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
+
+        if not page_key:
+            raise Exception(
+                f"Gagal menentukan invoice number untuk file '{os.path.basename(local_pdf_path)}' "
+                f"halaman ke-{idx + 1} saat split invoice multi-section."
+            )
+
+        last_known_key = page_key
+        page_invoice_keys.append(page_key)
+
+    # bentuk segment halaman kontigu
+    segments = []
+    seg_start = 0
+
+    for idx in range(1, total_pages):
+        if page_invoice_keys[idx] != page_invoice_keys[idx - 1]:
+            segments.append((page_invoice_keys[seg_start], seg_start, idx - 1))
+            seg_start = idx
+
+    segments.append((page_invoice_keys[seg_start], seg_start, total_pages - 1))
+
+    # kalau cuma 1 segment, tidak perlu split file fisik
+    if len(segments) == 1:
+        only_key, start_page, end_page = segments[0]
+        return [{
+            "group_key": only_key,
+            "invoice_no": only_key,
+            "path": local_pdf_path,
+            "source_file": os.path.basename(local_pdf_path),
+            "page_range": f"{start_page + 1}-{end_page + 1}",
+            "is_temp": False,
+        }]
+
+    results = []
+
+    for group_key, start_page, end_page in segments:
+        writer = PdfWriter()
+
+        for i in range(start_page, end_page + 1):
+            writer.add_page(reader.pages[i])
+
+        out = tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=f"_{_safe_output_suffix(group_key)}_{start_page+1}_{end_page+1}.pdf"
+        )
+        out.close()
+
+        with open(out.name, "wb") as f:
+            writer.write(f)
+
+        results.append({
+            "group_key": group_key,
+            "invoice_no": group_key,
+            "path": out.name,
+            "source_file": os.path.basename(local_pdf_path),
+            "page_range": f"{start_page + 1}-{end_page + 1}",
+            "is_temp": True,
+        })
+
+    print(
+        f"[GROUPING][INVOICE_SPLIT] file='{os.path.basename(local_pdf_path)}' "
+        f"segments={[{'invoice_no': r['invoice_no'], 'page_range': r['page_range']} for r in results]}"
+    )
+
+    return results
+
+
+def _explode_invoice_paths_for_grouping(invoice_paths: list):
+    """
+    Expand invoice_paths:
+    - file invoice tunggal -> tetap 1 entry
+    - file invoice berisi multiple invoice_no -> jadi banyak entry
+    """
+    expanded = []
+
+    for path in invoice_paths or []:
+        split_entries = _split_invoice_pdf_by_invoice_no(path)
+        expanded.extend(split_entries)
+
+    return expanded
+
 
 def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     """
@@ -410,27 +694,45 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
                 "invoice_paths": [],
                 "packing_paths": [],
                 "coo_paths": [],
+                "temp_invoice_split_paths": [],
             }
         return groups[group_key]
 
-    # invoice = master
-    for p in invoice_paths:
-        group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "invoice")
+    # =========================
+    # INVOICE = MASTER
+    # sekarang invoice file bisa meledak jadi banyak entry
+    # jika 1 file berisi multiple invoice_no
+    # =========================
+    invoice_entries = _explode_invoice_paths_for_grouping(invoice_paths)
+
+    for entry in invoice_entries:
+        p = entry["path"]
+        group_key = entry["group_key"]
+        raw_invoice_no = entry["invoice_no"]
 
         if not group_key:
-            raise Exception(f"Gagal membaca inv_invoice_no untuk file invoice: {os.path.basename(p)}")
+            raise Exception(
+                f"Gagal membaca inv_invoice_no untuk file invoice: {entry.get('source_file') or os.path.basename(p)}"
+            )
 
         print(
             f"[GROUPING][INVOICE] "
+            f"source_file='{entry.get('source_file', os.path.basename(p))}' "
+            f"page_range='{entry.get('page_range', 'unknown')}' "
             f"inv_invoice_no='{raw_invoice_no}' "
             f"group_key='{group_key}' "
-            f"file='{os.path.basename(p)}'"
+            f"temp_split={entry.get('is_temp', False)}"
         )
 
         grp = _ensure_group(group_key, raw_invoice_no)
         grp["invoice_paths"].append(p)
 
-    # packing tanpa pasangan invoice -> SKIP
+        if entry.get("is_temp"):
+            grp["temp_invoice_split_paths"].append(p)
+
+    # =========================
+    # PACKING tanpa pasangan invoice -> SKIP
+    # =========================
     for p in packing_paths:
         group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "packing")
 
@@ -457,7 +759,9 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
 
         groups[group_key]["packing_paths"].append(p)
 
+    # =========================
     # COO tanpa pasangan invoice -> SKIP
+    # =========================
     for p in coo_paths:
         group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(p, "coo")
 
@@ -484,7 +788,9 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
 
         groups[group_key]["coo_paths"].append(p)
 
+    # =========================
     # invoice group yang tidak punya packing -> DROP
+    # =========================
     valid_groups = {}
     for group_key, grp in groups.items():
         if not grp["packing_paths"]:
@@ -3054,6 +3360,9 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
 
         for _, grp in sorted(groups.items(), key=lambda item: str(item[1]["invoice_no"])):
             temp_group_paths = []
+
+            # temp split invoice hasil explode perlu ikut dibersihkan
+            temp_group_paths.extend(grp.get("temp_invoice_split_paths") or [])
 
             try:
                 merged_invoice_pdf = _merge_pdfs(grp["invoice_paths"])
