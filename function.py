@@ -1256,7 +1256,16 @@ def _normalize_compare_text(v):
     if _is_null(v):
         return ""
     return re.sub(r"\s+", " ", str(v).strip().upper())
-
+    
+def _sum_numeric(rows: list, key: str) -> float:
+    total = 0.0
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        v = _to_float(r.get(key))
+        if v is not None:
+            total += v
+    return total
 def _build_total_from_detail_and_container(detail_rows: list, container_rows):
     if container_rows is None:
         return None
