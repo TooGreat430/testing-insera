@@ -326,6 +326,35 @@ def _extract_invoice_no_from_text_for_split(page_text: str) -> str:
     lines = [ln.strip() for ln in text.splitlines() if ln and ln.strip()]
     joined = "\n".join(lines[:150])
 
+    def _cleanup_candidate(raw_value: str) -> str:
+        if raw_value is None:
+            return ""
+
+        raw = str(raw_value).strip()
+        if not raw:
+            return ""
+
+        # stop kalau ketemu tail non-invoice yang umum
+        raw = re.split(r"\bDATE\b|\bPAGE\b", raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if not raw:
+            return ""
+
+        # kalau masih multiline, ambil baris pertama yang non-empty
+        first_non_empty = ""
+        for part in raw.splitlines():
+            part = part.strip()
+            if part:
+                first_non_empty = part
+                break
+
+        raw = first_non_empty or raw
+        raw = raw.strip()
+
+        if not raw:
+            return ""
+
+        return _preprocess_invoice_no_for_grouping(raw)
+
     # 1) pola paling eksplisit
     explicit_patterns = [
         r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{4,})",
@@ -335,14 +364,15 @@ def _extract_invoice_no_from_text_for_split(page_text: str) -> str:
 
     for pattern in explicit_patterns:
         for m in re.finditer(pattern, joined, flags=re.IGNORECASE):
-            raw = m.group(1).strip()
+            raw_match = m.group(1)
+            normalized = _cleanup_candidate(raw_match)
 
-            # potong tail yang bukan invoice no
-            raw = re.split(r"\bDATE\b|\bPAGE\b", raw, flags=re.IGNORECASE)[0].strip()
-            raw = raw.splitlines()[0].strip()
+            print(
+                f"[INVOICE_SPLIT][FAST_PATH] "
+                f"raw_match='{raw_match}' normalized='{normalized}'"
+            )
 
-            normalized = _preprocess_invoice_no_for_grouping(raw)
-            if _looks_like_invoice_no_candidate(normalized):
+            if normalized and _looks_like_invoice_no_candidate(normalized):
                 return normalized
 
     # 2) pola layout seperti page 1 invoice contoh:
@@ -358,8 +388,8 @@ def _extract_invoice_no_from_text_for_split(page_text: str) -> str:
             continue
 
         for j in range(idx + 1, min(idx + 25, len(lines))):
-            candidate = _preprocess_invoice_no_for_grouping(lines[j])
-            if _looks_like_invoice_no_candidate(candidate):
+            candidate = _cleanup_candidate(lines[j])
+            if candidate and _looks_like_invoice_no_candidate(candidate):
                 return candidate
 
     # 3) fallback regex generik untuk token mirip nomor invoice
@@ -368,8 +398,8 @@ def _extract_invoice_no_from_text_for_split(page_text: str) -> str:
         joined.upper()
     )
     for cand in generic_candidates:
-        normalized = _preprocess_invoice_no_for_grouping(cand)
-        if _looks_like_invoice_no_candidate(normalized):
+        normalized = _cleanup_candidate(cand)
+        if normalized and _looks_like_invoice_no_candidate(normalized):
             return normalized
 
     return ""
