@@ -656,9 +656,10 @@ GENERAL KNOWLEDGE DETAIL:
    - Berikut adalah list prioritas sumber untuk menentukan inv_spart_item_no (dari tertinggi ke terendah):
       1. SPART / CPART -> Biasanya terdapat pada header kolom
       2. Customer Article Number -> Biasanya terdapat pada header kolom
-      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE pada bagian description jika tidak ada maka reference ke poin 6)
       4. MATERIAL -> Biasanya terdapat pada header kolom
       5. MODEL -> Biasanya terdapat pada header kolom
+      6. DIATAS TULISAN DESCRIPTION -> Tidak menjadi prioritas, hal ini dilakukan jika tidak ditemukan Spart item no
       
    - Jika terdapat kolom khusus Item No DAN juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
      Contoh:
