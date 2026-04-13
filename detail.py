@@ -142,7 +142,7 @@ HEADER_SCHEMA_TEXT = [
     "pl_total_nw", "pl_total_gw", "pl_package_unit", "pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
     "bl_shipper_name","bl_shipper_address","bl_no","bl_date","bl_consignee_name","bl_consignee_address",
     "bl_consignee_tax_id","bl_seller_name","bl_seller_address","bl_lc_number","bl_notify_party","bl_vessel",
-    "bl_voyage_no","bl_port_of_loading","bl_port_of_destination", "bl_mark_number"
+    "bl_voyage_no","bl_port_of_loading","bl_port_of_destination", "bl_mark_number",
     "coo_no","coo_form_type","coo_invoice_no","coo_invoice_date","coo_shipper_name","coo_shipper_address",
     "coo_consignee_name","coo_consignee_address","coo_consignee_tax_id","coo_producer_name","coo_producer_address",
     "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge", "coo_package_unit", "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
