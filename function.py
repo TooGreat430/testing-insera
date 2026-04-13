@@ -35,8 +35,8 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 import pymupdf as fitz
 
-BATCH_SIZE = 15
-DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "15"))
+BATCH_SIZE = 30
+DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
