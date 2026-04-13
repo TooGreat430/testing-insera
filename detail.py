@@ -408,6 +408,10 @@ GENERAL KNOWLEDGE:
    - Jika tidak secara eksplisit, contoh:
      Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
      Maka pl_total_package adalah 9 karena secara detail, ada 9 total package.
+   - Jika pada dokumen terdapat dua value dengan UNIT yang beda yang tergabung dalam satu UNIT dengan satuan yang lebih besar, seperti:
+    Total
+    2P/T	<	32C/T &		83C/T
+    Maka total package adalah 115 (32 + 83 = 115) karena kedua value tersebut tergabung dalam satuan yang lebih besar yaitu "C/T" (Carton). 
 
 6. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
@@ -747,7 +751,12 @@ GENERAL KNOWLEDGE DETAIL:
      Box#2
      Box#4
      maka pl_package_count = 3.
-   
+   - Jika pada satu line item muncul dua atau lebihvalue yang berbeda namun tetap dalam konteks satu line item, seperti:
+     32 C/T
+     6 C/T
+     1 C/T
+     Maka pl_package_count = 39 (32 + 6 + 1 = 39) karena semua value tersebut masih dalam konteks satu line item yang sama.
+
 8. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
