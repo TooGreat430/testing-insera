@@ -4097,7 +4097,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict):
     _fill_inv_price_unit_from_amount_unit(rows)
 
     _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
-    _recompute_seq_by_key(rows, "coo_no", "coo_seq")
+    _recompute_seq_by_key(rows, "inv_invoice_no", "coo_seq")
 
     _postprocess_customer_po_no(rows)
     _postprocess_inv_description(rows)
