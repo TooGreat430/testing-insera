@@ -268,6 +268,13 @@ CATATAN:
 - inv_* anchor diambil dari Invoice.
 - pl_* anchor diambil dari Packing List.
 - Jika pasangan row PL tidak ditemukan dengan yakin, isi field pl_* dengan "null"/0.
+- Satu anchor invoice boleh memiliki lebih dari satu kandidat sub-row pada Packing List.
+- Jika Packing List memecah 1 item menjadi beberapa sub-row, maka pl_quantity pada anchor
+  HARUS merepresentasikan total agregat semua sub-row yang masih item yang sama,
+  bukan hanya quantity dari sub-row pertama.
+- Jangan menganggap perubahan CTN NO / carton range sebagai item baru
+  jika description / item_no / PO masih konsisten.
+- Row TOTAL/SUBTOTAL tidak boleh dijumlahkan bersama detail row yang sama karena akan menyebabkan double count.
 """
 
 def build_header_prompt() -> str:
@@ -578,6 +585,19 @@ ATURAN:
   pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
 - Contoh:
   Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut seperti:
+- Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
+  (PO sama/konsisten, description sama/konsisten, part/item code sama/konsisten, beda hanya CTN NO/range carton),
+  maka gabungkan semua sub-row tersebut ke 1 output row.
+
+- Dalam kasus ini:
+  pl_quantity = jumlah semua quantity sub-row valid
+  pl_package_count = jumlah semua package_count sub-row valid
+  pl_nw = jumlah semua nw sub-row valid
+  pl_gw = jumlah semua gw sub-row valid
+  pl_volume = jumlah semua volume sub-row valid
+
+- Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
+- Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
   ----------------------
   |ITEM NAME | VOLUME  |
