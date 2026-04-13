@@ -142,7 +142,7 @@ HEADER_SCHEMA_TEXT = [
     "pl_total_nw", "pl_total_gw", "pl_package_unit", "pl_weight_unit", "pl_total_volume", "pl_volume_unit", "pl_total_package",
     "bl_shipper_name","bl_shipper_address","bl_no","bl_date","bl_consignee_name","bl_consignee_address",
     "bl_consignee_tax_id","bl_seller_name","bl_seller_address","bl_lc_number","bl_notify_party","bl_vessel",
-    "bl_voyage_no","bl_port_of_loading","bl_port_of_destination",
+    "bl_voyage_no","bl_port_of_loading","bl_port_of_destination", "bl_mark_number"
     "coo_no","coo_form_type","coo_invoice_no","coo_invoice_date","coo_shipper_name","coo_shipper_address",
     "coo_consignee_name","coo_consignee_address","coo_consignee_tax_id","coo_producer_name","coo_producer_address",
     "coo_departure_date","coo_vessel","coo_voyage_no","coo_port_of_discharge", "coo_package_unit", "coo_gw_unit", "coo_amount_unit", "coo_origin_country",
@@ -174,7 +174,6 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 
   "bl_description": "string",
   "bl_hs_code": "string",
-  "bl_mark_number": "string",
 
   "coo_seq": "number",
   "coo_mark_number": "string",
@@ -201,7 +200,7 @@ DETAIL_LINE_FIELDS = [
     "po_no","po_vendor_article_no","po_text","po_sap_article_no","po_line","po_quantity","po_unit","po_price","po_currency",
     "po_info_record_price","po_info_record_currency",
 
-    "bl_description","bl_hs_code","bl_mark_number",
+    "bl_description","bl_hs_code",
 
     "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count",
     "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no",
@@ -340,6 +339,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "bl_voyage_no": "string",
   "bl_port_of_loading": "string",
   "bl_port_of_destination": "string",
+  "bl_mark_number": "string",
 
   "coo_no": "string",
   "coo_form_type": "string",
@@ -501,6 +501,10 @@ inv_invoice_no, pl_invoice_no & coo_invoice_no:
         393
 
         Maka, coo_invoice_no: SHXM22-2512000393
+
+16. bl_mark_number:
+    - bl_mark_number hanya di ekstrak apa bila label "SHIPPING MARKS",
+      apabila tidak ada label "SHIPPING MARKS" maka bl_mark_number = "null"
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
@@ -626,10 +630,11 @@ GENERAL KNOWLEDGE DETAIL:
 3. inv_spart_item_no:
    - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
    - Berikut adalah list prioritas sumber untuk menentukan inv_spart_item_no (dari tertinggi ke terendah):
-      1. Customer Article Number -> Biasanya terdapat pada header kolom
-      2. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
-      3. MATERIAL -> Biasanya terdapat pada header kolom
-      4. MODEL -> Biasanya terdapat pada header kolom
+      1. SPART / CPART -> Biasanya terdapat pada header kolom
+      2. Customer Article Number -> Biasanya terdapat pada header kolom
+      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      4. MATERIAL -> Biasanya terdapat pada header kolom
+      5. MODEL -> Biasanya terdapat pada header kolom
       
    - Jika terdapat kolom khusus Item No DAN juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
      Contoh:
@@ -704,10 +709,11 @@ GENERAL KNOWLEDGE DETAIL:
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
    - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
    - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
-      1. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
-      2. CODE -> Biasanya terdapat pada kolom deskripsi, ditandai dengan label CODE atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
-      3. MATERIAL -> Biasanya terdapat pada header kolom tersebut.
-      4. MODEL -> Biasanya terdapat pada header kolom tersebut.
+      1. SPART / CPART: Biasanya terdapat pada header kolom
+      2. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
+      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      4. MATERIAL -> Biasanya terdapat pada header kolom
+      5. MODEL -> Biasanya terdapat pada header kolom
 
     - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka pl_item_no diambil dari CODE pada kolom deskripsi.
       Contoh:
