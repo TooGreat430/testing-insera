@@ -582,22 +582,6 @@ ATURAN:
 - Merge group harus ditentukan berdasarkan cakupan visual merge vertikal pada tabel.
 - "Top row" adalah row pertama / paling atas yang secara visual bersinggungan dengan merged cell tersebut.
 - Rule ini berlaku untuk field numerik yang berasal dari merged cell, termasuk namun tidak terbatas pada:
-  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
-- Contoh:
-  Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut seperti:
-- Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
-  (PO sama/konsisten, description sama/konsisten, part/item code sama/konsisten, beda hanya CTN NO/range carton),
-  maka gabungkan semua sub-row tersebut ke 1 output row.
-
-- Dalam kasus ini:
-  pl_quantity = jumlah semua quantity sub-row valid
-  pl_package_count = jumlah semua package_count sub-row valid
-  pl_nw = jumlah semua nw sub-row valid
-  pl_gw = jumlah semua gw sub-row valid
-  pl_volume = jumlah semua volume sub-row valid
-
-- Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
-- Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
   ----------------------
   |ITEM NAME | VOLUME  |
@@ -621,6 +605,22 @@ ATURAN:
 - Untuk field pl_quantity dan pl_package_count, pahami makna header kolom terlebih dahulu sebelum mengekstrak value.
 - Jangan menukar quantity dengan package_count.
 - Jika tabel menggunakan format quantity-per-package dan package-count, maka pl_quantity dan pl_package_count harus dipetakan sesuai fungsi masing-masing, bukan sekadar berdasarkan posisi angka.
+  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
+- Contoh:
+  Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut seperti:
+- Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
+  (PO sama/konsisten, description sama/konsisten, part/item code sama/konsisten, beda hanya CTN NO/range carton),
+  maka gabungkan semua sub-row tersebut ke 1 output row.
+
+- Dalam kasus ini:
+  pl_quantity = jumlah semua quantity sub-row valid
+  pl_package_count = jumlah semua package_count sub-row valid
+  pl_nw = jumlah semua nw sub-row valid
+  pl_gw = jumlah semua gw sub-row valid
+  pl_volume = jumlah semua volume sub-row valid
+
+- Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
+- Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
