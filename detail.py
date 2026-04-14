@@ -624,6 +624,7 @@ ATURAN:
   - pl_volume = 0.236 + 0.058 = 0.294 M3          
   - po_no = 43018041
   - pl_item_no = KBTDN3003
+  - pl_description = Battery; BT-DN300; Part# KBTDN3003; Spec: Bulk;
 
 - Jika merged cell berada pada kolom non-numerik, hanya row paling atas yang boleh membawa value tersebut, sedangkan row lain di bawahnya isi "null".
 - Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
