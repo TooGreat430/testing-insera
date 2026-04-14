@@ -2718,6 +2718,47 @@ def _recompute_seq_by_key(rows: list, group_key: str, seq_key: str):
         counter[gk] = counter.get(gk, 0) + 1
         r[seq_key] = counter[gk]
 
+
+def _postprocess_coo_no_and_seq(rows: list):
+    """
+    Rule:
+    - Jalankan hanya kalau data COO memang ada.
+    - Jika coo_no kosong/null, fallback ke inv_invoice_no.
+    - coo_seq dihitung ulang berdasarkan coo_no hasil fallback tsb.
+    """
+
+    # COO dianggap ada kalau minimal salah satu field COO berikut terisi.
+    # coo_no sengaja tidak dipakai sebagai penanda presence,
+    # karena justru field ini yang mau kita fallback.
+    coo_keys_presence = [
+        "coo_form_type",
+        "coo_invoice_no",
+        "coo_invoice_date",
+        "coo_origin_country",
+        "coo_hs_code",
+        "coo_description",
+    ]
+
+    has_coo = _doc_present(rows, coo_keys_presence)
+
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+
+        if not has_coo:
+            # konsisten dengan flow lama: kalau tidak ada COO, seq = 0
+            r["coo_seq"] = 0
+            continue
+
+        # fallback coo_no dari invoice number
+        if _is_null(r.get("coo_no")) and not _is_null(r.get("inv_invoice_no")):
+            r["coo_no"] = str(r.get("inv_invoice_no")).strip()
+
+    if has_coo:
+        _recompute_seq_by_key(rows, "coo_no", "coo_seq")
+
+    return rows
+
 def _finalize_match_fields(rows: list):
     """Pastikan konsistensi match_description."""
     for r in rows:
@@ -4080,11 +4121,6 @@ FAILED ROWS YANG HARUS DICEK ULANG:
 """
 
 def _run_detail_precheck_pass(rows: list, header_obj: dict):
-    """
-    Precheck untuk menentukan row mana yang gagal dan perlu dikirim ke Gemini.
-    Tidak melakukan PO mapping supaya struktur row tetap stabil.
-    Final validation tetap dijalankan lagi di flow lama.
-    """
     _ensure_all_detail_keys(rows)
 
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
@@ -4097,7 +4133,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict):
     _fill_inv_price_unit_from_amount_unit(rows)
 
     _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
-    _recompute_seq_by_key(rows, "inv_invoice_no", "coo_seq")
+    _postprocess_coo_no_and_seq(rows)
 
     _postprocess_customer_po_no(rows)
     _postprocess_inv_description(rows)
@@ -4108,7 +4144,6 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict):
 
     _postprocess_bl_coo_zero_to_null(rows)
 
-    # PRECHECK TANPA PO MAPPING
     _validate_invoice_rows(rows)
     _validate_packing_rows(rows)
     _validate_invoice_vs_packing_extra(rows)
@@ -4426,7 +4461,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         print("PO LINES FOUND:", len(po_lines))
 
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
-        _recompute_seq_by_key(all_rows, "coo_no", "coo_seq")
+        _postprocess_coo_no_and_seq(all_rows)
 
         _postprocess_customer_po_no(all_rows)
         _postprocess_inv_description(all_rows)

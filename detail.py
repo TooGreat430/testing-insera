@@ -516,6 +516,10 @@ inv_invoice_no, pl_invoice_no & coo_invoice_no:
 16. bl_mark_number:
     - bl_mark_number hanya di ekstrak apa bila label "SHIPPING MARKS",
       apabila tidak ada label "SHIPPING MARKS" maka bl_mark_number = "null"
+
+17. coo_no
+    - coo_no merupakan nomor certificate dari dokumen
+    - Biasanya di labelkan dengan "Certificate No:..."
 """
 
 def build_detail_prompt_from_index(total_row: int, index_slice: list, first_index: int, last_index: int) -> str:
