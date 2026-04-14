@@ -828,6 +828,32 @@ GENERAL KNOWLEDGE DETAIL:
    - Ambil nilai Customer PO Number persis seperti yang tertulis pada dokumen tanpa mengubah formatnya.
    - Jika dokumen BUKAN berasal dari vendor Shimano → isi coo_customer_po_no dengan "null".
 
+12. coo_package_count:
+    - coo_package_count diambil dari description pada COO secara kalimat contoh:
+      BICYCLE PARTS
+      TEN (10) CARTONS OF
+      HUB 431 BK 32X14 W/O LOGO 69L
+      9X108X100 270:112 ANO.BLACK
+      W/O LOGO W/WARNING LOGO
+
+      Berarti coo_package_count adalah 10
+
+    - jika tidak ada di description, maka ambil coo_package_count diambil dari bawah value dari quantity/GW.
+    - Contoh:
+      -----------
+      | Quantity|
+      |---------|
+      | 500.000 |
+      |         |
+      |   50    |
+      |         |
+      |         |
+      -----------
+
+      Maka coo_package_count adalah 50 (500.000 adalah quantity jadi jangan keliru)
+
+
+
 OUTPUT RESTRICTION:
 - Output HARUS dimulai '[' dan diakhiri ']'
 - Tidak boleh markdown/plan/teks lain.
