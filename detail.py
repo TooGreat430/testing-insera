@@ -618,8 +618,9 @@ ATURAN:
                 Total 85 PCS
 
   PENTING: PERHATIKAN POSISI GARIS PEMISAH (separator) YANG MEMISAH ANTARA SUB-ROW DENGAN TOTAL/SUBTOTAL!
-  Line yang terpisah dengan separator (garis panjang pemisah) namun tidak memiliki informasi P/O No. atau S.PART yang jelas dapat diasumsikan tergabung dengan line item di atasnya.
-  Pada format tersebut, berarti tergabung menjadi 1 line item dengan:
+  Line yang terpisah dengan separator (garis panjang pemisah) namun tidak memiliki informasi P/O No. atau S.PART yang jelas, JANGAN LANGSUNG DIABAIKAN! Line tersebut dapat diasumsikan tergabung dengan line item di atasnya.
+  JANGAN BUAT LINE BARU! CUKUP TAMBAHKAN NILAI NUMERIKNYA SAJA KE LINE ITEM DI ATASNYA! (BUKAN DI BAWAHNYA!)
+  Sebagai contoh pada format tersebut, berarti tergabung menjadi 1 line item dengan:
   - pl_quantity = 400 + 85 = 485 PCS
   - pl_package_count = 4 C/T + 2 P/T = 6 (karena 1 P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T, maka yang dijumlahkan adalah value dari package count dengan hierarki terbesar yaitu P/T)
   - pl_nw = 32 + 6.8 = 38.8 Kg 
@@ -627,6 +628,7 @@ ATURAN:
   - pl_volume = 0.236 + 0.058 = 0.294 M3          
   - po_no = 43018041
   - pl_item_no = KBTDN3003
+  - pl_description = Battery; BT-DN300; Spec: Bulk;
 
 - Jika merged cell berada pada kolom non-numerik, hanya row paling atas yang boleh membawa value tersebut, sedangkan row lain di bawahnya isi "null".
 - Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
