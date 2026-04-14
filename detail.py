@@ -597,6 +597,30 @@ ATURAN:
   - row paling atas: pl_volume = 13.5
   - row ke-2: pl_volume = 0
   - row ke-3: pl_volume = 0
+  
+- Apabila ditemukan dokumen dengan format seperti berikut:
+  [2006722]               Battery; BT-DN300;        Part# KBTDN3003
+  PT. IS                  Spec: Bulk                PRODUCT CD 27HK000A066
+  P/O No. 43018041                                  S.PART# KBTDN3003
+
+  C/T NO: 1-4         400 PCS           32 Kg       42.4 Kg     0.236M3
+  (4 C/T)
+                ------------------------------------------------------------
+                Total 400 PCS           
+
+  C/T NO: 5           85 PCS            6.8 Kg       9.4 Kg     0.058M3
+                ------------------------------------------------------------
+                Total 85 PCS
+
+  Line yang tidak memiliki informasi P/O No. atau S.PART yang jelas dapat diasumsikan tergabung dengan line item di atasnya.
+  Pada format tersebut, berarti tergabung menjadi 1 line item dengan:
+  - pl_quantity = 400 + 85 = 485 PCS
+  - pl_nw = 32 + 6.8 = 38.8 Kg 
+  - pl_gw = 42.4 + 9.4 = 51.8 Kg
+  - pl_volume = 0.236 + 0.058 = 0.294 M3          
+  - po_no = 43018041
+  - pl_item_no = KBTDN3003
+
 - Jika merged cell berada pada kolom non-numerik, hanya row paling atas yang boleh membawa value tersebut, sedangkan row lain di bawahnya isi "null".
 - Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
