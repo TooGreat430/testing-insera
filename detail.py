@@ -597,7 +597,7 @@ ATURAN:
   - row paling atas: pl_volume = 13.5
   - row ke-2: pl_volume = 0
   - row ke-3: pl_volume = 0
-  
+
 - Apabila ditemukan dokumen dengan format seperti berikut:
   [2006722]               Battery; BT-DN300;        Part# KBTDN3003
   PT. IS                  Spec: Bulk                PRODUCT CD 27HK000A066
@@ -608,13 +608,15 @@ ATURAN:
                 ------------------------------------------------------------
                 Total 400 PCS           
 
-  C/T NO: 5           85 PCS            6.8 Kg       9.4 Kg     0.058M3
+  PLT NO: 5-6           85 PCS            6.8 Kg       9.4 Kg     0.058M3
+  (2 P/T... 32 C/T)
                 ------------------------------------------------------------
                 Total 85 PCS
 
   Line yang tidak memiliki informasi P/O No. atau S.PART yang jelas dapat diasumsikan tergabung dengan line item di atasnya.
   Pada format tersebut, berarti tergabung menjadi 1 line item dengan:
   - pl_quantity = 400 + 85 = 485 PCS
+  - pl_package_count = 4 C/T + 2 P/T = 6 (karena 1 P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T, maka yang dijumlahkan adalah value dari package count dengan hierarki terbesar yaitu P/T)
   - pl_nw = 32 + 6.8 = 38.8 Kg 
   - pl_gw = 42.4 + 9.4 = 51.8 Kg
   - pl_volume = 0.236 + 0.058 = 0.294 M3          
