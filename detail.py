@@ -418,7 +418,7 @@ GENERAL KNOWLEDGE:
    - Jika pada dokumen terdapat dua value dengan UNIT yang beda yang tergabung dalam satu UNIT dengan satuan yang lebih besar, seperti:
     Total
     2P/T	<	32C/T &		83C/T
-    Maka total package adalah 115 (32 + 83 = 115) karena kedua value tersebut tergabung dalam satuan yang lebih besar yaitu "C/T" (Carton). 
+    Maka total package adalah 85 (2 + 83 = 85) karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T).
 
 6. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
@@ -771,12 +771,18 @@ GENERAL KNOWLEDGE DETAIL:
      Box#2
      Box#4
      maka pl_package_count = 3.
-   - Jika pada satu line item muncul dua atau lebihvalue yang berbeda namun tetap dalam konteks satu line item, seperti:
+   - Jika pada satu line item muncul dua atau lebih value yang berbeda namun tetap dalam konteks satu line item, seperti:
      32 C/T
      6 C/T
      1 C/T
      Maka pl_package_count = 39 (32 + 6 + 1 = 39) karena semua value tersebut masih dalam konteks satu line item yang sama.
-
+   - Jika pada satu line item muncul dua atau lebih value yang berbeda dan memiliki satuan yang berbeda namun tetap dalam konteks satu line item yang sama, seperti:
+     2 P/T <32 C/T>
+     6 C/Ts
+     1 C/T
+     Jumlah yang harus ditambahkan adalah satuan dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T)
+     SEHINGGA pl_package_count = 2 + 6 + 1 = 9 (2 P/T + 6 C/T + 1 C/T = 9) 
+     
 8. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
