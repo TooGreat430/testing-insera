@@ -613,6 +613,7 @@ ATURAN:
                 ------------------------------------------------------------
                 Total 85 PCS
 
+  PENTING: PERHATIKAN POSISI GARIS PEMISAH (separator) YANG MEMISAH ANTARA SUB-ROW DENGAN TOTAL/SUBTOTAL!
   Line yang terpisah dengan separator (garis panjang pemisah) namun tidak memiliki informasi P/O No. atau S.PART yang jelas dapat diasumsikan tergabung dengan line item di atasnya.
   Pada format tersebut, berarti tergabung menjadi 1 line item dengan:
   - pl_quantity = 400 + 85 = 485 PCS
