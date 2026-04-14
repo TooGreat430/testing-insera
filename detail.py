@@ -418,7 +418,7 @@ GENERAL KNOWLEDGE:
    - Jika pada dokumen terdapat dua value dengan UNIT yang beda yang tergabung dalam satu UNIT dengan satuan yang lebih besar, seperti:
     Total
     2P/T	<	32C/T &		83C/T
-    Maka total package adalah 85 (2 + 83 = 85) karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T)
+    Maka total package adalah 115 (32 + 83 = 115) karena kedua value tersebut tergabung dalam satuan yang lebih besar yaitu "C/T" (Carton). 
 
 6. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
@@ -585,6 +585,19 @@ ATURAN:
   pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
 - Contoh:
   Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut seperti:
+- Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
+  (PO sama/konsisten, description sama/konsisten, part/item code sama/konsisten, beda hanya CTN NO/range carton),
+  maka gabungkan semua sub-row tersebut ke 1 output row.
+
+- Dalam kasus ini:
+  pl_quantity = jumlah semua quantity sub-row valid
+  pl_package_count = jumlah semua package_count sub-row valid
+  pl_nw = jumlah semua nw sub-row valid
+  pl_gw = jumlah semua gw sub-row valid
+  pl_volume = jumlah semua volume sub-row valid
+
+- Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
+- Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
   ----------------------
   |ITEM NAME | VOLUME  |
@@ -608,19 +621,6 @@ ATURAN:
 - Untuk field pl_quantity dan pl_package_count, pahami makna header kolom terlebih dahulu sebelum mengekstrak value.
 - Jangan menukar quantity dengan package_count.
 - Jika tabel menggunakan format quantity-per-package dan package-count, maka pl_quantity dan pl_package_count harus dipetakan sesuai fungsi masing-masing, bukan sekadar berdasarkan posisi angka.
-- Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
-  (PO sama/konsisten, description sama/konsisten, part/item code sama/konsisten, beda hanya CTN NO/range carton),
-  maka gabungkan semua sub-row tersebut ke 1 output row.
-
-- Dalam kasus ini:
-  pl_quantity = jumlah semua quantity sub-row valid
-  pl_package_count = jumlah semua package_count sub-row valid
-  pl_nw = jumlah semua nw sub-row valid
-  pl_gw = jumlah semua gw sub-row valid
-  pl_volume = jumlah semua volume sub-row valid
-
-- Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
-- Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
@@ -656,10 +656,9 @@ GENERAL KNOWLEDGE DETAIL:
    - Berikut adalah list prioritas sumber untuk menentukan inv_spart_item_no (dari tertinggi ke terendah):
       1. SPART / CPART -> Biasanya terdapat pada header kolom
       2. Customer Article Number -> Biasanya terdapat pada header kolom
-      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE pada bagian description jika tidak ada maka reference ke poin 6)
+      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
       4. MATERIAL -> Biasanya terdapat pada header kolom
       5. MODEL -> Biasanya terdapat pada header kolom
-      6. DIATAS TULISAN DESCRIPTION -> Tidak menjadi prioritas, hal ini dilakukan jika tidak ditemukan Spart item no
       
    - Jika terdapat kolom khusus Item No DAN juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
      Contoh:
@@ -772,18 +771,11 @@ GENERAL KNOWLEDGE DETAIL:
      Box#2
      Box#4
      maka pl_package_count = 3.
-   - Jika pada satu line item muncul dua atau lebih value yang berbeda namun tetap dalam konteks satu line item, seperti:
+   - Jika pada satu line item muncul dua atau lebihvalue yang berbeda namun tetap dalam konteks satu line item, seperti:
      32 C/T
      6 C/T
      1 C/T
      Maka pl_package_count = 39 (32 + 6 + 1 = 39) karena semua value tersebut masih dalam konteks satu line item yang sama.
-   - Jika pada satu line item muncul dua atau lebih value yang berbeda dan memiliki satuan yang berbeda namun tetap dalam konteks satu line item yang sama, seperti:
-     2 P/T <32 C/T>
-     6 C/Ts
-     1 C/T
-     Jumlah yang harus ditambahkan adalah satuan dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T)
-     SEHINGGA pl_package_count = 2 + 6 + 1 = 9
-
 
 8. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
