@@ -683,13 +683,14 @@ GENERAL KNOWLEDGE DETAIL:
 
 3. inv_spart_item_no & pl_item_no
    - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
-   - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
+   - memiliki header sendiri seperti SPART / CPART, Customer Article Number, MATERIAL dan lain-lain
+   - jika inv_spart_item_no / pl_item_no tidak memiliki header, maka value Terletak di atas deskripsi tapi UTAMAKAN UNTUK MENCARI DARI HEADER TERLEBIH DAHULU.
    - Berikut adalah list informasi yang bisa diekstrak sebagai inv_spart_item_no / pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
-      1. SPART / CPART: Biasanya terdapat pada header kolom
-      2. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
-      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
-      4. MATERIAL -> Biasanya terdapat pada header kolom
-      5. MODEL -> Biasanya terdapat pada header kolom
+      1. SPART / CPART: terdapat pada header kolom
+      2. Customer Article Number -> terdapat pada header kolom tersebut.
+      3. CODE -> terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      4. MATERIAL -> terdapat pada header kolom
+      5. MODEL -> terdapat pada header kolom
 
     - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no / pl_item_no diambil dari CODE pada kolom deskripsi.
       Contoh:
