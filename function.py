@@ -79,6 +79,8 @@ PL_PACKAGE_UNIT_MAP = {
     "bal": "BL",
     "bale": "BL",
     "bales": "BL",
+
+    "pxct": "PK"
 }
 
 TOTAL_OUTPUT_FIELDS = [
