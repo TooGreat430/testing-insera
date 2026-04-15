@@ -158,7 +158,9 @@ GENERAL KNOWLEDGE CONTAINER
      V.S018
      Berarti value tersebut adalah S018
 
-
+12. bl_container_no::
+   - Value dari bl_container_no terdapat pada header "Container No."
+   - Biasanya header Container No digabung dengan header lain seperti "Seal No. dan Mark Numbers". Jadi pahami urutan dari penulisan untuk pengambilan value bl_container_no
 
 ============================================
 VALIDASI CONTAINER

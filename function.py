@@ -189,6 +189,200 @@ UNIT_CONVERSION_MAP = {
     "BARREL": "BLL",
 }
 
+TOTAL_DETAIL_AGG_FIELDS = [
+    "inv_total_quantity",
+    "inv_total_amount",
+    "inv_total_nw",
+    "inv_total_gw",
+    "inv_total_volume",
+    "inv_total_package",
+
+    "pl_total_quantity",
+    "pl_total_amount",
+    "pl_total_nw",
+    "pl_total_gw",
+    "pl_total_volume",
+    "pl_total_package",
+]
+
+def _get_detail_total_group_key(row: dict, row_index: int) -> str:
+    """
+    Group key untuk agregasi total per invoice.
+    Prioritas: inv_invoice_no -> pl_invoice_no -> coo_invoice_no -> coo_no
+    """
+    if not isinstance(row, dict):
+        return f"__ROW_{row_index + 1}"
+
+    candidate_keys = [
+        "inv_invoice_no",
+        "pl_invoice_no",
+        "coo_invoice_no",
+        "coo_no",
+    ]
+
+    for key in candidate_keys:
+        normalized = _preprocess_invoice_no_for_grouping(row.get(key))
+        if normalized:
+            return normalized
+
+    return f"__ROW_{row_index + 1}"
+
+
+def _pick_best_total_value(existing_value, candidate_value):
+    """
+    Untuk 1 invoice yang sama, field total sering terulang di setiap row.
+    Kita pilih satu nilai terbaik:
+    - abaikan null
+    - kalau existing kosong, pakai candidate
+    - kalau dua-duanya ada, ambil nilai dengan magnitude lebih besar
+      supaya row 0/null kalah oleh row yang berisi total sebenarnya
+    """
+    existing_num = _to_float(existing_value)
+    candidate_num = _to_float(candidate_value)
+
+    if candidate_num is None:
+        return existing_num
+
+    if existing_num is None:
+        return candidate_num
+
+    if abs(candidate_num) > abs(existing_num):
+        return candidate_num
+
+    return existing_num
+
+
+def _aggregate_total_fields_from_detail_rows(detail_rows: list) -> dict:
+    """
+    Agregasi field-field yang mengandung 'total':
+    - dedup dulu per invoice
+    - lalu sum antar invoice
+
+    Kenapa tidak langsung sum semua row?
+    Karena untuk invoice yang sama, nilai inv_total_xx / pl_total_xx
+    biasanya terulang di banyak line item. Kalau langsung dijumlahkan
+    semua row, hasilnya akan overcount.
+    """
+    grouped_totals = {}
+
+    for idx, row in enumerate(detail_rows or []):
+        if not isinstance(row, dict):
+            continue
+
+        group_key = _get_detail_total_group_key(row, idx)
+
+        if group_key not in grouped_totals:
+            grouped_totals[group_key] = {
+                field: None for field in TOTAL_DETAIL_AGG_FIELDS
+            }
+
+        for field in TOTAL_DETAIL_AGG_FIELDS:
+            grouped_totals[group_key][field] = _pick_best_total_value(
+                grouped_totals[group_key].get(field),
+                row.get(field)
+            )
+
+    aggregated = {field: 0.0 for field in TOTAL_DETAIL_AGG_FIELDS}
+
+    for _, invoice_bucket in grouped_totals.items():
+        for field in TOTAL_DETAIL_AGG_FIELDS:
+            value = _to_float(invoice_bucket.get(field))
+            if value is not None:
+                aggregated[field] += value
+
+    return aggregated
+
+PACKAGE_MULTI_SEPARATORS_REGEX = r"[\/&,;+]|(?:\band\b)"
+
+def _normalize_package_unit_token(value):
+    if value is None:
+        return ""
+
+    s = str(value).strip().lower()
+    if s == "" or s == "null":
+        return ""
+
+    s = re.sub(r"[^a-z]", "", s)
+    return s
+
+def _convert_single_package_unit_token(token: str) -> str:
+    if not token:
+        return ""
+
+    # alias tambahan
+    if token in {"pt", "pts"}:
+        return "PT"
+
+    mapped = PL_PACKAGE_UNIT_MAP.get(token)
+    if mapped:
+        return mapped
+
+    return token.upper()
+
+def _sanitize_package_unit(value):
+    """
+    Rules:
+    - Jika ada 2 unit atau lebih -> PK
+      contoh:
+        PT/CT
+        PT&CT
+        PT, CT
+        PT + CT
+        PT and CT
+    - Jika hanya 1 unit -> convert normal
+    """
+    if value is None:
+        return "null"
+
+    raw = str(value).strip()
+    if raw == "" or raw.lower() == "null":
+        return "null"
+
+    parts = re.split(PACKAGE_MULTI_SEPARATORS_REGEX, raw, flags=re.IGNORECASE)
+
+    normalized_tokens = []
+    for part in parts:
+        token = _normalize_package_unit_token(part)
+        if not token:
+            continue
+
+        converted = _convert_single_package_unit_token(token)
+        if converted and converted not in normalized_tokens:
+            normalized_tokens.append(converted)
+
+    if len(normalized_tokens) >= 2:
+        return "PK"
+
+    if len(normalized_tokens) == 1:
+        return normalized_tokens[0]
+
+    # fallback: treat as single value
+    normalized = _normalize_package_unit_token(raw)
+
+    if normalized in {"pt", "pts"}:
+        return "PT"
+
+    mapped = PL_PACKAGE_UNIT_MAP.get(normalized)
+    if mapped:
+        return mapped
+
+    return raw
+
+def _postprocess_package_unit_fields(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        if "pl_package_unit" in row:
+            row["pl_package_unit"] = _sanitize_package_unit(
+                row.get("pl_package_unit")
+            )
+
+        if "coo_package_unit" in row:
+            row["coo_package_unit"] = _sanitize_package_unit(
+                row.get("coo_package_unit")
+            )
+
 def _normalize_unit_key(value):
     """
     Normalisasi untuk kebutuhan converter:
@@ -1281,33 +1475,37 @@ def _build_total_from_detail_and_container(detail_rows: list, container_rows):
     if not container_rows:
         raise Exception("container_data kosong, total tidak bisa dibentuk")
 
+    aggregated_total_fields = _aggregate_total_fields_from_detail_rows(detail_rows)
+
     total_obj = {
         # =========================
         # DETAIL
         # =========================
         "match_score": "true",
         "match_description": "null",
-        
+
         "inv_quantity": _sum_numeric(detail_rows, "inv_quantity"),
         "inv_amount": _sum_numeric(detail_rows, "inv_amount"),
-        "inv_total_quantity": _first_number(detail_rows, "inv_total_quantity", default=0),
-        "inv_total_amount": _first_number(detail_rows, "inv_total_amount", default=0),
-        "inv_total_nw": _first_number(detail_rows, "inv_total_nw", default=0),
-        "inv_total_gw": _first_number(detail_rows, "inv_total_gw", default=0),
-        "inv_total_volume": _first_number(detail_rows, "inv_total_volume", default=0),
-        "inv_total_package": _first_number(detail_rows, "inv_total_package", default=0),
+
+        "inv_total_quantity": aggregated_total_fields["inv_total_quantity"],
+        "inv_total_amount": aggregated_total_fields["inv_total_amount"],
+        "inv_total_nw": aggregated_total_fields["inv_total_nw"],
+        "inv_total_gw": aggregated_total_fields["inv_total_gw"],
+        "inv_total_volume": aggregated_total_fields["inv_total_volume"],
+        "inv_total_package": aggregated_total_fields["inv_total_package"],
 
         "pl_package_unit": _first_text(detail_rows, "pl_package_unit"),
         "pl_package_count": _sum_numeric(detail_rows, "pl_package_count"),
         "pl_nw": _sum_numeric(detail_rows, "pl_nw"),
         "pl_gw": _sum_numeric(detail_rows, "pl_gw"),
         "pl_volume": _sum_numeric(detail_rows, "pl_volume"),
-        "pl_total_quantity": _first_number(detail_rows, "pl_total_quantity", default=0),
-        "pl_total_amount": _first_number(detail_rows, "pl_total_amount", default=0),
-        "pl_total_nw": _first_number(detail_rows, "pl_total_nw", default=0),
-        "pl_total_gw": _first_number(detail_rows, "pl_total_gw", default=0),
-        "pl_total_volume": _first_number(detail_rows, "pl_total_volume", default=0),
-        "pl_total_package": _first_number(detail_rows, "pl_total_package", default=0),
+
+        "pl_total_quantity": aggregated_total_fields["pl_total_quantity"],
+        "pl_total_amount": aggregated_total_fields["pl_total_amount"],
+        "pl_total_nw": aggregated_total_fields["pl_total_nw"],
+        "pl_total_gw": aggregated_total_fields["pl_total_gw"],
+        "pl_total_volume": aggregated_total_fields["pl_total_volume"],
+        "pl_total_package": aggregated_total_fields["pl_total_package"],
 
         # =========================
         # CONTAINER
@@ -1337,7 +1535,6 @@ def _build_total_from_detail_and_container(detail_rows: list, container_rows):
 
     _ensure_total_keys(total_obj)
 
-    # WAJIB 1 line saja
     return [total_obj]
 
 def _validate_total_rows(total_data, detail_rows: list):
@@ -1359,6 +1556,8 @@ def _validate_total_rows(total_data, detail_rows: list):
     total_obj["match_score"] = "true"
     total_obj["match_description"] = "null"
 
+    aggregated_total_fields = _aggregate_total_fields_from_detail_rows(detail_rows)
+
     def _cmp_num(left_key: str, right_key: str, eps=0.01):
         lv = _to_float(total_obj.get(left_key))
         rv = _to_float(total_obj.get(right_key))
@@ -1368,6 +1567,21 @@ def _validate_total_rows(total_data, detail_rows: list):
             _append_total_error(
                 total_obj,
                 f"Total: {left_key} != {right_key} ({lv} vs {rv})"
+            )
+
+    def _cmp_num_to_value(left_key: str, expected_value, expected_label: str, eps=0.01):
+        actual_value = _to_float(total_obj.get(left_key))
+        expected_num = _to_float(expected_value)
+
+        if actual_value is None:
+            actual_value = 0
+        if expected_num is None:
+            expected_num = 0
+
+        if abs(actual_value - expected_num) > eps:
+            _append_total_error(
+                total_obj,
+                f"Total: {left_key} != {expected_label} ({actual_value} vs {expected_num})"
             )
 
     def _cmp_text(left_label: str, left_val, right_label: str, right_val):
@@ -1385,16 +1599,13 @@ def _validate_total_rows(total_data, detail_rows: list):
         if lv is None or rv is None:
             return False
 
-        # step 1: compare langsung
         if abs(lv - rv) <= eps:
             return True
 
-        # step 2: coba dikali 35.315
         multiplied = rv * factor
         if abs(lv - multiplied) <= eps:
             return True
 
-        # step 3: kalau masih beda, coba dibagi 35.315
         divided = rv / factor
         if abs(lv - divided) <= eps:
             return True
@@ -1406,10 +1617,20 @@ def _validate_total_rows(total_data, detail_rows: list):
         )
         return False
 
-    # 1) cek total bl_package_count vs total pl_package_count
+    # =========================
+    # VALIDASI KHUSUS KOLOM TOTAL
+    # Untuk multiple invoice: total per invoice dijumlahkan dulu
+    # =========================
+    for field in TOTAL_DETAIL_AGG_FIELDS:
+        _cmp_num_to_value(
+            field,
+            aggregated_total_fields.get(field, 0),
+            f"aggregated_detail[{field}]"
+        )
+
+    # existing checks
     _cmp_num("bl_package_count", "pl_package_count")
 
-    # 2) cek bl_package_unit vs pl_package_unit
     _cmp_text(
         "bl_package_unit",
         total_obj.get("bl_package_unit"),
@@ -1417,10 +1638,8 @@ def _validate_total_rows(total_data, detail_rows: list):
         total_obj.get("pl_package_unit")
     )
 
-    # 3) cek total bl_gw vs total pl_gw
     _cmp_num("bl_gw", "pl_gw")
 
-    # 4) cek bl_gw_unit vs pl_gw_unit
     _cmp_text(
         "bl_gw_unit",
         total_obj.get("bl_gw_unit"),
@@ -1428,15 +1647,12 @@ def _validate_total_rows(total_data, detail_rows: list):
         _first_non_null(detail_rows, "pl_weight_unit")
     )
 
-    # 5) cek total bl_volume vs total pl_total_volume
     pl_total_volume = _to_float(total_obj.get("pl_total_volume"))
     if pl_total_volume is not None:
         volume_match = _cmp_volume_num_with_unit_fallback("bl_volume", "pl_total_volume")
     else:
         volume_match = _cmp_volume_num_with_unit_fallback("bl_volume", "pl_volume")
 
-    # 6) cek unit volume HANYA kalau angka match tanpa perlu konversi beda unit
-    # kalau volume_match karena konversi unit, jangan fail hanya karena unit beda
     bl_volume_unit = total_obj.get("bl_volume_unit")
     pl_volume_unit = _first_non_null(detail_rows, "pl_volume_unit")
 
@@ -1444,7 +1660,6 @@ def _validate_total_rows(total_data, detail_rows: list):
         if _normalize_compare_text(bl_volume_unit) == _normalize_compare_text(pl_volume_unit):
             pass
         else:
-            # beda unit diperbolehkan selama angka volume sudah match lewat konversi
             if not volume_match:
                 _append_total_error(
                     total_obj,
@@ -4124,7 +4339,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict):
     _ensure_all_detail_keys(rows)
 
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
-    _postprocess_pl_package_unit(rows)
+    _postprocess_package_unit_fields(rows)
 
     _reset_match_fields(rows)
 
