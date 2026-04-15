@@ -665,6 +665,8 @@ Anda hanya mengekstrak nomor invoice referensi dari SATU HALAMAN dokumen {doc_la
 ATURAN:
 - Cari nomor invoice utama yang benar-benar terlihat pada halaman ini.
 - Tanda invoice no adalah "INVOICE NO:", "INVOICE:", "INVOICE NUMBER:"
+- pahami konteks dari INVOICE NO. Jadi tidak mungkin tanggal, nama tempat, kota.
+- Invoice No adalah kode unique dari pada suatu dokumen yang muncul pada header dokumen.
 - INVOICE NO SUDAH PASTI ADA JADI TOLONG DICEK DENGAN BAIK JANGAN ASAL AMBIL
 - Untuk:
   - invoice -> ambil invoice number dokumen invoice
@@ -675,6 +677,7 @@ ATURAN:
 - Jangan ambil COO number.
 - Jangan ambil LC number.
 - Jangan ambil page number.
+- Jangan ambil tanggal dari dokumen
 - Jika halaman ini hanya continuation page dan invoice number tidak tertulis eksplisit, isi "null".
 - Output HANYA JSON object valid.
 
