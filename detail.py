@@ -120,9 +120,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "coo_amount",
     "coo_criteria",
     "coo_origin_country",
-    "coo_customer_po_no",
-
-    "procedure_ocr"
+    "coo_customer_po_no"
 ]
 
 # Versi FINAL: cocok kalau kamu tetap drop inv_messrs, inv_messrs_address, inv_gw, inv_gw_unit
@@ -187,9 +185,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "coo_gw": "number",
   "coo_amount": "number",
   "coo_criteria": "string",
-  "coo_customer_po_no": "string",
-
-  "procedure_ocr": "string"
+  "coo_customer_po_no": "string"
 }"""
 
 # dipakai Python untuk "ensure semua kolom ada"
@@ -207,9 +203,7 @@ DETAIL_LINE_FIELDS = [
     "bl_description","bl_hs_code",
 
     "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count",
-    "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no",
-
-    "procedure_ocr"
+    "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no"
 ]
 
 DETAIL_LINE_NUM_FIELDS = {
@@ -847,27 +841,6 @@ GENERAL KNOWLEDGE DETAIL:
       -----------
 
       Maka coo_package_count adalah 50 (500.000 adalah quantity jadi jangan keliru)
-
-12. procedure_ocr:
-    - Field ini merupakan penjelasan bagaimana cara Gemini membaca dan mengekstrak informasi dari dokumen.
-    - Berlaku hanya untuk dokumen PL (Packing List) dan COO (Certificate of Origin)
-    - Gemini WAJIB menjelaskan proses pembacaan dokumen secara spesifik dan berurutan sebelum menghasilkan nilai field tertentu.
-
-    - Untuk setiap field PL dan COO, jelaskan:
-      - sumbernya dari bagian mana (contoh: kolom tabel, deskripsi, header, sub-row, dll)
-      - bagaimana cara menentukan nilainya (ambil langsung, hasil penjumlahan, mapping dari label, dll)
-
-    - Fokus utamanya adalah menjelaskan cara mendapatkan value untuk setiap field PL dan COO berikut:
-      - PL: pl_customer_po_no, pl_item_no, pl_description, pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume
-      - COO: coo_seq, coo_mark_number, coo_description, coo_hs_code, coo_quantity, coo_unit, coo_package_count, coo_gw, coo_amount, coo_criteria, coo_customer_po_no
-
-    - Jika terdapat kondisi khusus:
-      - agregasi beberapa sub-row → jelaskan komponen yang dijumlahkan
-      - ambiguitas / multiple kandidat → jelaskan alasan pemilihan
-      - tidak ditemukan → jelaskan alasan (tidak ada / tidak terbaca / tidak relevan dan lain-lain)
-
-    - Penjelasan harus ringkas, jelas, spesifik, dan mencerminkan proses ekstraksi aktual.
-
 
 OUTPUT RESTRICTION:
 - Output HARUS dimulai '[' dan diakhiri ']'
