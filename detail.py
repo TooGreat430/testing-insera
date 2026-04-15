@@ -809,10 +809,10 @@ GENERAL KNOWLEDGE DETAIL:
      pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
-10. coo_description:
+9. coo_description:
     - Deskripsi barang yang ada di COO
 
-11. coo_customer_po_no:
+10. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
    - Dokumen vendor Shimano dapat berupa Invoice, Packing List, COO, atau dokumen lain yang diterbitkan oleh perusahaan Shimano.
    - Vendor Shimano dapat dikenali dari nama perusahaan pada dokumen, seperti:
@@ -823,7 +823,7 @@ GENERAL KNOWLEDGE DETAIL:
    - Ambil nilai Customer PO Number persis seperti yang tertulis pada dokumen tanpa mengubah formatnya.
    - Jika dokumen BUKAN berasal dari vendor Shimano → isi coo_customer_po_no dengan "null".
 
-12. coo_package_count:
+11. coo_package_count:
     - coo_package_count diambil dari description pada COO secara kalimat contoh:
       BICYCLE PARTS
       TEN (10) CARTONS OF
@@ -847,7 +847,7 @@ GENERAL KNOWLEDGE DETAIL:
 
       Maka coo_package_count adalah 50 (500.000 adalah quantity jadi jangan keliru)
 
-13. procedure_ocr:
+12. procedure_ocr:
     - Field ini merupakan penjelasan bagaimana cara Gemini membaca dan mengekstrak informasi dari dokumen.
     - Berlaku hanya untuk dokumen PL (Packing List) dan COO (Certificate of Origin)
     - Gemini WAJIB menjelaskan proses pembacaan dokumen secara spesifik dan berurutan sebelum menghasilkan nilai field tertentu.
