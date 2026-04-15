@@ -659,6 +659,18 @@ GENERAL KNOWLEDGE DETAIL:
       2) teks di atas description
       3) item no lain yang tidak berada di bawah header SPART/CPART
       4) kode yang hanya muncul di kalimat deskripsi
+    - Contoh, apabila ditemukan format seperti ini pada dokumen:
+    _____________________________________________________________________________________________________________________________________  
+    | Marks            |  Description                       | SPART/CPART          |  Qty & Unit    |   Unit Price   |    Amount (USD)  |
+    | -----------------|------------------------------------|----------------------|----------------|----------------|------------------|
+    | PT. IS           |  22E9901D036                       | AMT401EJHFPRX085 /   |  20            |                |                  |
+    | P/O No. 45324353 |  DISC BRAKE ASSEMBLED SET/J-KIT;   | AMT401EJHFPRX085     |    PCS         | 29.2900        | 585.8000         |
+    | SURABAYA         |  BL-MT401(L); BR-MT420(F);         |                      |                |                |                  |
+    | CTN No. 1-1      |  BLACK(BLACK LEVER); W/O ADAPTER;  |                      |                |                |                  |
+    |                  |  RESIN PAD(W/O FIN); 850MM         |                      |                |                |                  |
+    |                  |   HOSE(SM-BH90-S S BLACK); BULK    |                      |                |                |                  |
+    |===================================================================================================================================|
+    Maka inv_spart_item_no / pl_item_no untuk line item tersebut = AMT401EJHFPRX085 (karena berada tepat di bawah header SPART/CPART) dan BUKAN 22E9901D036 (karena meskipun terlihat seperti part number, tetapi tidak berada di bawah header SPART/CPART).                    
 
     COLUMN PRIORITY:
     1. SPART / CPART
@@ -674,9 +686,6 @@ GENERAL KNOWLEDGE DETAIL:
       pada tabel item tersebut.
     - Jika header SPART/CPART ada tetapi cell kosong / tidak terbaca, output "null".
     - Jangan mengganti value dengan kandidat dari DESCRIPTION hanya karena formatnya terlihat seperti part number.
-
-    - TAROH DISINI..
-
 
     - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no / pl_item_no diambil dari CODE pada kolom deskripsi.
       Contoh:
