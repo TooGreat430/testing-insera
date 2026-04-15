@@ -633,8 +633,6 @@ ATURAN:
 - Jika merged cell berada pada kolom non-numerik, hanya row paling atas yang boleh membawa value tersebut, sedangkan row lain di bawahnya isi "null".
 - Jangan membuat row baru dan jangan menggeser urutan output hanya karena ada merged cell.
 - TOLONG EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA. Jika yang di ekstrak package count, package count pada dokumen lah yang akan di ekstrak. Jika itu quantity, maka ekstrak quantity dari dokumen jadi PAHAMI APA YANG AKAN DI EKSTRAK.
-- Saat membaca OCR, bedakan angka "0" dan huruf kapital "O" berdasarkan konteks field.
-- Untuk field code / part number / article number yang bersifat alfanumerik, tentukan "0" atau "O" berdasarkan pola code, posisi karakter, dan kemunculan berulang pada row lain.
 - Untuk field pl_quantity dan pl_package_count, pahami makna header kolom terlebih dahulu sebelum mengekstrak value.
 - Jangan menukar quantity dengan package_count.
 - Jika tabel menggunakan format quantity-per-package dan package-count, maka pl_quantity dan pl_package_count harus dipetakan sesuai fungsi masing-masing, bukan sekadar berdasarkan posisi angka.
@@ -676,28 +674,21 @@ GENERAL KNOWLEDGE DETAIL:
         - 45295210
         - 45295893
         - 45297175
-  - INGAT BAHWA customer_po_no HARUS DIAWALI DENGAN ANGKA 4 jadi jika ada kasus:
-    Po No:
-    C25-1544U/45323564
-    Maka value dari customer_po_no adalah "45323564". ABAIKAN prefix, huruf, dan simbol (C25-1544U dan "/")
-  - Jika invoice_customer_po_no bernilai "null", gunakan nilai invoice_customer_po_no terakhir yang valid dari line item sebelumnya.
-  - KHUSUS Vendor FOX, JIKA PO No pada Invoice tidak ada, maka boleh NULL NAMUN TETAP HARUS DIISI DARI "pl_customer_po_no"
-  - INGAT: customer_po_no harus selalu mengikuti format (numerik 8 digit diawali 4), sehingga prioritaskan pola nilai dibanding posisi atau nama kolom.
 
-3. inv_spart_item_no:
-   - Field ini merepresentasikan PART NUMBER / SPARE PART NUMBER / ITEM PART CODE yang sesungguhnya, BUKAN nomor urut row, BUKAN index, dan BUKAN sequence number.
-   - Berikut adalah list prioritas sumber untuk menentukan inv_spart_item_no (dari tertinggi ke terendah):
-      1. SPART / CPART -> Biasanya terdapat pada header kolom
-      2. Customer Article Number -> Biasanya terdapat pada header kolom
+3. inv_spart_item_no & pl_item_no
+   - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
+   - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
+   - Berikut adalah list informasi yang bisa diekstrak sebagai inv_spart_item_no / pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
+      1. SPART / CPART: Biasanya terdapat pada header kolom
+      2. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
       3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
       4. MATERIAL -> Biasanya terdapat pada header kolom
       5. MODEL -> Biasanya terdapat pada header kolom
-      
-   - Jika terdapat kolom khusus Item No DAN juga terdapat CODE pada Description, maka inv_spart_item_no diambil dari CODE pada Description.
-     Contoh:
+
+    - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no / pl_item_no diambil dari CODE pada kolom deskripsi.
+      Contoh:
         Item No: 
         CWSSXAF38D0002-165
-
         Description:
         SAMOX CHAINWHEEL MODEL: 
         AF38-D28NS-BG31, BLACK
@@ -705,28 +696,21 @@ GENERAL KNOWLEDGE DETAIL:
         49MM 0T, W/CG, W/O SPIDER, SQUARE, C/CAPLESS BOLT
         W/O LOGO , W/BCD76, ALLOY CG
         ** CODE: CWSSXAF38D0002
+        Maka inv_spart_item_no / pl_item_no = CWSSXAF38D0002 dan BUKAN CWSSXAF38D0002-165 (karena prioritas CODE lebih tinggi daripada Item No)
 
-        Maka inv_spart_item_no = CWSSXAF38D0002,
-        BUKAN CWSSXAF38D0002-165 (karena ambil dari CODE di Description BUKAN dari kolom khusus Item No)
-
-   - Jika di dalam 1 area / cell terdapat lebih dari 1 baris, lalu ada angka pendek pada satu baris dan code alfanumerik pada baris lain, maka:
-     - angka pendek (misal: 1, 2, 3) biasanya adalah index / item number / nomor urut
-     - code alfanumerik adalah inv_spart_item_no yang benar
-    Contoh:
-      1
-      CWSFSSH12001-R
-      Maka:
-      - "1" adalah index / nomor urut (ABAIKAN)
-      - "CWSFSSH12001-R" adalah inv_spart_item_no
-
-   - Jadi untuk inv_spart_item_no, prioritaskan token yang berbentuk code part number (alfanumerik), bukan angka urut pendek.
-
-   - Ciri umum inv_spart_item_no:
+  - Ciri umum inv_spart_item_no / pl_item_no:
      - Biasanya berbentuk alfanumerik
      - Sering mengandung kombinasi huruf dan angka
      - Dapat mengandung dash / hyphen, slash, atau separator lain
      - Umumnya lebih panjang daripada index row
      - Biasanya terlihat seperti product code / part code
+   
+   - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
+      [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
+      Maka inv_spart_item_no / pl_item_no = CWSFSSH12001-R
+   - Jika pada deskripsi item ditemukan lebih dari satu kandidat inv_spart_item_no / pl_item_no, maka pilih yang paling kanan, seperti:
+      [ LD-STM28640T3501 ] - [ FFSLDCR2862702-R ] FORK STEM;ZZ;LD-STM28640T3501;STEEL;28.6X25.4X183 40T;CROWN DIAMETER:35MM, THREADED
+      Maka inv_spart_item_no / pl_item_no = FFSLDCR2862702-R (karena lebih kanan daripada LD-STM28640T3501)
 
 4. inv_quantity dan pl_quantity:
    - untuk membaca quantity harap pahami tipe dokumen yang akan di ekstrak.
@@ -760,39 +744,9 @@ GENERAL KNOWLEDGE DETAIL:
    - Jika terdapat beberapa nilai dan jenis package count atau quantity pada satu line item seperti:
       ( 1 P/T & 65 C/T)
       Maka:
-      Package count atau quantity line item tersebut = 1 + 65 = 66
+      Package count atau quantity line item tersebut = 1 + 65 = 66   
 
-6. pl_item_no
-   - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
-   - Terletak di atas deskripsi, ada di bagian customer_po_no, atau mungkin memiliki segmen nya sendiri.
-   - Berikut adalah list informasi yang bisa diekstrak sebagai pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
-      1. SPART / CPART: Biasanya terdapat pada header kolom
-      2. Customer Article Number -> Biasanya terdapat pada header kolom tersebut.
-      3. CODE -> Biasanya terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
-      4. MATERIAL -> Biasanya terdapat pada header kolom
-      5. MODEL -> Biasanya terdapat pada header kolom
-
-    - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka pl_item_no diambil dari CODE pada kolom deskripsi.
-      Contoh:
-        Item No: 
-        CWSSXAF38D0002-165
-        Description:
-        SAMOX CHAINWHEEL MODEL: 
-        AF38-D28NS-BG31, BLACK
-        1 SP, (3/32" *28T* 165 MM), ALLOY CRANK, STEEL 28T BED,
-        49MM 0T, W/CG, W/O SPIDER, SQUARE, C/CAPLESS BOLT
-        W/O LOGO , W/BCD76, ALLOY CG
-        ** CODE: CWSSXAF38D0002
-        Maka inv_spart_item_no = CWSSXAF38D0002 dan BUKAN CWSSXAF38D0002-165 (karena prioritas CODE lebih tinggi daripada Item No)
-   
-   - Jika tidak ditemukan kolom seperti CODE, MATERIAL, atau MODEL, maka telursuri bagian deskripsi itemnya, biasanya ada item_no yang menempel di deskripsi item tersebut seperti:
-      [CWSFSSH12001-R] FRAME PART A-F3306-1 HS NUMBER: 8714.91
-      Maka pl_item_no = CWSFSSH12001-R
-   - Jika pada deskripsi item ditemukan lebih dari satu kandidat pl_item_no, maka pilih yang paling kanan, seperti:
-      [ LD-STM28640T3501 ] - [ FFSLDCR2862702-R ] FORK STEM;ZZ;LD-STM28640T3501;STEEL;28.6X25.4X183 40T;CROWN DIAMETER:35MM, THREADED
-      Maka pl_item_no = FFSLDCR2862702-R (karena lebih kanan daripada LD-STM28640T3501)   
-
-7. pl_package_count:                                 
+6. pl_package_count:                                 
    - Field ini merepresentasikan jumlah package untuk setiap line item.
    - Hitung jumlah package berdasarkan jumlah Box# yang terkait dengan line item tersebut pada dokumen Packing List.
    - Jika satu item muncul pada beberapa Box#, maka jumlahkan semua Box# tersebut sebagai package count.
@@ -816,7 +770,7 @@ GENERAL KNOWLEDGE DETAIL:
      Jumlah yang harus ditambahkan adalah satuan dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T)
      SEHINGGA pl_package_count = 2 + 6 + 1 = 9 (2 P/T + 6 C/T + 1 C/T = 9) 
      
-8. pl_volume:
+7. pl_volume:
    - Field ini merepresentasikan total volume untuk setiap line item.
    - Ambil nilai volume yang tercantum pada dokumen Packing List.
 
@@ -835,7 +789,7 @@ GENERAL KNOWLEDGE DETAIL:
       Maka:
       pl_volume = 0.11 × 155 = 17.05
 
-9. bl_description dan bl_hs_code:
+8. bl_description dan bl_hs_code:
    - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
      Contoh:
@@ -850,11 +804,7 @@ GENERAL KNOWLEDGE DETAIL:
      - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
 10. coo_description:
-    - Jika description diawali dengan jumlah package dan jenis packagenya, maka exclude jumlah package dan jenis packagenya dan ambil hanya deskripsi itemnya saja.
-      - Contoh:
-        - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF SAMOX CHAINWHEEL AND CRANK MODEL: ...
-          - Maka coo_description: SAMOX CHAINWHEEL AND CRANK MODEL: ...
-          - ONE HUNDRED AND SIXTY THREE (163) CARTONS OF DI EXCLUDE
+    - Deskripsi barang yang ada di COO
 
 11. coo_customer_po_no:
    - Field ini merepresentasikan Customer PO Number yang tercantum pada dokumen vendor Shimano.
