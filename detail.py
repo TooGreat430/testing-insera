@@ -675,6 +675,8 @@ GENERAL KNOWLEDGE DETAIL:
     - Jika header SPART/CPART ada tetapi cell kosong / tidak terbaca, output "null".
     - Jangan mengganti value dengan kandidat dari DESCRIPTION hanya karena formatnya terlihat seperti part number.
 
+    - TAROH DISINI..
+
 
     - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no / pl_item_no diambil dari CODE pada kolom deskripsi.
       Contoh:
