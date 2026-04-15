@@ -717,7 +717,7 @@ GENERAL KNOWLEDGE DETAIL:
 
   - Ciri umum inv_spart_item_no / pl_item_no:
      - Biasanya berbentuk alfanumerik
-     - tidak ada
+     - Biasanya diawali dengan HURUF bukan angka. Tapi jika tidak ada yang diawali dengan HURUF maka ambil yang dimulai dari ANGKA. TETAP PRIORITASKAN YANG DIAMBIL YAITU YANG MULAI DENGAN HURUF
      - Sering mengandung kombinasi huruf dan angka
      - Dapat mengandung dash / hyphen, slash, atau separator lain
      - Umumnya lebih panjang daripada index row
