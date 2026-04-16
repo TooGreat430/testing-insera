@@ -204,7 +204,7 @@ DETAIL_LINE_FIELDS = [
 
     "bl_description","bl_hs_code",
 
-    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count", "coo_package_unit",
+    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count", "coo_package_unit"
     "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no"
 ]
 
@@ -234,7 +234,7 @@ Buat daftar INDEX untuk SEMUA line item dengan anchor utama dari Invoice dan anc
 INDEX ini akan dipakai sebagai "anchor" untuk ekstraksi detail batch berikutnya.
 
 ATURAN:
-1) Kembalikan data sesuai structured output schema.
+1) Output HANYA JSON ARRAY, tanpa teks lain.
 2) Panjang array harus = {total_row} (jika invoice memang memiliki {total_row} line item).
 3) Setiap object mewakili 1 line item berdasarkan urutan kemunculan di Invoice.
 4) DILARANG markdown / plan / penjelasan.
@@ -243,6 +243,28 @@ ATURAN:
 7) Packing List adalah anchor pendukung untuk membantu memilih pasangan row PL yang paling cocok.
 8) PL TIDAK BOLEH membuat row baru.
 9) Jangan ikutkan BL / COO ke index.
+
+SCHEMA OUTPUT (INDEX):
+[
+  {{
+    "idx": number,
+
+    "inv_page_no": number,
+    "inv_customer_po_no": "string",
+    "inv_spart_item_no": "string",
+    "inv_description": "string",
+    "inv_quantity": number,
+    "inv_quantity_unit": "string",
+    "inv_unit_price": number,
+    "inv_price_unit": "string",
+    "inv_amount": number,
+
+    "pl_page_no": number,
+    "pl_customer_po_no": "string",
+    "pl_description": "string",
+    "pl_quantity": number
+  }}
+]
 
 CATATAN:
 - inv_* anchor diambil dari Invoice.
@@ -271,11 +293,81 @@ Ekstrak HEADER (doc-level) dari dokumen yang tersedia:
 4) COO (opsional)
 
 ATURAN:
-1) Kembalikan data sesuai structured output schema.
+1) Output HANYA 1 JSON OBJECT, tanpa teks lain.
 2) DILARANG markdown / plan / penjelasan.
 3) Tidak boleh JSON literal null → gunakan string "null".
 4) Format tanggal: YYYY-MM-DD.
 5) Jika dokumen tidak ada → semua field prefix dokumen tersebut = "null".
+
+OUTPUT SCHEMA (HEADER ONLY):
+{
+  "inv_invoice_no": "string",
+  "inv_invoice_date": "string",
+  "inv_messrs": "string",
+  "inv_messrs_address": "string",
+  "inv_vendor_name": "string",
+  "inv_vendor_address": "string",
+  "inv_incoterms_terms": "string",
+  "inv_terms": "string",
+  "inv_coo_commodity_origin": "string",
+  "inv_price_unit": "string",
+  "inv_amount_unit": "string",
+  "inv_total_quantity": "number",
+  "inv_total_amount": "number", 
+  "inv_total_nw": "number", 
+  "inv_total_gw": "number", 
+  "inv_total_volume": "number", 
+  "inv_total_package": "number",
+
+  "pl_invoice_no": "string",
+  "pl_invoice_date": "string",
+  "pl_messrs": "string",
+  "pl_messrs_address": "string",
+  "pl_total_quantity": "number", 
+  "pl_total_amount": "number",
+  "pl_total_nw": "number", 
+  "pl_total_gw": "number",
+  "pl_weight_unit": "string",
+  "pl_total_volume": "number",
+  "pl_volume_unit": "string",
+  "pl_total_package": "number",
+
+  "bl_shipper_name": "string",
+  "bl_shipper_address": "string",
+  "bl_no": "string",
+  "bl_date": "string",
+  "bl_consignee_name": "string",
+  "bl_consignee_address": "string",
+  "bl_consignee_tax_id": "string",
+  "bl_seller_name": "string",
+  "bl_seller_address": "string",
+  "bl_lc_number": "string",
+  "bl_notify_party": "string",
+  "bl_vessel": "string",
+  "bl_voyage_no": "string",
+  "bl_port_of_loading": "string",
+  "bl_port_of_destination": "string",
+  "bl_mark_number": "string",
+
+  "coo_no": "string",
+  "coo_form_type": "string",
+  "coo_invoice_no": "string",
+  "coo_invoice_date": "string",
+  "coo_shipper_name": "string",
+  "coo_shipper_address": "string",
+  "coo_consignee_name": "string",
+  "coo_consignee_address": "string",
+  "coo_consignee_tax_id": "string",
+  "coo_producer_name": "string",
+  "coo_producer_address": "string",
+  "coo_departure_date": "string",
+  "coo_vessel": "string",
+  "coo_voyage_no": "string",
+  "coo_port_of_discharge": "string"
+  "coo_gw_unit": "string",
+  "coo_amount_unit": "string",
+  "coo_origin_country": "string",
+}
 
 GENERAL KNOWLEDGE:
 
@@ -534,6 +626,9 @@ ATURAN:
 
 - Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
 - Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
+
+OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
+{DETAIL_LINE_SCHEMA_TEXT}
 
 
 GENERAL KNOWLEDGE DETAIL:
