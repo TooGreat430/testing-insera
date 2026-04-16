@@ -2258,7 +2258,7 @@ def _call_gemini_uri(file_uri: str, prompt: str):
         config=types.GenerateContentConfig(
             temperature=0,
             top_p=0,
-            seed=1,
+            seed=42,
             candidate_count = 1,
             max_output_tokens=65535,
         ),
