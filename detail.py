@@ -46,7 +46,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "pl_item_no",
     "pl_description",
     "pl_quantity",
-    "pl_package_unit"
+    "pl_package_unit",
     "pl_package_count",
     "pl_weight_unit",
     "pl_nw",
@@ -113,7 +113,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "coo_quantity",
     "coo_unit",
     "coo_package_count",
-    "coo_package_unit"
+    "coo_package_unit",
     "coo_gw_unit",
     "coo_gw",
     "coo_amount_unit",
@@ -204,7 +204,7 @@ DETAIL_LINE_FIELDS = [
 
     "bl_description","bl_hs_code",
 
-    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count", "coo_package_unit"
+    "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count", "coo_package_unit",
     "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no"
 ]
 
