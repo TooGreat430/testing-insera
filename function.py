@@ -2252,7 +2252,7 @@ def _call_gemini_uri(file_uri: str, prompt: str):
     ]
 
     response = genai_client.models.generate_content(
-        model="gemini-3-flash-preview",
+        model="gemini-2.5-flash",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(
             temperature=0,
