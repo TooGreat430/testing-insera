@@ -23,7 +23,8 @@ from detail import (
     build_index_prompt,
     build_header_prompt,
     build_detail_prompt_from_index,
-    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
+    build_detail_recheck_reference_text,   # <-- TAMBAH INI
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,
     DETAIL_LINE_SCHEMA_TEXT,
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
@@ -4172,33 +4173,42 @@ def _normalize_recheck_field_list(fields):
         result.append(f)
 
     return result
+def _normalize_scalar_for_recheck_compare(value):
+    if value is None:
+        return "null"
+
+    if isinstance(value, (int, float)):
+        try:
+            return str(float(value))
+        except Exception:
+            return str(value)
+
+    s = str(value).strip()
+    if s == "":
+        return "null"
+
+    return s
 
 
-def _infer_recheck_fields_from_match_description(match_description: str):
-    """
-    Infer field mana yang perlu dicek ulang dari match_description existing.
-    Tidak mengubah validator lama, hanya parsing string error yang sudah ada.
-    """
-
-    text = str(match_description or "").strip()
-    if text == "" or text.lower() == "null":
+def _infer_recheck_fields_from_match_description(text: str):
+    if text is None or str(text).strip().lower() == "null":
         return []
 
     failed = []
 
-    # 1) missing field langsung
-    # contoh:
-    # Invoice: missing inv_quantity
-    # PackingList: missing pl_volume
-    # COO: missing coo_gw
-    missing_hits = re.findall(r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", text, flags=re.IGNORECASE)
+    missing_hits = re.findall(
+        r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b",
+        str(text),
+        flags=re.IGNORECASE
+    )
     failed.extend(missing_hits)
 
-    # 2) formula invoice
-    if "inv_amount != inv_quantity*inv_unit_price" in text:
+    raw_text = str(text)
+    upper_text = raw_text.upper()
+
+    if "inv_amount != inv_quantity*inv_unit_price".upper() in upper_text:
         failed.extend(["inv_amount", "inv_quantity", "inv_unit_price"])
 
-    # 3) compare row-level yang relevan ke recheck fields
     compare_map = {
         "pl_gw != coo_gw": ["pl_gw"],
         "pl_package_count != coo_package_count": ["pl_package_count"],
@@ -4207,12 +4217,10 @@ def _infer_recheck_fields_from_match_description(match_description: str):
         "coo_unit != inv_quantity_unit": ["inv_quantity_unit"],
     }
 
-    upper_text = text.upper()
     for needle, fields in compare_map.items():
         if needle.upper() in upper_text:
             failed.extend(fields)
 
-    # 4) total mismatch -> map ke field kandidat yang memang boleh direcheck
     total_map = {
         "INVOICE: TOTAL_QUANTITY MISMATCH": ["inv_quantity"],
         "INVOICE: TOTAL_AMOUNT MISMATCH": ["inv_amount", "inv_quantity", "inv_unit_price"],
@@ -4230,12 +4238,9 @@ def _infer_recheck_fields_from_match_description(match_description: str):
 
     failed = _normalize_recheck_field_list(failed)
 
-    # fallback konservatif:
-    # kalau gagal infer apa pun, tetap pakai semua field recheck lama
-    if not failed:
-        return list(DETAIL_RECHECK_FIELDS)
-
+    # jangan fallback ke semua field
     return failed
+
 
 def _build_detail_line_recheck_rows_payload(rows: list):
     payload = []
@@ -4251,41 +4256,74 @@ def _build_detail_line_recheck_rows_payload(rows: list):
             row.get("match_description", "null")
         )
 
-        # simpan internal agar apply-result tahu field mana yang boleh dioverwrite
         row["_recheck_fields"] = list(recheck_fields)
+
+        # skip kalau tidak ada field yang berhasil diinfer
+        if not recheck_fields:
+            print(
+                f"[DETAIL_RECHECK][SKIP] row_no={row.get('_detail_row_no')} "
+                f"reason='{row.get('match_description', 'null')}' "
+                f"-> tidak ada _recheck_fields yang bisa diinfer"
+            )
+            continue
 
         item = {
             "_detail_row_no": row.get("_detail_row_no"),
             "_recheck_fields": list(recheck_fields),
             "match_description": row.get("match_description", "null"),
+            "_old_values": {},
         }
 
-        # tetap kirim field lama supaya prompt punya konteks,
-        # tapi nanti apply-result hanya boleh overwrite field dalam _recheck_fields
         for key in DETAIL_RECHECK_FIELDS:
             value = row.get(key)
 
             if key in DETAIL_RECHECK_NUM_FIELDS:
-                item[key] = 0 if _is_null(value) else value
+                normalized_value = 0 if _is_null(value) else value
             else:
-                item[key] = "null" if value is None else value
+                normalized_value = "null" if value is None else value
+
+            item[key] = normalized_value
+
+            if key in recheck_fields:
+                item["_old_values"][key] = normalized_value
 
         payload.append(item)
 
     return payload
 
+
 def _build_detail_line_recheck_schema():
     schema = {
         "_detail_row_no": "number",
         "_recheck_fields": ["string"],
+        "_old_values": "object",
     }
     schema.update(DETAIL_RECHECK_SCHEMA)
     return schema
 
 
+def _collect_detail_recheck_reference_text(rows_payload: list) -> str:
+    recheck_fields = []
+
+    for row in rows_payload or []:
+        if not isinstance(row, dict):
+            continue
+
+        for field in row.get("_recheck_fields", []) or []:
+            if field not in recheck_fields:
+                recheck_fields.append(field)
+
+    return build_detail_recheck_reference_text(recheck_fields)
+
+
 def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
-    schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
+    schema_json = json.dumps(
+        _build_detail_line_recheck_schema(),
+        ensure_ascii=False,
+        indent=2
+    )
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
+    reference_text = _collect_detail_recheck_reference_text(rows_payload)
 
     return f"""
 ROLE:
@@ -4301,9 +4339,12 @@ SOURCE OF TRUTH:
 - Untuk field lain yang tidak ada di "_recheck_fields", WAJIB kembalikan nilai yang sama persis seperti input row.
 - Jangan menebak field lain.
 
+REFERENCE DARI DETAIL.PY:
+{reference_text}
+
 TUGAS:
 - Cek ulang HANYA row-row yang diberikan.
-- Cek ulang HANYA field-field berikut:
+- Cek ulang HANYA field-field berikut jika memang muncul di "_recheck_fields":
   1. inv_gw_unit
   2. inv_quantity
   3. inv_quantity_unit
@@ -4314,9 +4355,10 @@ TUGAS:
   8. pl_nw
   9. pl_gw
   10. pl_volume
-- JANGAN ubah field lain selain 10 field di atas.
+- JANGAN ubah field lain selain field yang ada di "_recheck_fields" row tersebut.
 - Header TIDAK boleh disentuh.
 - Gunakan match_description sebagai petunjuk field mana yang perlu diperiksa.
+- Gunakan "_old_values" sebagai nilai lama yang TERBUKTI gagal.
 
 ATURAN KETAT:
 1) Output HANYA JSON ARRAY valid, tanpa teks lain.
@@ -4332,6 +4374,12 @@ ATURAN KETAT:
    - number -> 0
 10) "_recheck_fields" WAJIB dipertahankan persis seperti input.
 11) Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
+12) Untuk setiap field yang ADA di "_recheck_fields", hasil recheck TIDAK BOLEH sama dengan value lama di "_old_values".
+13) Jika setelah cek ulang Anda tidak menemukan bukti eksplisit untuk memperbaiki suatu field recheck:
+   - string -> "null"
+   - number -> 0
+   dan tetap TIDAK BOLEH copy nilai lama.
+14) Jangan mengubah field lain hanya karena row ini gagal.
 
 OUTPUT SCHEMA:
 {schema_json}
@@ -4340,41 +4388,56 @@ FAILED ROWS YANG HARUS DICEK ULANG:
 {rows_json}
 """
 
-def _run_detail_precheck_pass(rows: list, header_obj: dict):
-    _ensure_all_detail_keys(rows)
 
-    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
-    _postprocess_package_unit_fields(rows)
+def _validate_repaired_detail_line_recheck_result(rows: list, repaired_rows: list):
+    repaired_by_no = {}
 
-    _reset_match_fields(rows)
+    for repaired in repaired_rows or []:
+        if not isinstance(repaired, dict):
+            continue
 
-    _fill_forward(rows, "inv_customer_po_no")
-    _postprocess_customer_po_no(rows)
-    _fill_inv_price_unit_from_amount_unit(rows)
+        row_no = repaired.get("_detail_row_no")
+        if row_no is None:
+            continue
 
-    _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
-    _postprocess_coo_no_and_seq(rows)
+        repaired_by_no[int(row_no)] = repaired
 
-    _postprocess_customer_po_no(rows)
-    _postprocess_inv_description(rows)
-    _postprocess_item_no_fields(rows)
-    _postprocess_unit_fields(rows)
-    _postprocess_coo_description(rows)
-    _postprocess_bl_description(rows)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
 
-    _postprocess_bl_coo_zero_to_null(rows)
+        row_no = row.get("_detail_row_no")
+        if row_no is None:
+            continue
 
-    _validate_invoice_rows(rows)
-    _validate_packing_rows(rows)
-    _validate_invoice_vs_packing_extra(rows)
-    _validate_bl_rows(rows)
-    _validate_coo_rows(rows)
+        repaired = repaired_by_no.get(int(row_no))
+        if not repaired:
+            continue
 
-    _finalize_match_fields(rows)
-    return rows
+        allowed_fields = _normalize_recheck_field_list(
+            row.get("_recheck_fields") or []
+        )
+
+        if not allowed_fields:
+            continue
+
+        unchanged_fields = []
+
+        for key in allowed_fields:
+            old_value = _normalize_scalar_for_recheck_compare(row.get(key))
+            new_value = _normalize_scalar_for_recheck_compare(repaired.get(key))
+
+            if old_value == new_value:
+                unchanged_fields.append(key)
+
+        if unchanged_fields:
+            raise Exception(
+                f"Gemini detail line recheck returned same values "
+                f"for row_no={row_no}, fields={unchanged_fields}"
+            )
 
 
-def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
+def _run_detail_line_recheck(file_uri: str, rows: list):
     rows_payload = _build_detail_line_recheck_rows_payload(rows)
 
     if not rows_payload:
@@ -4401,6 +4464,7 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
                 f"Gemini detail line recheck count mismatch. expected={len(batch)} got={len(repaired_batch)}"
             )
 
+        _validate_repaired_detail_line_recheck_result(batch, repaired_batch)
         repaired_rows.extend(repaired_batch)
 
     return repaired_rows
@@ -4434,16 +4498,55 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         allowed_fields = _normalize_recheck_field_list(
             row.get("_recheck_fields") or []
         )
-        if not allowed_fields:
-            allowed_fields = list(DETAIL_RECHECK_FIELDS)
 
         if not allowed_fields:
-            allowed_fields = list(DETAIL_RECHECK_FIELDS)
+            continue
 
         for key in allowed_fields:
-            if key in repaired:
-                row[key] = repaired.get(key)
+            if key not in repaired:
+                continue
 
+            old_value = _normalize_scalar_for_recheck_compare(row.get(key))
+            new_value = _normalize_scalar_for_recheck_compare(repaired.get(key))
+
+            if old_value == new_value:
+                continue
+
+            row[key] = repaired.get(key)
+
+    return rows
+
+def _run_detail_precheck_pass(rows: list, header_obj: dict):
+    _ensure_all_detail_keys(rows)
+
+    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
+    _postprocess_package_unit_fields(rows)
+
+    _reset_match_fields(rows)
+
+    _fill_forward(rows, "inv_customer_po_no")
+    _postprocess_customer_po_no(rows)
+    _fill_inv_price_unit_from_amount_unit(rows)
+
+    _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
+    _postprocess_coo_no_and_seq(rows)
+
+    _postprocess_customer_po_no(rows)
+    _postprocess_inv_description(rows)
+    _postprocess_item_no_fields(rows)
+    _postprocess_unit_fields(rows)
+    _postprocess_coo_description(rows)
+    _postprocess_bl_description(rows)
+
+    _postprocess_bl_coo_zero_to_null(rows)
+
+    _validate_invoice_rows(rows)
+    _validate_packing_rows(rows)
+    _validate_invoice_vs_packing_extra(rows)
+    _validate_bl_rows(rows)
+    _validate_coo_rows(rows)
+
+    _finalize_match_fields(rows)
     return rows
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_output=True, manage_markers=True):

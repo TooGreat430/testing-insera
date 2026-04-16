@@ -220,6 +220,97 @@ DETAIL_LINE_NUM_FIELDS = {
     "coo_seq","coo_quantity","coo_package_count","coo_gw","coo_amount",
 }
 
+DETAIL_RECHECK_REFERENCE_MAP = {
+    "inv_gw_unit": """
+- inv_gw_unit adalah unit gross weight pada dokumen Invoice jika memang tersedia.
+- Jangan mengambil label seperti G.W. sebagai unit.
+- Jika tidak ada bukti eksplisit pada Invoice, isi "null".
+""",
+
+    "inv_quantity": """
+- inv_quantity harus diambil dari dokumen Invoice, bukan dari Packing List atau COO.
+- quantity dan package_count adalah dua field yang berbeda dan tidak boleh saling menggantikan.
+- Jika quantity hanya muncul di dokumen lain tetapi tidak ada bukti pada Invoice, isi 0.
+""",
+
+    "inv_quantity_unit": """
+- inv_quantity_unit harus diambil dari quantity unit pada Invoice.
+- Jangan tertukar dengan package unit.
+- Jika unit tidak ada secara eksplisit di Invoice, isi "null".
+""",
+
+    "inv_unit_price": """
+- inv_unit_price harus diambil dari dokumen Invoice.
+- Jika inv_amount dan inv_quantity valid dan row mendukung, unit price harus konsisten secara logika dengan amount.
+- Jangan ambil price dari PO / COO / Packing List.
+""",
+
+    "inv_amount": """
+- inv_amount harus diambil dari dokumen Invoice.
+- Jika inv_quantity dan inv_unit_price valid dan row mendukung, amount harus konsisten secara logika dengan quantity x unit price.
+- Jangan ambil amount dari COO atau total invoice.
+""",
+
+    "pl_quantity": """
+- pl_quantity harus diambil dari dokumen Packing List, bukan Invoice.
+- quantity dan package_count adalah dua field yang berbeda dan tidak boleh saling menggantikan.
+- Jika header menunjukkan QTY/PKGS, PCS/CTN, SETS/BOX, maka itu quantity per package, bukan package_count.
+- Jika konteks tabel mendukung, pl_quantity dapat dihitung sebagai quantity per package x package_count.
+- Jika terdapat beberapa nilai package/quantity dalam satu line item seperti (1 P/T & 65 C/T), pahami konteks line item dengan benar dan jangan double count.
+""",
+
+    "pl_package_count": """
+- pl_package_count adalah jumlah package fisik, bukan quantity barang.
+- Sumber valid: kolom/header package, packing, pkgs, carton, ctn, pallet, bale, package detail, atau unit yang menempel langsung pada package_count.
+- Jangan mengambil quantity sebagai package_count.
+- Untuk mismatch total package, fokus pada package evidence line item, bukan quantity item.
+""",
+
+    "pl_nw": """
+- pl_nw harus diambil dari dokumen Packing List.
+- Jangan tertukar dengan gross weight, volume, quantity, atau total row.
+- Jika hanya total document-level yang ada dan tidak ada bukti line-level, isi 0.
+""",
+
+    "pl_gw": """
+- pl_gw harus diambil dari dokumen Packing List.
+- Jangan tertukar dengan coo_gw, inv_gw, nw, atau total_gw.
+- Jika hanya total document-level yang ada dan tidak ada bukti line-level, isi 0.
+""",
+
+    "pl_volume": """
+- pl_volume harus diambil dari dokumen Packing List.
+- Jangan tertukar dengan quantity, package_count, weight, atau total volume.
+- Jika hanya total document-level yang ada dan tidak ada bukti line-level, isi 0.
+""",
+}
+
+DETAIL_RECHECK_GENERAL_RULES = """
+GENERAL RECHECK RULES:
+- Recheck hanya untuk field yang memang diminta.
+- Dokumen sumber utama:
+  - inv_* -> Invoice
+  - pl_* -> Packing List
+- quantity dan package_count tidak boleh saling menggantikan.
+- Jangan ambil nilai dari total/subtotal row untuk mengisi line item jika tidak ada bukti line-level.
+- Jangan mengubah field di luar field yang diminta recheck.
+"""
+
+def build_detail_recheck_reference_text(recheck_fields: list) -> str:
+    normalized = []
+    for field in recheck_fields or []:
+        if field not in normalized:
+            normalized.append(field)
+
+    chunks = [DETAIL_RECHECK_GENERAL_RULES.strip()]
+
+    for field in normalized:
+        ref = DETAIL_RECHECK_REFERENCE_MAP.get(field)
+        if ref:
+            chunks.append(f"[{field}]\n{ref.strip()}")
+
+    return "\n\n".join(chunks)
+
 def build_index_prompt(total_row: int) -> str:
     return f"""
 ROLE:
