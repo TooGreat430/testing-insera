@@ -58,7 +58,7 @@ DETAIL_RECHECK_NUM_FIELDS = {
 }
 
 storage_client = storage.Client() 
-genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, )
+genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location="global", )
 
 # ==============================
 # SANITIZER: pl_package_unit
@@ -2249,7 +2249,7 @@ def _call_gemini_uri(file_uri: str, prompt: str):
     ]
 
     response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3-flash-preview",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(
             temperature=0,
@@ -3374,6 +3374,98 @@ def _validate_invoice_vs_packing_extra(rows: list):
             normalize_fn=norm
         )
 
+def _normalize_company_name_for_similarity(value):
+    """
+    Normalisasi nama company untuk compare BL seller vs invoice vendor:
+    - uppercase
+    - hapus punctuation
+    - buang suffix badan usaha umum
+    - rapikan spasi
+    """
+    if value is None:
+        return ""
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return ""
+
+    s = s.upper()
+
+    # buang punctuation jadi spasi
+    s = re.sub(r"[^A-Z0-9]+", " ", s)
+
+    # hapus common legal suffix
+    stopwords = {
+        "CO", "COMPANY", "LTD", "LIMITED", "INC", "CORP", "CORPORATION",
+        "LLC", "PTE", "PT", "TBK", "CV", "BHD", "SDN"
+    }
+
+    tokens = [tok for tok in s.split() if tok not in stopwords]
+    s = " ".join(tokens)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
+
+
+def _company_name_similarity(left, right) -> float:
+    """
+    Rule:
+    1. exact normalized -> 1.0
+    2. containment -> 1.0
+    3. token overlap tinggi -> 1.0
+    4. fallback SequenceMatcher
+    """
+    l = _normalize_company_name_for_similarity(left)
+    r = _normalize_company_name_for_similarity(right)
+
+    if not l or not r:
+        return 0.0
+
+    if l == r:
+        return 1.0
+
+    l_flat = l.replace(" ", "")
+    r_flat = r.replace(" ", "")
+
+    # kasus seperti:
+    # HAOMENG BICYCLE SHANGHAI
+    # PROWHEEL HAOMENG BICYCLE SHANGHAI
+    if len(l_flat) >= 12 and l_flat in r_flat:
+        return 1.0
+    if len(r_flat) >= 12 and r_flat in l_flat:
+        return 1.0
+
+    l_tokens = set(l.split())
+    r_tokens = set(r.split())
+
+    if l_tokens and r_tokens:
+        overlap = len(l_tokens & r_tokens) / min(len(l_tokens), len(r_tokens))
+        if overlap >= 0.8 and min(len(l_tokens), len(r_tokens)) >= 2:
+            return 1.0
+
+    return SequenceMatcher(None, l_flat, r_flat).ratio()
+
+
+def _postprocess_bl_seller_name_similarity(rows: list, threshold: float = 0.88):
+    """
+    Kalau bl_seller_name sangat mirip dengan inv_vendor_name,
+    samakan nilainya supaya validasi exact compare existing tetap lolos.
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        inv_vendor_name = row.get("inv_vendor_name")
+        bl_seller_name = row.get("bl_seller_name")
+
+        if _is_null(inv_vendor_name) or _is_null(bl_seller_name):
+            continue
+
+        sim = _company_name_similarity(inv_vendor_name, bl_seller_name)
+
+        if sim >= threshold:
+            row["bl_seller_name"] = inv_vendor_name
+
 def _validate_bl_rows(rows: list):
     """
     Implement rule dari prompt:
@@ -4358,6 +4450,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict):
     _postprocess_unit_fields(rows)
     _postprocess_coo_description(rows)
     _postprocess_bl_description(rows)
+    _postprocess_bl_seller_name_similarity(all_rows)
 
     _postprocess_bl_coo_zero_to_null(rows)
 
@@ -4686,6 +4779,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _postprocess_unit_fields(all_rows)
         _postprocess_coo_description(all_rows)
         _postprocess_bl_description(all_rows)
+        _postprocess_bl_seller_name_similarity(all_rows)
 
         all_rows = _map_po_to_details(po_lines, all_rows)
         all_rows = _generate_inv_amount_before_validation(all_rows)
