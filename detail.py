@@ -234,15 +234,14 @@ Buat daftar INDEX untuk SEMUA line item dengan anchor utama dari Invoice dan anc
 INDEX ini akan dipakai sebagai "anchor" untuk ekstraksi detail batch berikutnya.
 
 ATURAN:
-1) Kembalikan data sesuai structured output schema.
-2) Panjang array harus = {total_row} (jika invoice memang memiliki {total_row} line item).
-3) Setiap object mewakili 1 line item berdasarkan urutan kemunculan di Invoice.
-4) DILARANG markdown / plan / penjelasan.
-5) Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
-6) Invoice adalah anchor utama untuk identitas row.
-7) Packing List adalah anchor pendukung untuk membantu memilih pasangan row PL yang paling cocok.
-8) PL TIDAK BOLEH membuat row baru.
-9) Jangan ikutkan BL / COO ke index.
+1) Panjang array harus = {total_row} (jika invoice memang memiliki {total_row} line item).
+2) Setiap object mewakili 1 line item berdasarkan urutan kemunculan di Invoice.
+3) DILARANG markdown / plan / penjelasan.
+4) Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
+5) Invoice adalah anchor utama untuk identitas row.
+6) Packing List adalah anchor pendukung untuk membantu memilih pasangan row PL yang paling cocok.
+7) PL TIDAK BOLEH membuat row baru.
+8) Jangan ikutkan BL / COO ke index.
 
 CATATAN:
 - inv_* anchor diambil dari Invoice.
@@ -455,7 +454,6 @@ ATURAN:
 - Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
 - Tidak boleh JSON literal null → gunakan "null".
 - Untuk FIELD BERTIPE NUMBER jika tidak ada → isi 0.
-- Output HANYA JSON ARRAY, tanpa teks tambahan.
 - Field hanya boleh diisi dari dokumen sesuai prefix-nya, TIDAK BOLEH dari dokumen lain:
   inv_* → Invoice, tidak boleh dari dokumen lain
   pl_* → Packing List, tidak boleh dari dokumen lain
