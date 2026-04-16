@@ -2252,12 +2252,13 @@ def _call_gemini_uri(file_uri: str, prompt: str):
     ]
 
     response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3-flash-preview",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(
             temperature=0,
             top_p=0,
-            seed=42,
+            top_k=1,
+            seed=1,
             candidate_count = 1,
             max_output_tokens=65535,
         ),
