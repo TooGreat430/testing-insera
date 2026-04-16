@@ -57,6 +57,138 @@ DETAIL_RECHECK_NUM_FIELDS = {
     if str(v).strip().lower() == "number"
 }
 
+HEADER_NUM_FIELDS = {
+    "inv_total_quantity", "inv_total_amount", "inv_total_nw", "inv_total_gw",
+    "inv_total_volume", "inv_total_package",
+    "pl_total_quantity", "pl_total_amount", "pl_total_nw", "pl_total_gw",
+    "pl_total_volume", "pl_total_package",
+}
+
+def _simple_field_schema(v):
+    if isinstance(v, dict):
+        return _simple_object_schema(v)
+
+    if isinstance(v, list):
+        if len(v) != 1:
+            raise ValueError(f"Schema list harus 1 elemen, dapat={v}")
+        return {
+            "type": "array",
+            "items": _simple_field_schema(v[0]),
+        }
+
+    t = str(v).strip().lower()
+
+    if t == "string":
+        return {"type": "string"}
+    if t == "number":
+        return {"type": "number"}
+    if t == "integer":
+        return {"type": "integer"}
+    if t == "boolean":
+        return {"type": "boolean"}
+    if t == "object":
+        return {"type": "object"}
+
+    raise ValueError(f"Tipe schema tidak didukung: {v}")
+
+
+def _simple_object_schema(simple_obj: dict):
+    props = {}
+    required = []
+
+    for key, val in (simple_obj or {}).items():
+        props[key] = _simple_field_schema(val)
+        required.append(key)
+
+    return {
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _array_schema(item_schema: dict, min_items=None, max_items=None):
+    schema = {
+        "type": "array",
+        "items": item_schema,
+    }
+    if min_items is not None:
+        schema["minItems"] = min_items
+    if max_items is not None:
+        schema["maxItems"] = max_items
+    return schema
+
+
+def _schema_header_response():
+    simple = {
+        key: ("number" if key in HEADER_NUM_FIELDS else "string")
+        for key in HEADER_FIELDS
+    }
+    return _simple_object_schema(simple)
+
+
+def _schema_total_row_response():
+    return _simple_object_schema({
+        "total_row": "number"
+    })
+
+
+def _schema_index_item_response():
+    return _simple_object_schema({
+        "idx": "number",
+        "inv_page_no": "number",
+        "inv_customer_po_no": "string",
+        "inv_spart_item_no": "string",
+        "inv_description": "string",
+        "inv_quantity": "number",
+        "inv_quantity_unit": "string",
+        "inv_unit_price": "number",
+        "inv_price_unit": "string",
+        "inv_amount": "number",
+        "pl_page_no": "number",
+        "pl_customer_po_no": "string",
+        "pl_description": "string",
+        "pl_quantity": "number",
+    })
+
+
+def _schema_index_response(total_row: int | None = None):
+    return _array_schema(
+        _schema_index_item_response(),
+        min_items=total_row,
+        max_items=total_row,
+    )
+
+
+def _schema_detail_line_item_response():
+    simple = json.loads(DETAIL_LINE_SCHEMA_TEXT)
+    return _simple_object_schema(simple)
+
+
+def _schema_detail_line_batch_response():
+    return _array_schema(_schema_detail_line_item_response())
+
+
+def _schema_target_key_response(target_key: str):
+    return _simple_object_schema({
+        target_key: "string"
+    })
+
+
+def _schema_doc_trace_response(target_key: str):
+    return _simple_object_schema({
+        "invoice_refs": [{
+            target_key: "string",
+            "start_page": "number",
+            "end_page": "number",
+        }]
+    })
+
+
+def _schema_detail_recheck_response():
+    return _array_schema(_simple_object_schema(_build_detail_line_recheck_schema()))
+
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, )
 
@@ -693,7 +825,8 @@ OUTPUT SCHEMA:
             file_uri,
             prompt,
             expect_array=False,
-            retries=3
+            retries=3,
+            response_schema=_schema_target_key_response(target_key),
         )
 
         raw_invoice_no = "null"
@@ -875,7 +1008,8 @@ VALIDATION RULE:
         file_uri,
         prompt,
         expect_array=False,
-        retries=3
+        retries=3,
+        response_schema=_schema_doc_trace_response(target_key),
     )
 
     refs = []
@@ -1178,9 +1312,9 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
         file_uri,
         build_header_prompt(),
         expect_array=False,
-        retries=3
+        retries=3,
+        response_schema=_schema_header_response(),
     )
-
     if not isinstance(header_obj, dict):
         header_obj = {}
 
@@ -1227,7 +1361,8 @@ OUTPUT SCHEMA:
             file_uri,
             focused_prompt,
             expect_array=False,
-            retries=3
+            retries=3,
+            response_schema=_schema_target_key_response(target_key),
         )
 
         if not isinstance(focused_obj, dict):
@@ -2245,24 +2380,7 @@ def _upload_temp_pdf_to_gcs(local_path: str, run_prefix: str, name: str) -> str:
     bucket.blob(blob_path).upload_from_filename(local_path)
     return f"gs://{BUCKET_NAME}/{blob_path}"
 
-def _call_gemini_uri(file_uri: str, prompt: str):
-    parts = [
-        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
-        types.Part.from_text(text=prompt),
-    ]
-
-    response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[types.Content(role="user", parts=parts)],
-        config=types.GenerateContentConfig(
-            temperature=0,
-            top_p=0,
-            seed=42,
-            candidate_count = 1,
-            max_output_tokens=65535,
-        ),
-    )
-
+def _extract_text_from_gemini_response(response):
     if not response:
         raise Exception("Empty response from Gemini")
 
@@ -2283,16 +2401,50 @@ def _call_gemini_uri(file_uri: str, prompt: str):
 
     raise Exception("Gemini response tidak mengandung text")
 
-def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3):
-    """
-    Wrapper: panggil Gemini -> pastikan output JSON valid.
-    - expect_array=True  : kalau Gemini balikin dict, kita bungkus jadi [dict]
-    - retries: retry jika output bukan JSON / quota
-    """
+
+def _call_gemini_uri(file_uri: str, prompt: str, response_schema=None):
+    parts = [
+        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
+        types.Part.from_text(text=prompt),
+    ]
+
+    cfg = dict(
+        temperature=0,
+        top_p=0,
+        seed=42,
+        candidate_count=1,
+        max_output_tokens=65535,
+    )
+
+    if response_schema is not None:
+        cfg["response_mime_type"] = "application/json"
+        cfg["response_schema"] = response_schema
+
+    response = genai_client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[types.Content(role="user", parts=parts)],
+        config=types.GenerateContentConfig(**cfg),
+    )
+
+    return _extract_text_from_gemini_response(response)
+
+
+def _call_gemini_json_uri(
+    file_uri: str,
+    prompt: str,
+    expect_array: bool = False,
+    retries: int = 3,
+    response_schema=None,
+):
     p = prompt
+
     for attempt in range(1, retries + 1):
         try:
-            raw = _call_gemini_uri(file_uri, p)
+            raw = _call_gemini_uri(
+                file_uri,
+                p,
+                response_schema=response_schema,
+            )
             obj = _parse_json_safe(raw)
 
             if expect_array and isinstance(obj, dict):
@@ -2303,7 +2455,16 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
         except Exception as e:
             msg = str(e).lower()
 
-            # retry kalau output bukan JSON
+            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
+                time.sleep((2 ** attempt) + random.random())
+                continue
+
+            # kalau structured output aktif, retry langsung
+            if response_schema is not None:
+                time.sleep(0.5)
+                continue
+
+            # fallback lama untuk call yang belum dimigrasi
             if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
                 p = prompt + """
                 PENTING:
@@ -2315,52 +2476,24 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
                 time.sleep(0.5)
                 continue
 
-            # retry quota
-            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
-                time.sleep((2 ** attempt) + random.random())
-                continue
-
             raise
 
     raise Exception("Gemini gagal menghasilkan JSON setelah retry")
 
 def _run_one_detail_batch(file_uri_detail: str, run_prefix: str, batch_no: int, prompt: str):
-    p = prompt
-    for attempt in range(1, 4):
-        try:
-            raw = _call_gemini_uri(file_uri_detail, p)
-            json_array = _parse_json_safe(raw)
+    json_array = _call_gemini_json_uri(
+        file_uri_detail,
+        prompt,
+        expect_array=True,
+        retries=3,
+        response_schema=_schema_detail_line_batch_response(),
+    )
 
-            if isinstance(json_array, dict):
-                json_array = [json_array]
-            if not isinstance(json_array, list):
-                raise Exception("Batch result bukan array")
+    if not isinstance(json_array, list):
+        raise Exception(f"Batch {batch_no} output bukan array")
 
-            _save_batch_tmp(run_prefix, batch_no, json_array)
-            return (batch_no, json_array)
-
-        except Exception as e:
-            msg = str(e).lower()
-
-            # ✅ retry kalau output bukan JSON
-            if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
-                p = prompt + """
-                PENTING SEKALI:
-                - Output WAJIB dimulai dengan '[' dan diakhiri dengan ']'
-                - Output HANYA JSON ARRAY (tanpa teks lain)
-                - Jika data tidak ditemukan, isi string "null" / angka 0 sesuai skema
-                """
-                time.sleep(0.5)
-                continue
-
-            # retry quota
-            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
-                time.sleep((2 ** attempt) + random.random())
-                continue
-
-            raise
-
-    raise Exception(f"Batch {batch_no} gagal setelah retry")
+    _save_batch_tmp(run_prefix, batch_no, json_array)
+    return (batch_no, json_array)
 
 # ==============================
 # SAVE BATCH TMP
@@ -4284,7 +4417,6 @@ def _build_detail_line_recheck_schema():
 
 
 def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
-    schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
 
     return f"""
@@ -4319,7 +4451,7 @@ TUGAS:
 - Gunakan match_description sebagai petunjuk field mana yang perlu diperiksa.
 
 ATURAN KETAT:
-1) Output HANYA JSON ARRAY valid, tanpa teks lain.
+1) Kembalikan data sesuai structured output schema.
 2) Jumlah row output HARUS sama persis dengan jumlah row input.
 3) Urutan row output HARUS sama persis dengan input.
 4) WAJIB pertahankan _detail_row_no.
@@ -4332,9 +4464,6 @@ ATURAN KETAT:
    - number -> 0
 10) "_recheck_fields" WAJIB dipertahankan persis seperti input.
 11) Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
-
-OUTPUT SCHEMA:
-{schema_json}
 
 FAILED ROWS YANG HARUS DICEK ULANG:
 {rows_json}
@@ -4390,7 +4519,8 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
             file_uri,
             _build_detail_line_recheck_prompt(batch),
             expect_array=True,
-            retries=3
+            retries=3,
+            response_schema=_schema_detail_recheck_response(),
         )
 
         if not isinstance(repaired_batch, list):
@@ -4435,10 +4565,7 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
             row.get("_recheck_fields") or []
         )
         if not allowed_fields:
-            allowed_fields = list(DETAIL_RECHECK_FIELDS)
-
-        if not allowed_fields:
-            allowed_fields = list(DETAIL_RECHECK_FIELDS)
+            continue
 
         for key in allowed_fields:
             if key in repaired:
@@ -4545,13 +4672,20 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
             detail_input_uri,
             build_header_prompt(),
             expect_array=False,
-            retries=3
+            retries=3,
+            response_schema=_schema_header_response(),
         )
         if not isinstance(header_obj, dict):
             header_obj = {}
 
         # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
+        data_row = _call_gemini_json_uri(
+            file_uri_detail,
+            ROW_SYSTEM_INSTRUCTION,
+            expect_array=False,
+            retries=3,
+            response_schema=_schema_total_row_response(),
+        )
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -4563,7 +4697,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
             file_uri_detail,
             build_index_prompt(total_row),
             expect_array=True,
-            retries=3
+            retries=3,
+            response_schema=_schema_index_response(total_row),
         )
 
         # fallback safety
