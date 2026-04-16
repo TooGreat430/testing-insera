@@ -481,6 +481,7 @@ GENERAL KNOWLEDGE:
     - Biasanya memiliki kolom sendiri
     - Biasanya kolom ditaruh di paling kanan dari dokumen.
     - coo_invoice_no lengthnya panjang.
+    - coo_invoice_no tidak mungkin ditaruh barengan dengan item_description.
     - Ambil seluruh nilai invoice number secara lengkap, termasuk jika invoice number terpisah ke baris berikutnya.
     - Jika nomor invoice terpotong ke baris berikutnya, semua bagian nomor tetap diambil dan digabungkan menjadi 1 nilai.
       - Contoh:
