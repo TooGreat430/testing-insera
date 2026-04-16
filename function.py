@@ -4739,7 +4739,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # GEMINI RECHECK SEKALI
         # HANYA untuk row yang match_score == false
         # =========================================
-        repaired_rows = _call_gemini_detail_line_recheck_once(
+        repaired_rows = _run_detail_line_recheck(
             detail_input_uri,
             all_rows
         )
