@@ -46,7 +46,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "pl_item_no",
     "pl_description",
     "pl_quantity",
-    "pl_package_unit",
+    "pl_package_unit"
     "pl_package_count",
     "pl_weight_unit",
     "pl_nw",
@@ -113,7 +113,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "coo_quantity",
     "coo_unit",
     "coo_package_count",
-    "coo_package_unit",
+    "coo_package_unit"
     "coo_gw_unit",
     "coo_gw",
     "coo_amount_unit",
@@ -650,31 +650,15 @@ GENERAL KNOWLEDGE DETAIL:
         - 45297175
 
 3. inv_spart_item_no & pl_item_no
-    HARD RULE:
-    - Jika pada row terdapat kolom/header "SPART", "CPART", atau "SPART / CPART",
-      maka inv_spart_item_no / pl_item_no HARUS diambil HANYA dari cell yang berada
-      di bawah header tersebut pada row yang sama.
-    - Dalam kondisi ini, DILARANG mengambil kandidat dari:
-      1) kolom DESCRIPTION
-      2) teks di atas description
-      3) item no lain yang tidak berada di bawah header SPART/CPART
-      4) kode yang hanya muncul di kalimat deskripsi
-
-    COLUMN PRIORITY:
-    1. SPART / CPART
-    2. Customer Article Number
-    3. MATERIAL
-    4. MODEL
-    5. CODE di DESCRIPTION
-    6. kode yang menempel pada deskripsi
-
-    IMPORTANT:
-    - Rule fallback ke DESCRIPTION hanya boleh dipakai jika dan hanya jika
-      TIDAK ADA kolom/header SPART/CPART, Customer Article Number, MATERIAL, atau MODEL
-      pada tabel item tersebut.
-    - Jika header SPART/CPART ada tetapi cell kosong / tidak terbaca, output "null".
-    - Jangan mengganti value dengan kandidat dari DESCRIPTION hanya karena formatnya terlihat seperti part number.
-
+   - Setiap item memiliki item_no. Jadi coba telusuri item_no dari setiap item.
+   - memiliki header sendiri seperti SPART / CPART, Customer Article Number, MATERIAL dan lain-lain
+   - jika inv_spart_item_no / pl_item_no tidak memiliki header, maka value Terletak di atas deskripsi tapi UTAMAKAN UNTUK MENCARI DARI HEADER TERLEBIH DAHULU.
+   - Berikut adalah list informasi yang bisa diekstrak sebagai inv_spart_item_no / pl_item_no, berdasarkan prioritas dari yang paling tinggi ke paling rendah:
+      1. SPART / CPART: terdapat pada header kolom
+      2. Customer Article Number -> terdapat pada header kolom tersebut.
+      3. CODE -> terdapat pada kolom Description, ditandai dengan label "CODE" atau tertulis dalam kurung siku [CODE] - DESKRIPSI/NAMA ITEM (Prioritaskan yang memiliki label CODE)
+      4. MATERIAL -> terdapat pada header kolom
+      5. MODEL -> terdapat pada header kolom
 
     - Jika terdapat kolom Item No dan juga terdapat CODE pada description, maka inv_spart_item_no / pl_item_no diambil dari CODE pada kolom deskripsi.
       Contoh:
@@ -691,7 +675,6 @@ GENERAL KNOWLEDGE DETAIL:
 
   - Ciri umum inv_spart_item_no / pl_item_no:
      - Biasanya berbentuk alfanumerik
-     - Biasanya diawali dengan HURUF bukan angka. Tapi jika tidak ada yang diawali dengan HURUF maka ambil yang dimulai dari ANGKA. TETAP PRIORITASKAN YANG DIAMBIL YAITU YANG MULAI DENGAN HURUF
      - Sering mengandung kombinasi huruf dan angka
      - Dapat mengandung dash / hyphen, slash, atau separator lain
      - Umumnya lebih panjang daripada index row
