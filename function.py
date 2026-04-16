@@ -4524,11 +4524,9 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         allowed_fields = _normalize_recheck_field_list(
             row.get("_recheck_fields") or []
         )
+        allowed_fields = _normalize_recheck_field_list(row.get("_recheck_fields") or [])
         if not allowed_fields:
-            allowed_fields = list(DETAIL_RECHECK_FIELDS)
-
-        if not allowed_fields:
-            allowed_fields = list(DETAIL_RECHECK_FIELDS)
+            continue
 
         for key in allowed_fields:
             if key in repaired:
