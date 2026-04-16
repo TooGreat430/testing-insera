@@ -23,8 +23,7 @@ from detail import (
     build_index_prompt,
     build_header_prompt,
     build_detail_prompt_from_index,
-    build_detail_recheck_reference_text,   # <-- TAMBAH INI
-    HEADER_SCHEMA_TEXT as HEADER_FIELDS,
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
     DETAIL_LINE_SCHEMA_TEXT,
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
@@ -3213,19 +3212,14 @@ def _validate_invoice_rows(rows: list):
             sum_amt += a
             amt_ok = True
 
-    qty_delta_exists = declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01
-    amt_delta_exists = declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01
-
-    # doc-level marker (opsional, cukup 1 row saja supaya tidak nempel ke semua row)
-    anchor_row = next((r for r in rows if isinstance(r, dict)), None)
-
-    if qty_delta_exists:
-        print(f"[INVOICE][TOTAL_MISMATCH] total_quantity sum={sum_qty} doc={declared_qty}")
-        _mark_invoice_total_quantity_candidates(rows, declared_qty, sum_qty)
-
-    if amt_delta_exists:
-        print(f"[INVOICE][TOTAL_MISMATCH] total_amount sum={sum_amt} doc={declared_amt}")
-        _mark_invoice_total_amount_candidates(rows, declared_amt, sum_amt)
+    # apply ke semua row (biar match_score konsisten per row)
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01:
+            _append_err(r, f"Invoice: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
+        if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
+            _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
 
 
 def _validate_packing_rows(rows: list):
@@ -3299,27 +3293,19 @@ def _validate_packing_rows(rows: list):
     sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
     sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
 
-    anchor_row = next((r for r in rows if isinstance(r, dict)), None)
-
-    if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
-        print(f"[PACKING][TOTAL_MISMATCH] total_quantity sum={sum_qty} doc={declared_qty}")
-        _mark_packing_total_candidates(rows, "pl_quantity", declared_qty, sum_qty)
-
-    if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
-        print(f"[PACKING][TOTAL_MISMATCH] total_nw sum={sum_nw} doc={declared_nw}")
-        _mark_packing_total_candidates(rows, "pl_nw", declared_nw, sum_nw)
-
-    if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
-        print(f"[PACKING][TOTAL_MISMATCH] total_gw sum={sum_gw} doc={declared_gw}")
-        _mark_packing_total_candidates(rows, "pl_gw", declared_gw, sum_gw)
-
-    if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
-        print(f"[PACKING][TOTAL_MISMATCH] total_volume sum={sum_vol} doc={declared_vol}")
-        _mark_packing_total_candidates(rows, "pl_volume", declared_vol, sum_vol)
-
-    if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
-        print(f"[PACKING][TOTAL_MISMATCH] total_package sum={sum_pkg} doc={declared_pkg}")
-        _mark_packing_total_candidates(rows, "pl_package_count", declared_pkg, sum_pkg)
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
+            _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
+        if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
+            _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
+        if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
+            _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
+        if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
+            _append_err(r, f"PackingList: total_volume mismatch (sum {sum_vol}, doc {declared_vol})")
+        if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
+            _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
 
 
 
@@ -4168,166 +4154,6 @@ DETAIL_RECHECK_INTERNAL_FIELDS = [
     "_recheck_fields",
 ]
 
-def _row_error_text(row: dict) -> str:
-    if not isinstance(row, dict):
-        return ""
-    return str(row.get("match_description") or "")
-
-
-def _append_candidate_fields(row: dict, doc_prefix: str, fields: list, reason: str = ""):
-    fields = _normalize_recheck_field_list(fields)
-    if not fields:
-        return
-
-    msg = f"{doc_prefix}Candidate: suspect fields={','.join(fields)}"
-    if reason:
-        msg = f"{msg} ({reason})"
-
-    _append_err(row, msg)
-
-
-def _score_numeric_total_candidate(row: dict, field: str, delta: float) -> int:
-    text = _row_error_text(row).upper()
-    score = 0
-
-    # missing field = kandidat kuat
-    if f"MISSING {field.upper()}" in text:
-        score += 100
-
-    # hint compare lain
-    hint_map = {
-        "inv_amount": ["COO_AMOUNT != INV_AMOUNT", "INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE"],
-        "inv_quantity": ["COO_QUANTITY != INV_QUANTITY", "INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE"],
-        "inv_unit_price": ["INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE"],
-        "pl_gw": ["PL_GW != COO_GW"],
-        "pl_package_count": ["PL_PACKAGE_COUNT != COO_PACKAGE_COUNT"],
-    }
-
-    for hint in hint_map.get(field, []):
-        if hint in text:
-            score += 80
-
-    val = _to_float(row.get(field))
-
-    # null / zero juga kandidat
-    if _is_missing_num(row.get(field)) or val == 0:
-        score += 20
-
-    # jika magnitude row cukup untuk menjelaskan delta, tambah sedikit
-    if val is not None and abs(val) >= abs(delta) - 0.01:
-        score += 10
-
-    return score
-
-
-def _mark_numeric_total_candidates(rows: list, doc_prefix: str, field: str, delta: float, eps: float = 0.01):
-    if abs(delta) <= eps:
-        return
-
-    ranked = []
-
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-
-        score = _score_numeric_total_candidate(row, field, delta)
-        val = _to_float(row.get(field))
-        ranked.append({
-            "row": row,
-            "score": score,
-            "abs_val": abs(val) if val is not None else -1,
-        })
-
-    if not ranked:
-        return
-
-    ranked.sort(key=lambda x: (x["score"], x["abs_val"]), reverse=True)
-
-    top_score = ranked[0]["score"]
-    top_abs = ranked[0]["abs_val"]
-
-    chosen = []
-
-    if top_score > 0:
-        chosen = [x for x in ranked if x["score"] >= max(1, top_score - 10)]
-    else:
-        # fallback: pilih row dengan nilai terbesar untuk field itu
-        chosen = [x for x in ranked if x["abs_val"] == top_abs and x["abs_val"] >= 0]
-
-    for item in chosen:
-        _append_candidate_fields(
-            item["row"],
-            doc_prefix,
-            [field],
-            reason=f"delta={delta}, score={item['score']}"
-        )
-
-
-def _mark_invoice_total_amount_candidates(rows: list, declared_amt: float, sum_amt: float, eps: float = 0.01):
-    delta = (declared_amt or 0.0) - (sum_amt or 0.0)
-    if abs(delta) <= eps:
-        return
-
-    # kalau ada formula mismatch row-level, itu kandidat terkuat
-    formula_rows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-
-        qty = _to_float(row.get("inv_quantity"))
-        up = _to_float(row.get("inv_unit_price"))
-        amt = _to_float(row.get("inv_amount"))
-
-        if qty is not None and up is not None and amt is not None:
-            if abs((qty * up) - amt) > eps:
-                formula_rows.append(row)
-
-    if formula_rows:
-        for row in formula_rows:
-            _append_candidate_fields(
-                row,
-                "Invoice",
-                ["inv_amount", "inv_quantity", "inv_unit_price"],
-                reason=f"total_amount delta={delta}"
-            )
-        return
-
-    _mark_numeric_total_candidates(
-        rows,
-        "Invoice",
-        "inv_amount",
-        delta,
-        eps=eps
-    )
-
-
-def _mark_invoice_total_quantity_candidates(rows: list, declared_qty: float, sum_qty: float, eps: float = 0.01):
-    delta = (declared_qty or 0.0) - (sum_qty or 0.0)
-    if abs(delta) <= eps:
-        return
-
-    _mark_numeric_total_candidates(
-        rows,
-        "Invoice",
-        "inv_quantity",
-        delta,
-        eps=eps
-    )
-
-
-def _mark_packing_total_candidates(rows: list, field: str, declared_value: float, sum_value: float, eps: float = 0.01):
-    delta = (declared_value or 0.0) - (sum_value or 0.0)
-    if abs(delta) <= eps:
-        return
-
-    _mark_numeric_total_candidates(
-        rows,
-        "PackingList",
-        field,
-        delta,
-        eps=eps
-    )
-
 def _normalize_recheck_field_list(fields):
     if not fields:
         return []
@@ -4346,77 +4172,56 @@ def _normalize_recheck_field_list(fields):
         result.append(f)
 
     return result
-def _normalize_scalar_for_recheck_compare(value):
-    if value is None:
-        return "null"
-
-    if isinstance(value, (int, float)):
-        try:
-            return str(float(value))
-        except Exception:
-            return str(value)
-
-    s = str(value).strip()
-    if s == "":
-        return "null"
-
-    return s
 
 
-def _infer_recheck_fields_from_match_description(text: str):
-    if text is None or str(text).strip().lower() == "null":
+def _infer_recheck_fields_from_match_description(match_description: str):
+    """
+    Infer field mana yang perlu dicek ulang dari match_description existing.
+    Tidak mengubah validator lama, hanya parsing string error yang sudah ada.
+    """
+
+    text = str(match_description or "").strip()
+    if text == "" or text.lower() == "null":
         return []
 
     failed = []
 
-    raw_text = str(text)
-    upper_text = raw_text.upper()
-
     # 1) missing field langsung
-    missing_hits = re.findall(
-        r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b",
-        raw_text,
-        flags=re.IGNORECASE
-    )
-    failed.extend([x.strip().lower() for x in missing_hits])
+    # contoh:
+    # Invoice: missing inv_quantity
+    # PackingList: missing pl_volume
+    # COO: missing coo_gw
+    missing_hits = re.findall(r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b", text, flags=re.IGNORECASE)
+    failed.extend(missing_hits)
 
-    # 2) formula invoice row-level
-    if "INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE" in upper_text:
+    # 2) formula invoice
+    if "inv_amount != inv_quantity*inv_unit_price" in text:
         failed.extend(["inv_amount", "inv_quantity", "inv_unit_price"])
 
-    # 3) compare row-level
+    # 3) compare row-level yang relevan ke recheck fields
     compare_map = {
-        "PL_GW != COO_GW": ["pl_gw"],
-        "PL_PACKAGE_COUNT != COO_PACKAGE_COUNT": ["pl_package_count"],
-        "COO_QUANTITY != INV_QUANTITY": ["inv_quantity"],
-        "COO_AMOUNT != INV_AMOUNT": ["inv_amount"],
-        "COO_UNIT != INV_QUANTITY_UNIT": ["inv_quantity_unit"],
+        "pl_gw != coo_gw": ["pl_gw"],
+        "pl_package_count != coo_package_count": ["pl_package_count"],
+        "coo_quantity != inv_quantity": ["inv_quantity"],
+        "coo_amount != inv_amount": ["inv_amount"],
+        "coo_unit != inv_quantity_unit": ["inv_quantity_unit"],
     }
 
+    upper_text = text.upper()
     for needle, fields in compare_map.items():
-        if needle in upper_text:
+        if needle.upper() in upper_text:
             failed.extend(fields)
 
-    # 4) candidate marker hasil total-mismatch analysis
-    candidate_matches = re.findall(
-        r"(?:InvoiceCandidate|PackingListCandidate):\s*suspect fields=([a-zA-Z0-9_, ]+)",
-        raw_text,
-        flags=re.IGNORECASE
-    )
-    for chunk in candidate_matches:
-        parts = [x.strip().lower() for x in chunk.split(",") if x.strip()]
-        failed.extend(parts)
-
-    # 5) DOC-LEVEL total mismatch -> JANGAN langsung map ke row fields
+    # 4) total mismatch -> map ke field kandidat yang memang boleh direcheck
     total_map = {
-        "INVOICE: TOTAL_QUANTITY MISMATCH": [],
-        "INVOICE: TOTAL_AMOUNT MISMATCH": [],
+        "INVOICE: TOTAL_QUANTITY MISMATCH": ["inv_quantity"],
+        "INVOICE: TOTAL_AMOUNT MISMATCH": ["inv_amount", "inv_quantity", "inv_unit_price"],
 
-        "PACKINGLIST: TOTAL_QUANTITY MISMATCH": [],
-        "PACKINGLIST: TOTAL_NW MISMATCH": [],
-        "PACKINGLIST: TOTAL_GW MISMATCH": [],
-        "PACKINGLIST: TOTAL_VOLUME MISMATCH": [],
-        "PACKINGLIST: TOTAL_PACKAGE MISMATCH": [],
+        "PACKINGLIST: TOTAL_QUANTITY MISMATCH": ["pl_quantity"],
+        "PACKINGLIST: TOTAL_NW MISMATCH": ["pl_nw"],
+        "PACKINGLIST: TOTAL_GW MISMATCH": ["pl_gw"],
+        "PACKINGLIST: TOTAL_VOLUME MISMATCH": ["pl_volume"],
+        "PACKINGLIST: TOTAL_PACKAGE MISMATCH": ["pl_package_count"],
     }
 
     for needle, fields in total_map.items():
@@ -4424,8 +4229,13 @@ def _infer_recheck_fields_from_match_description(text: str):
             failed.extend(fields)
 
     failed = _normalize_recheck_field_list(failed)
-    return failed
 
+    # fallback konservatif:
+    # kalau gagal infer apa pun, tetap pakai semua field recheck lama
+    if not failed:
+        return list(DETAIL_RECHECK_FIELDS)
+
+    return failed
 
 def _build_detail_line_recheck_rows_payload(rows: list):
     payload = []
@@ -4441,74 +4251,41 @@ def _build_detail_line_recheck_rows_payload(rows: list):
             row.get("match_description", "null")
         )
 
+        # simpan internal agar apply-result tahu field mana yang boleh dioverwrite
         row["_recheck_fields"] = list(recheck_fields)
-
-        # skip kalau tidak ada field yang berhasil diinfer
-        if not recheck_fields:
-            print(
-                f"[DETAIL_RECHECK][SKIP] row_no={row.get('_detail_row_no')} "
-                f"reason='{row.get('match_description', 'null')}' "
-                f"-> tidak ada _recheck_fields yang bisa diinfer"
-            )
-            continue
 
         item = {
             "_detail_row_no": row.get("_detail_row_no"),
             "_recheck_fields": list(recheck_fields),
             "match_description": row.get("match_description", "null"),
-            "_old_values": {},
         }
 
+        # tetap kirim field lama supaya prompt punya konteks,
+        # tapi nanti apply-result hanya boleh overwrite field dalam _recheck_fields
         for key in DETAIL_RECHECK_FIELDS:
             value = row.get(key)
 
             if key in DETAIL_RECHECK_NUM_FIELDS:
-                normalized_value = 0 if _is_null(value) else value
+                item[key] = 0 if _is_null(value) else value
             else:
-                normalized_value = "null" if value is None else value
-
-            item[key] = normalized_value
-
-            if key in recheck_fields:
-                item["_old_values"][key] = normalized_value
+                item[key] = "null" if value is None else value
 
         payload.append(item)
 
     return payload
 
-
 def _build_detail_line_recheck_schema():
     schema = {
         "_detail_row_no": "number",
         "_recheck_fields": ["string"],
-        "_old_values": "object",
     }
     schema.update(DETAIL_RECHECK_SCHEMA)
     return schema
 
 
-def _collect_detail_recheck_reference_text(rows_payload: list) -> str:
-    recheck_fields = []
-
-    for row in rows_payload or []:
-        if not isinstance(row, dict):
-            continue
-
-        for field in row.get("_recheck_fields", []) or []:
-            if field not in recheck_fields:
-                recheck_fields.append(field)
-
-    return build_detail_recheck_reference_text(recheck_fields)
-
-
 def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
-    schema_json = json.dumps(
-        _build_detail_line_recheck_schema(),
-        ensure_ascii=False,
-        indent=2
-    )
+    schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
-    reference_text = _collect_detail_recheck_reference_text(rows_payload)
 
     return f"""
 ROLE:
@@ -4524,12 +4301,9 @@ SOURCE OF TRUTH:
 - Untuk field lain yang tidak ada di "_recheck_fields", WAJIB kembalikan nilai yang sama persis seperti input row.
 - Jangan menebak field lain.
 
-REFERENCE DARI DETAIL.PY:
-{reference_text}
-
 TUGAS:
 - Cek ulang HANYA row-row yang diberikan.
-- Cek ulang HANYA field-field berikut jika memang muncul di "_recheck_fields":
+- Cek ulang HANYA field-field berikut:
   1. inv_gw_unit
   2. inv_quantity
   3. inv_quantity_unit
@@ -4540,10 +4314,9 @@ TUGAS:
   8. pl_nw
   9. pl_gw
   10. pl_volume
-- JANGAN ubah field lain selain field yang ada di "_recheck_fields" row tersebut.
+- JANGAN ubah field lain selain 10 field di atas.
 - Header TIDAK boleh disentuh.
 - Gunakan match_description sebagai petunjuk field mana yang perlu diperiksa.
-- Gunakan "_old_values" sebagai nilai lama yang TERBUKTI gagal.
 
 ATURAN KETAT:
 1) Output HANYA JSON ARRAY valid, tanpa teks lain.
@@ -4559,12 +4332,6 @@ ATURAN KETAT:
    - number -> 0
 10) "_recheck_fields" WAJIB dipertahankan persis seperti input.
 11) Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
-12) Untuk setiap field yang ADA di "_recheck_fields", hasil recheck TIDAK BOLEH sama dengan value lama di "_old_values".
-13) Jika setelah cek ulang Anda tidak menemukan bukti eksplisit untuk memperbaiki suatu field recheck:
-   - string -> "null"
-   - number -> 0
-   dan tetap TIDAK BOLEH copy nilai lama.
-14) Jangan mengubah field lain hanya karena row ini gagal.
 
 OUTPUT SCHEMA:
 {schema_json}
@@ -4573,56 +4340,41 @@ FAILED ROWS YANG HARUS DICEK ULANG:
 {rows_json}
 """
 
+def _run_detail_precheck_pass(rows: list, header_obj: dict):
+    _ensure_all_detail_keys(rows)
 
-def _validate_repaired_detail_line_recheck_result(rows: list, repaired_rows: list):
-    repaired_by_no = {}
+    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
+    _postprocess_package_unit_fields(rows)
 
-    for repaired in repaired_rows or []:
-        if not isinstance(repaired, dict):
-            continue
+    _reset_match_fields(rows)
 
-        row_no = repaired.get("_detail_row_no")
-        if row_no is None:
-            continue
+    _fill_forward(rows, "inv_customer_po_no")
+    _postprocess_customer_po_no(rows)
+    _fill_inv_price_unit_from_amount_unit(rows)
 
-        repaired_by_no[int(row_no)] = repaired
+    _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
+    _postprocess_coo_no_and_seq(rows)
 
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    _postprocess_customer_po_no(rows)
+    _postprocess_inv_description(rows)
+    _postprocess_item_no_fields(rows)
+    _postprocess_unit_fields(rows)
+    _postprocess_coo_description(rows)
+    _postprocess_bl_description(rows)
 
-        row_no = row.get("_detail_row_no")
-        if row_no is None:
-            continue
+    _postprocess_bl_coo_zero_to_null(rows)
 
-        repaired = repaired_by_no.get(int(row_no))
-        if not repaired:
-            continue
+    _validate_invoice_rows(rows)
+    _validate_packing_rows(rows)
+    _validate_invoice_vs_packing_extra(rows)
+    _validate_bl_rows(rows)
+    _validate_coo_rows(rows)
 
-        allowed_fields = _normalize_recheck_field_list(
-            row.get("_recheck_fields") or []
-        )
-
-        if not allowed_fields:
-            continue
-
-        unchanged_fields = []
-
-        for key in allowed_fields:
-            old_value = _normalize_scalar_for_recheck_compare(row.get(key))
-            new_value = _normalize_scalar_for_recheck_compare(repaired.get(key))
-
-            if old_value == new_value:
-                unchanged_fields.append(key)
-
-        if unchanged_fields:
-            raise Exception(
-                f"Gemini detail line recheck returned same values "
-                f"for row_no={row_no}, fields={unchanged_fields}"
-            )
+    _finalize_match_fields(rows)
+    return rows
 
 
-def _run_detail_line_recheck(file_uri: str, rows: list):
+def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
     rows_payload = _build_detail_line_recheck_rows_payload(rows)
 
     if not rows_payload:
@@ -4649,7 +4401,6 @@ def _run_detail_line_recheck(file_uri: str, rows: list):
                 f"Gemini detail line recheck count mismatch. expected={len(batch)} got={len(repaired_batch)}"
             )
 
-        _validate_repaired_detail_line_recheck_result(batch, repaired_batch)
         repaired_rows.extend(repaired_batch)
 
     return repaired_rows
@@ -4683,55 +4434,16 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         allowed_fields = _normalize_recheck_field_list(
             row.get("_recheck_fields") or []
         )
+        if not allowed_fields:
+            allowed_fields = list(DETAIL_RECHECK_FIELDS)
 
         if not allowed_fields:
-            continue
+            allowed_fields = list(DETAIL_RECHECK_FIELDS)
 
         for key in allowed_fields:
-            if key not in repaired:
-                continue
+            if key in repaired:
+                row[key] = repaired.get(key)
 
-            old_value = _normalize_scalar_for_recheck_compare(row.get(key))
-            new_value = _normalize_scalar_for_recheck_compare(repaired.get(key))
-
-            if old_value == new_value:
-                continue
-
-            row[key] = repaired.get(key)
-
-    return rows
-
-def _run_detail_precheck_pass(rows: list, header_obj: dict):
-    _ensure_all_detail_keys(rows)
-
-    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
-    _postprocess_package_unit_fields(rows)
-
-    _reset_match_fields(rows)
-
-    _fill_forward(rows, "inv_customer_po_no")
-    _postprocess_customer_po_no(rows)
-    _fill_inv_price_unit_from_amount_unit(rows)
-
-    _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
-    _postprocess_coo_no_and_seq(rows)
-
-    _postprocess_customer_po_no(rows)
-    _postprocess_inv_description(rows)
-    _postprocess_item_no_fields(rows)
-    _postprocess_unit_fields(rows)
-    _postprocess_coo_description(rows)
-    _postprocess_bl_description(rows)
-
-    _postprocess_bl_coo_zero_to_null(rows)
-
-    _validate_invoice_rows(rows)
-    _validate_packing_rows(rows)
-    _validate_invoice_vs_packing_extra(rows)
-    _validate_bl_rows(rows)
-    _validate_coo_rows(rows)
-
-    _finalize_match_fields(rows)
     return rows
 
 def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_output=True, manage_markers=True):
@@ -4924,7 +4636,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # GEMINI RECHECK SEKALI
         # HANYA untuk row yang match_score == false
         # =========================================
-        repaired_rows = _run_detail_line_recheck(
+        repaired_rows = _call_gemini_detail_line_recheck_once(
             detail_input_uri,
             all_rows
         )
