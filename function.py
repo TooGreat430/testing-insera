@@ -3213,14 +3213,19 @@ def _validate_invoice_rows(rows: list):
             sum_amt += a
             amt_ok = True
 
-    # apply ke semua row (biar match_score konsisten per row)
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        if declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01:
-            _append_err(r, f"Invoice: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-        if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
-            _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
+    qty_delta_exists = declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01
+    amt_delta_exists = declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01
+
+    # doc-level marker (opsional, cukup 1 row saja supaya tidak nempel ke semua row)
+    anchor_row = next((r for r in rows if isinstance(r, dict)), None)
+
+    if qty_delta_exists:
+        print(f"[INVOICE][TOTAL_MISMATCH] total_quantity sum={sum_qty} doc={declared_qty}")
+        _mark_invoice_total_quantity_candidates(rows, declared_qty, sum_qty)
+
+    if amt_delta_exists:
+        print(f"[INVOICE][TOTAL_MISMATCH] total_amount sum={sum_amt} doc={declared_amt}")
+        _mark_invoice_total_amount_candidates(rows, declared_amt, sum_amt)
 
 
 def _validate_packing_rows(rows: list):
@@ -3294,19 +3299,27 @@ def _validate_packing_rows(rows: list):
     sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
     sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
 
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
-            _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-        if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
-            _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
-        if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
-            _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
-        if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
-            _append_err(r, f"PackingList: total_volume mismatch (sum {sum_vol}, doc {declared_vol})")
-        if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
-            _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
+    anchor_row = next((r for r in rows if isinstance(r, dict)), None)
+
+    if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
+        print(f"[PACKING][TOTAL_MISMATCH] total_quantity sum={sum_qty} doc={declared_qty}")
+        _mark_packing_total_candidates(rows, "pl_quantity", declared_qty, sum_qty)
+
+    if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
+        print(f"[PACKING][TOTAL_MISMATCH] total_nw sum={sum_nw} doc={declared_nw}")
+        _mark_packing_total_candidates(rows, "pl_nw", declared_nw, sum_nw)
+
+    if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
+        print(f"[PACKING][TOTAL_MISMATCH] total_gw sum={sum_gw} doc={declared_gw}")
+        _mark_packing_total_candidates(rows, "pl_gw", declared_gw, sum_gw)
+
+    if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
+        print(f"[PACKING][TOTAL_MISMATCH] total_volume sum={sum_vol} doc={declared_vol}")
+        _mark_packing_total_candidates(rows, "pl_volume", declared_vol, sum_vol)
+
+    if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
+        print(f"[PACKING][TOTAL_MISMATCH] total_package sum={sum_pkg} doc={declared_pkg}")
+        _mark_packing_total_candidates(rows, "pl_package_count", declared_pkg, sum_pkg)
 
 
 
@@ -4155,6 +4168,166 @@ DETAIL_RECHECK_INTERNAL_FIELDS = [
     "_recheck_fields",
 ]
 
+def _row_error_text(row: dict) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("match_description") or "")
+
+
+def _append_candidate_fields(row: dict, doc_prefix: str, fields: list, reason: str = ""):
+    fields = _normalize_recheck_field_list(fields)
+    if not fields:
+        return
+
+    msg = f"{doc_prefix}Candidate: suspect fields={','.join(fields)}"
+    if reason:
+        msg = f"{msg} ({reason})"
+
+    _append_err(row, msg)
+
+
+def _score_numeric_total_candidate(row: dict, field: str, delta: float) -> int:
+    text = _row_error_text(row).upper()
+    score = 0
+
+    # missing field = kandidat kuat
+    if f"MISSING {field.upper()}" in text:
+        score += 100
+
+    # hint compare lain
+    hint_map = {
+        "inv_amount": ["COO_AMOUNT != INV_AMOUNT", "INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE"],
+        "inv_quantity": ["COO_QUANTITY != INV_QUANTITY", "INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE"],
+        "inv_unit_price": ["INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE"],
+        "pl_gw": ["PL_GW != COO_GW"],
+        "pl_package_count": ["PL_PACKAGE_COUNT != COO_PACKAGE_COUNT"],
+    }
+
+    for hint in hint_map.get(field, []):
+        if hint in text:
+            score += 80
+
+    val = _to_float(row.get(field))
+
+    # null / zero juga kandidat
+    if _is_missing_num(row.get(field)) or val == 0:
+        score += 20
+
+    # jika magnitude row cukup untuk menjelaskan delta, tambah sedikit
+    if val is not None and abs(val) >= abs(delta) - 0.01:
+        score += 10
+
+    return score
+
+
+def _mark_numeric_total_candidates(rows: list, doc_prefix: str, field: str, delta: float, eps: float = 0.01):
+    if abs(delta) <= eps:
+        return
+
+    ranked = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        score = _score_numeric_total_candidate(row, field, delta)
+        val = _to_float(row.get(field))
+        ranked.append({
+            "row": row,
+            "score": score,
+            "abs_val": abs(val) if val is not None else -1,
+        })
+
+    if not ranked:
+        return
+
+    ranked.sort(key=lambda x: (x["score"], x["abs_val"]), reverse=True)
+
+    top_score = ranked[0]["score"]
+    top_abs = ranked[0]["abs_val"]
+
+    chosen = []
+
+    if top_score > 0:
+        chosen = [x for x in ranked if x["score"] >= max(1, top_score - 10)]
+    else:
+        # fallback: pilih row dengan nilai terbesar untuk field itu
+        chosen = [x for x in ranked if x["abs_val"] == top_abs and x["abs_val"] >= 0]
+
+    for item in chosen:
+        _append_candidate_fields(
+            item["row"],
+            doc_prefix,
+            [field],
+            reason=f"delta={delta}, score={item['score']}"
+        )
+
+
+def _mark_invoice_total_amount_candidates(rows: list, declared_amt: float, sum_amt: float, eps: float = 0.01):
+    delta = (declared_amt or 0.0) - (sum_amt or 0.0)
+    if abs(delta) <= eps:
+        return
+
+    # kalau ada formula mismatch row-level, itu kandidat terkuat
+    formula_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        qty = _to_float(row.get("inv_quantity"))
+        up = _to_float(row.get("inv_unit_price"))
+        amt = _to_float(row.get("inv_amount"))
+
+        if qty is not None and up is not None and amt is not None:
+            if abs((qty * up) - amt) > eps:
+                formula_rows.append(row)
+
+    if formula_rows:
+        for row in formula_rows:
+            _append_candidate_fields(
+                row,
+                "Invoice",
+                ["inv_amount", "inv_quantity", "inv_unit_price"],
+                reason=f"total_amount delta={delta}"
+            )
+        return
+
+    _mark_numeric_total_candidates(
+        rows,
+        "Invoice",
+        "inv_amount",
+        delta,
+        eps=eps
+    )
+
+
+def _mark_invoice_total_quantity_candidates(rows: list, declared_qty: float, sum_qty: float, eps: float = 0.01):
+    delta = (declared_qty or 0.0) - (sum_qty or 0.0)
+    if abs(delta) <= eps:
+        return
+
+    _mark_numeric_total_candidates(
+        rows,
+        "Invoice",
+        "inv_quantity",
+        delta,
+        eps=eps
+    )
+
+
+def _mark_packing_total_candidates(rows: list, field: str, declared_value: float, sum_value: float, eps: float = 0.01):
+    delta = (declared_value or 0.0) - (sum_value or 0.0)
+    if abs(delta) <= eps:
+        return
+
+    _mark_numeric_total_candidates(
+        rows,
+        "PackingList",
+        field,
+        delta,
+        eps=eps
+    )
+
 def _normalize_recheck_field_list(fields):
     if not fields:
         return []
@@ -4196,40 +4369,54 @@ def _infer_recheck_fields_from_match_description(text: str):
 
     failed = []
 
-    missing_hits = re.findall(
-        r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b",
-        str(text),
-        flags=re.IGNORECASE
-    )
-    failed.extend(missing_hits)
-
     raw_text = str(text)
     upper_text = raw_text.upper()
 
-    if "inv_amount != inv_quantity*inv_unit_price".upper() in upper_text:
+    # 1) missing field langsung
+    missing_hits = re.findall(
+        r"\bmissing\s+([a-zA-Z_][a-zA-Z0-9_]*)\b",
+        raw_text,
+        flags=re.IGNORECASE
+    )
+    failed.extend([x.strip().lower() for x in missing_hits])
+
+    # 2) formula invoice row-level
+    if "INV_AMOUNT != INV_QUANTITY*INV_UNIT_PRICE" in upper_text:
         failed.extend(["inv_amount", "inv_quantity", "inv_unit_price"])
 
+    # 3) compare row-level
     compare_map = {
-        "pl_gw != coo_gw": ["pl_gw"],
-        "pl_package_count != coo_package_count": ["pl_package_count"],
-        "coo_quantity != inv_quantity": ["inv_quantity"],
-        "coo_amount != inv_amount": ["inv_amount"],
-        "coo_unit != inv_quantity_unit": ["inv_quantity_unit"],
+        "PL_GW != COO_GW": ["pl_gw"],
+        "PL_PACKAGE_COUNT != COO_PACKAGE_COUNT": ["pl_package_count"],
+        "COO_QUANTITY != INV_QUANTITY": ["inv_quantity"],
+        "COO_AMOUNT != INV_AMOUNT": ["inv_amount"],
+        "COO_UNIT != INV_QUANTITY_UNIT": ["inv_quantity_unit"],
     }
 
     for needle, fields in compare_map.items():
-        if needle.upper() in upper_text:
+        if needle in upper_text:
             failed.extend(fields)
 
-    total_map = {
-        "INVOICE: TOTAL_QUANTITY MISMATCH": ["inv_quantity"],
-        "INVOICE: TOTAL_AMOUNT MISMATCH": ["inv_amount", "inv_quantity", "inv_unit_price"],
+    # 4) candidate marker hasil total-mismatch analysis
+    candidate_matches = re.findall(
+        r"(?:InvoiceCandidate|PackingListCandidate):\s*suspect fields=([a-zA-Z0-9_, ]+)",
+        raw_text,
+        flags=re.IGNORECASE
+    )
+    for chunk in candidate_matches:
+        parts = [x.strip().lower() for x in chunk.split(",") if x.strip()]
+        failed.extend(parts)
 
-        "PACKINGLIST: TOTAL_QUANTITY MISMATCH": ["pl_quantity"],
-        "PACKINGLIST: TOTAL_NW MISMATCH": ["pl_nw"],
-        "PACKINGLIST: TOTAL_GW MISMATCH": ["pl_gw"],
-        "PACKINGLIST: TOTAL_VOLUME MISMATCH": ["pl_volume"],
-        "PACKINGLIST: TOTAL_PACKAGE MISMATCH": ["pl_package_count"],
+    # 5) DOC-LEVEL total mismatch -> JANGAN langsung map ke row fields
+    total_map = {
+        "INVOICE: TOTAL_QUANTITY MISMATCH": [],
+        "INVOICE: TOTAL_AMOUNT MISMATCH": [],
+
+        "PACKINGLIST: TOTAL_QUANTITY MISMATCH": [],
+        "PACKINGLIST: TOTAL_NW MISMATCH": [],
+        "PACKINGLIST: TOTAL_GW MISMATCH": [],
+        "PACKINGLIST: TOTAL_VOLUME MISMATCH": [],
+        "PACKINGLIST: TOTAL_PACKAGE MISMATCH": [],
     }
 
     for needle, fields in total_map.items():
@@ -4237,8 +4424,6 @@ def _infer_recheck_fields_from_match_description(text: str):
             failed.extend(fields)
 
     failed = _normalize_recheck_field_list(failed)
-
-    # jangan fallback ke semua field
     return failed
 
 
