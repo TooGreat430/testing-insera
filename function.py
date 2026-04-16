@@ -814,6 +814,11 @@ ATURAN:
 - Jangan ambil tanggal dari dokumen
 - Jika halaman ini hanya continuation page dan invoice number tidak tertulis eksplisit, isi "null".
 - Output HANYA JSON object valid.
+
+OUTPUT SCHEMA:
+{{
+  "{target_key}": "string"
+}}
 """
 
         obj = _call_gemini_json_uri(
@@ -980,6 +985,17 @@ ATURAN:
 - Output HANYA JSON OBJECT valid tanpa teks lain.
 - Jangan mengembalikan invoice_refs kosong jika dokumen mengandung invoice reference.
 - Semua halaman harus tercakup dalam salah satu range jika dokumen memang valid.
+
+OUTPUT SCHEMA:
+{{
+  "invoice_refs": [
+    {{
+      "{target_key}": "string",
+      "start_page": "number",
+      "end_page": "number"
+    }}
+  ]
+}}
 
 VALIDATION RULE:
 - start_page >= 1
@@ -1335,6 +1351,11 @@ ATURAN:
 - Jangan ambil reference number lain yang bukan invoice number.
 - Output HANYA JSON object valid.
 - Jika benar-benar tidak ditemukan, isi "null".
+
+OUTPUT SCHEMA:
+{{
+  "{target_key}": "string"
+}}
 """
         focused_obj = _call_gemini_json_uri(
             file_uri,
@@ -2369,14 +2390,6 @@ def _extract_text_from_gemini_response(response):
         return response.text.strip()
 
     if getattr(response, "candidates", None):
-        try:
-            print(f"[GEMINI_DEBUG] candidates_count={len(response.candidates)}")
-            cand0 = response.candidates[0]
-            print(f"[GEMINI_DEBUG] finish_reason={getattr(cand0, 'finish_reason', None)}")
-            print(f"[GEMINI_DEBUG] candidate={cand0}")
-        except Exception:
-            pass
-
         content = response.candidates[0].content
         parts_resp = getattr(content, "parts", None) or []
         text_output = ""
@@ -2424,7 +2437,6 @@ def _call_gemini_json_uri(
     response_schema=None,
 ):
     p = prompt
-    last_error = None
 
     for attempt in range(1, retries + 1):
         try:
@@ -2441,23 +2453,18 @@ def _call_gemini_json_uri(
             return obj
 
         except Exception as e:
-            last_error = e
             msg = str(e).lower()
-
-            print(
-                f"[GEMINI_JSON_RETRY] attempt={attempt}/{retries} "
-                f"schema={'yes' if response_schema is not None else 'no'} "
-                f"error={repr(e)}"
-            )
 
             if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
                 time.sleep((2 ** attempt) + random.random())
                 continue
 
+            # kalau structured output aktif, retry langsung
             if response_schema is not None:
                 time.sleep(0.5)
                 continue
 
+            # fallback lama untuk call yang belum dimigrasi
             if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
                 p = prompt + """
                 PENTING:
@@ -2471,10 +2478,7 @@ def _call_gemini_json_uri(
 
             raise
 
-    raise Exception(
-        f"Gemini gagal menghasilkan JSON setelah retry. "
-        f"last_error={repr(last_error)}"
-    )
+    raise Exception("Gemini gagal menghasilkan JSON setelah retry")
 
 def _run_one_detail_batch(file_uri_detail: str, run_prefix: str, batch_no: int, prompt: str):
     json_array = _call_gemini_json_uri(
