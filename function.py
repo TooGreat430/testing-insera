@@ -4546,6 +4546,12 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
     normalized_pdf_paths = []
     temp_local_paths = []
+    all_rows = []
+    header_obj = {}
+    total_data = None
+    container_data = None
+    po_lines = []
+    po_numbers = set()
 
     run_id = uuid.uuid4().hex
     prefix = TMP_PREFIX.rstrip("/")
