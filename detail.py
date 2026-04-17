@@ -371,25 +371,61 @@ OUTPUT SCHEMA (HEADER ONLY):
 
 GENERAL KNOWLEDGE:
 
-1. inv_vendor_name pada Invoice:
+INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
+1. inv_invoice_no:
+   - Ambil NOMOR INVOICE DOKUMEN INVOICE pada level header dokumen, BUKAN dari line item.
+   - Prioritaskan kandidat yang berada di area header / dekat judul dokumen / dekat data vendor / dekat tanggal.
+   - Label yang valid bisa berupa:
+     "INVOICE NO", "INV. NO.", "INVOICE:", "NO.:", "NO", "INVOICE NUMBER"
+   - Pada beberapa vendor, invoice number dapat muncul hanya sebagai:
+     - "NO.: 260116001"
+     - "INVOICE:2026011601"
+     - "Inv. No.: 80459929"
+   - Jika ada beberapa angka di tabel line item seperti "PO NO", "PO/NO", "PO No.", maka JANGAN ambil angka tersebut sebagai inv_invoice_no.
+   - Jangan ambil:
+     PO number, item no, packing no, LC number, page number, date, quantity, amount.
+   - Jika label invoice number dan nilainya berada pada baris berbeda, gabungkan nilainya menjadi satu value utuh.
+   - Jika nomor invoice terputus karena line wrap, ambil seluruh bagiannya dan gabungkan tanpa spasi tambahan yang tidak perlu.
+
+2. pl_invoice_no:
+   - Ambil nomor invoice yang direferensikan oleh dokumen Packing List pada level header dokumen.
+   - pl_invoice_no TIDAK HARUS selalu berlabel "INVOICE NO".
+   - Label/konteks yang valid untuk pl_invoice_no bisa berupa:
+     "NO.:", "INVOICE NO", "INV. NO.", "REF NO.", atau angka referensi header yang berdiri sendiri di dekat judul "PACKING LIST".
+   - Contoh pola valid:
+     - "NO.: 260116001"
+     - "PACKING LIST" lalu di baris dekat header ada "2026011601"
+     - "REF NO. 80459929"
+   - Jika ada angka pada kolom "PO NO." atau "PO/NO" di tabel item, JANGAN ambil itu sebagai pl_invoice_no.
+   - Prioritaskan kandidat yang muncul di area header atas, bukan di body table.
+   - Jika ada beberapa kandidat, pilih yang paling dekat dengan judul dokumen / area header dan yang paling konsisten dengan invoice reference dokumen tersebut.
+
+3. coo_invoice_no:
+   - Ambil nomor invoice yang direferensikan oleh dokumen COO pada level header/metadata COO.
+   - coo_invoice_no bukan COO number / certificate number.
+   - Jangan ambil "Certificate No", "Form", "Reference No" lain, PO number, LC number, page number.
+   - Jika invoice number pada COO pecah ke beberapa baris, gabungkan menjadi satu nilai utuh.
+   - coo_invoice_no sering berada di area kanan / kolom khusus / field terpisah dari item description.
+
+4. inv_vendor_name pada Invoice:
    - BUKAN berasal dari PT Insera Sena.
    - Jika terdapat PT Insera Sena dan pihak lain → pilih yang BUKAN PT Insera Sena.
 
-2. Messrs pada Packing List (PL) dan Invoice (INV):
+5. Messrs pada Packing List (PL) dan Invoice (INV):
    - SELALU PT Insera Sena.
    - Jika terdapat beberapa nama → pilih PT Insera Sena.
    - Jika ada variasi nama perusahaan PT Insera Sena seperti:
      "PT. INSERA SENA", "PERSEROAN TERBATAS INSERA SENA", "PT INSERASENA", atau bentuk lainnya yang merujuk pada PT Insera Sena,
      NORMALISASI menjadi: "PT Insera Sena"
 
-3. Messrs address pada Packing List (PL) dan Invoice (INV):
+6. Messrs address pada Packing List (PL) dan Invoice (INV):
    - Hanya ekstrak address dari perusahaannya tanpa kode posnya, contoh:
       JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
       Berarti yang diekstrak hanya: JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR
    - JANGAN SAMPAI SALAH EKSTRAK! PAHAMI KONTEKS. Jika messrs address maka yang ditanyakan adalah alamat jadi penulisan harus tepat
      contoh: Di dokumen seperti ini JI VETERAN maka perlu di convert menjadi "JL VETERAN" karena konteksnua adalah JALAN
 
-4. inv_price_unit SAMA dengan inv_amount_unit:
+7. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
 
@@ -406,11 +442,11 @@ GENERAL KNOWLEDGE:
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD.
 
-5. pl_total_package dan pl_total_quantity:
+8. pl_total_package dan pl_total_quantity:
    - Jika pada dokumen terdapat dua value dengan UNIT yang berbeda, maka sum kedua value tersebut
      contoh: pada dokumen terlampir total dari quantity seperti ini 2139PCE/150SET. Maka sum kedua value tersebut adalah 2289 (2139 + 150 = 2289)
 
-5. pl_total_package:
+9. pl_total_package:
    - Untuk total package yang digunakan, liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
    - Jika tidak secara eksplisit, contoh:
      Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
@@ -420,24 +456,24 @@ GENERAL KNOWLEDGE:
     2P/T	<	32C/T &		83C/T
     Maka total package adalah 85 (2 + 83 = 85) karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T).
 
-6. LC Logic pada Bill of Lading (BL):
+10. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.
 
-7. Jika pada dokumen Bill of Lading (BL) bertipe LC:
+11. Jika pada dokumen Bill of Lading (BL) bertipe LC:
     - bl_consignee_name diambil dari notify party
     - bl_consignee_address diambil dari notify party
 
-8. inv_coo_commodity_origin
+12. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-9. pl_volume_unit
+13. pl_volume_unit
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
   - JIKA PADA DOKUMEN TIDAK TERTERA VOLUME UNIT DARI Packing List Volume Unit, maka biarkan "null".
 
-10. coo_gw_unit:
+14. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -451,9 +487,9 @@ GENERAL KNOWLEDGE:
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-11. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
+15. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 
-12. bl_shipper dan bl_seller
+16. bl_shipper dan bl_seller
    - Penempatan bl_shipper selalu diatas dari bl_seller
    - Jika bingung, terdapat tulisan "O/B" Untuk memisahkan antara bl_shipper dan bl_seller
      contoh:
@@ -465,18 +501,18 @@ GENERAL KNOWLEDGE:
 
    Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
 
-13. bl_voyage_no:
+17. bl_voyage_no:
    - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
    - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode. Tugas anda ambil setelah V nya
      Contoh:
      V.S018
      Berarti value tersebut adalah S018
 
-14. inv_invoice_no, pl_invoice_no & coo_invoice_no:
+18. inv_invoice_no, pl_invoice_no & coo_invoice_no:
     - PADA SETIAP DOKUMEN INVOICE, PACKING LIST DAN COO, PASTI ADA INVOICE NO JADI TOLONG CARI DENGAN TELITI.
     - inv_invoice_no, pl_invoice_no & coo_invoice_no TIDAK BERSIFAT NULLABLE, JADI TOLONG PERHATIKAN DENGAN TELITI
 
-15. coo_invoice_no:
+19. coo_invoice_no:
     - Merepresentasikan invoice number yang direferensikan pada dokumen COO.
     - Biasanya memiliki kolom sendiri
     - Biasanya kolom ditaruh di paling kanan dari dokumen.
@@ -491,11 +527,11 @@ GENERAL KNOWLEDGE:
 
         Maka, coo_invoice_no: SHXM22-2512000393
 
-16. bl_mark_number:
+20. bl_mark_number:
     - bl_mark_number hanya di ekstrak apa bila label "SHIPPING MARKS",
       apabila tidak ada label "SHIPPING MARKS" maka bl_mark_number = "null"
 
-17. coo_no
+21. coo_no
     - coo_no merupakan nomor certificate dari dokumen
     - Biasanya di labelkan dengan "Certificate No:..."
 """

@@ -1202,19 +1202,39 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
 ROLE:
 Anda hanya mengekstrak nomor invoice referensi dari dokumen {doc_label}.
 
-ATURAN:
-- Cari invoice number utama yang relevan dengan dokumen ini.
-- invoice -> ambil invoice number dokumen invoice
-- packing -> ambil invoice number yang direferensikan pada packing list
-- coo -> ambil invoice number yang direferensikan pada COO
+TUGAS:
+Ambil SATU nomor invoice yang benar-benar merupakan document-level invoice reference.
+
+ATURAN UMUM:
+- Fokus hanya pada area HEADER dokumen, bukan tabel line item.
+- Kandidat di body table / line item / kolom PO NO harus diabaikan.
 - Jangan ambil PO number.
 - Jangan ambil packing list number.
-- Jangan ambil COO number.
+- Jangan ambil COO number / certificate number.
 - Jangan ambil LC number.
 - Jangan ambil page number.
-- Jangan ambil reference number lain yang bukan invoice number.
-- Output HANYA JSON object valid.
-- Jika benar-benar tidak ditemukan, isi "null".
+- Jangan ambil date.
+- Jangan ambil item number, packing number, carton number, mark number, quantity, amount.
+
+ATURAN PER DOKUMEN:
+- Jika doc_type = invoice:
+  ambil invoice number dokumen invoice.
+  Label valid bisa berupa: "INVOICE NO", "INV. NO.", "INVOICE:", "NO.:", "INVOICE NUMBER".
+- Jika doc_type = packing:
+  ambil invoice number yang direferensikan pada packing list.
+  Label valid bisa berupa: "INVOICE NO", "INV. NO.", "NO.:", "REF NO."
+  Pada beberapa packing list, invoice number dapat muncul sebagai angka header dekat judul "PACKING LIST" meskipun tanpa label invoice yang eksplisit.
+- Jika doc_type = coo:
+  ambil invoice number yang direferensikan pada COO, bukan nomor certificate.
+
+RULE KHUSUS PEMILIHAN:
+- Prioritaskan kandidat yang paling dekat dengan judul dokumen atau area header vendor/messrs/date.
+- Jika ada kandidat di tabel item dengan label "PO NO" / "PO/NO", itu BUKAN invoice number.
+- Jika value terpotong ke baris berikutnya, gabungkan semua bagian menjadi satu value utuh.
+- Output hanya value invoice number tanpa label.
+
+OUTPUT HANYA JSON object valid.
+Jika benar-benar tidak ditemukan, isi "null".
 
 OUTPUT SCHEMA:
 {{
