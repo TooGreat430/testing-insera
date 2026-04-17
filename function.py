@@ -34,6 +34,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 import pymupdf as fitz
+from vendor_detection import detect_vendor_from_invoice_pdf, load_vendor_prompt_text
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
@@ -4450,7 +4451,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict):
     _postprocess_unit_fields(rows)
     _postprocess_coo_description(rows)
     _postprocess_bl_description(rows)
-    _postprocess_bl_seller_name_similarity(all_rows)
+    _postprocess_bl_seller_name_similarity(rows)
 
     _postprocess_bl_coo_zero_to_null(rows)
 
@@ -4672,6 +4673,31 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _fill_forward(index_items, "inv_customer_po_no")
         _fill_forward(index_items, "pl_customer_po_no")
 
+        # =========================
+        # VENDOR DETECTION (invoice only)
+        # =========================
+        vendor_id = "default"
+        vendor_prompt_text = ""
+
+        try:
+            invoice_pdf_for_vendor = None
+            if invoice_paths and isinstance(invoice_paths, list) and invoice_paths[0]:
+                invoice_pdf_for_vendor = invoice_paths[0]
+
+            if invoice_pdf_for_vendor:
+                vendor_id = detect_vendor_from_invoice_pdf(invoice_pdf_for_vendor)
+                vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+                print(f"[VENDOR DETECTED] vendor_id={vendor_id}")
+            else:
+                print("[VENDOR DETECTED] invoice path tidak tersedia, pakai default")
+                vendor_id = "default"
+                vendor_prompt_text = ""
+
+        except Exception as e:
+            print(f"[VENDOR DETECTION FALLBACK] err={e}")
+            vendor_id = "default"
+            vendor_prompt_text = ""
+
         # BATCH DETAIL EXTRACTION
         jobs = []
         first_index = 1
@@ -4686,7 +4712,9 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
                 total_row=total_row,
                 index_slice=index_slice,
                 first_index=first_index,
-                last_index=last_index
+                last_index=last_index,
+                vendor_id=vendor_id,
+                vendor_prompt_text=vendor_prompt_text
             )
 
             jobs.append((batch_no, prompt))
