@@ -17,7 +17,7 @@ genai_client = genai.Client(
 VENDOR_LIST = [
     "jht_carbon",
     "jht",
-    "tangsan_jinhentong",
+    "tangsan_jinhengtong",
     "joy",
     "kunshan_landon",
     "shimano_inc",
