@@ -1,108 +1,101 @@
-SUNTOUR_SHENZEN_PROMPT = """
+BAFANG_MOTOR_PROMPT = """
 
 INVOICE (INV)
 
 1. inv_customer_po_no:
-   - Ekstrak dari kolom "P/O No./Description".
-   - Pada format vendor ini, nomor PO adalah angka yang muncul setelah "Item No." dan sebelum kolom "Qty".
-   - Contoh: "45324845".
-   - Jangan ambil "Ref No".
+   - Ekstrak dari kolom "PO".
+   - Contoh: "43018071", "43018072".
 
 2. inv_spart_item_no:
-   - Ekstrak dari kolom "Item No.".
-   - Contoh: "GSFXCM32DZ000036".
+   - Ekstrak dari kolom "Customer Article No.".
+   - Jangan ambil dari kolom "Item", "Model", atau "BF Article No."
+   - Contoh:
+     "BATBFEELMINI04-R"
+     "BAXBFBTF291004-R"
+     "BATBFHEGIIPRCS00-R"
 
 3. inv_description:
-   - Prioritaskan deskripsi lengkap barang pada blok teks dalam tanda kurung di bagian bawah invoice, karena itu adalah deskripsi item paling lengkap.
-   - Jika blok tanda kurung tidak ada, gabungkan seluruh teks deskripsi pada area "P/O No./Description" yang berada di bawah item utama sampai sebelum garis total.
-   - Contoh format:
-     "FORK SUSPENSION GSFXCM32DZ000036;SUNTOUR;SF23-XCM32DS;MATTEBLACKBLADE/CP STANCHION/MATTEBLACK CROWN;-;DISC PM160 QR/NUT,ALLOY BLADE/ALLOY CROWN, 27.5 THREADLESS 28(1-1/8") 255.00MMSTEEL STEERER 100.00 COIL W/ PRELOADADJUSTER - - W/ SEPARATEDECAL"
+   - Ekstrak dari kolom "Insera Description".
+   - Gabungkan seluruh wrapped lines yang masih merupakan bagian dari deskripsi item.
+   - Jangan sertakan Price, Quantity, Amount, Brand, atau PO.
+   - Contoh hasil:
+     "EEL-MINI battery casing, 36V CAN, 10.5Ah, 378Wh, 30 CELLS, EVE 3.5Ah cell, produced in China"
 
 4. inv_gw & inv_gw_unit:
    - Isi null kecuali ada gross weight yang tertulis eksplisit pada invoice.
 
 5. inv_quantity:
-   - Ekstrak dari kolom "Qty".
-   - Contoh: "3355".
+   - Ekstrak dari kolom "Quantity".
+   - Contoh: "455", "700"
 
 6. inv_quantity_unit:
-   - Ekstrak dari kolom "Unit".
-   - Contoh: "SET".
+   - Isi null kecuali ada unit quantity yang tertulis eksplisit pada baris item invoice.
+   - Jangan mengasumsikan PCS/SET jika tidak tertulis.
 
 7. inv_unit_price:
-   - Ekstrak dari kolom "U/Price(USD)".
-   - Contoh: "19".
+   - Ekstrak dari kolom "Price (USD)".
+   - Ambil angka numeriknya saja. Jangan ambil simbol mata uangnya.
+   - Contoh:
+     "$106.10" -> 106.10
 
 PACKING LIST (PL)
 
 1. pl_customer_po_no:
-   - Ekstrak dari baris dengan label "CUSTOMER PO:".
-   - Contoh: "45324845".
+   - Ekstrak dari kolom "PO".
+   - Contoh: "43018071", "43018072".
 
 2. pl_item_no:
-   - Ekstrak dari kolom "Item No.".
-   - Contoh: "GSFXCM32DZ000036".
+   - Ekstrak dari kolom "Customer Article No.".
+   - Jangan ambil dari kolom "Item", "Model", atau "BF Article No."
+   - Contoh:
+     "BATBFEELMINI04-R"
+     "BAXBFBTF291004-R"
+     "BATBFHEGIIPRCS00-R"
 
 3. pl_description:
-   - Prioritaskan deskripsi lengkap barang pada blok teks dalam tanda kurung di bagian bawah packing list.
-   - Jika blok tersebut tidak ada, gabungkan seluruh teks deskripsi item setelah "Item No." sampai sebelum kolom "Unit", "Qty", "N.W.(KG)", "G.W.(KG)", atau "Measurement".
-   - Sertakan baris lanjutan/wrapped text yang masih merupakan bagian dari deskripsi item.
+   - Ekstrak dari kolom "Insera Description".
+   - Gabungkan seluruh wrapped lines yang masih merupakan bagian dari deskripsi item.
+   - Jangan sertakan CTNS, Quantity, G.W, N.W, Brand, atau PO.
+   - Contoh hasil:
+     "EEL-MINI battery casing, 36V CAN, 10.5Ah, 378Wh, 30 CELLS, EVE 3.5Ah cell, produced in China"
+
 
 4. pl_quantity:
-   - Ekstrak total quantity item.
-   - Jangan ambil nilai yang diakhiri dengan @
-   - Jika item yang sama terpecah ke beberapa baris, jumlahkan semua nilai pada kolom "Qty".
-     - Contoh: 
-        Qty
-        3354
-        1
-        maka pl_quantity = 3355 (3354 + 1)
+   - Ekstrak dari kolom "Quantity".
+   - Contoh: "455", "700"
 
 5. pl_package_unit:
-   - Ekstrak jenis kemasan dari statement total packing atau dari konteks CTN/carton.
-   - Pada format vendor ini, gunakan unit kemasan sebagaimana tertulis, misalnya "CARTONS" atau "CTNS".
+   - Ekstrak jenis kemasan dari nama kolom package (misal "CTNS").
+   - Gunakan unit kemasan sebagaimana tertulis, misalnya "CTNS"
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   - Ekstrak total jumlah kemasan per item.
-   - Ekstrak dan hitung dari kolom range CTN# / PTL#.
-   - Jika item yang sama terpecah ke beberapa baris, jumlahkan semua nilai range "PTL# / CTN#"
-     - Contoh: 
-       PTL# / CTN#
-       0001- 0559  -> 559
-       0560- 0560  -> 1
-       maka pl_package_count = 560 (559 + 1)
+   - Ekstrak dari kolom "CTNS".
+   - Contoh: "455", "11", "234"
 
 7. pl_nw:
-   - Ekstrak total net weight per item.
-   - Ambil nilai yang tidak diakhiri dengan @
-   - Jika item terpecah ke beberapa baris, jumlahkan semua nilai "N.W.(KG)" untuk item tersebut.
-     - Contoh:
-       N.W (KG)
-       10173.8
-       3
-       maka pl_nw = 10176.8 (10173.8 + 3)
+   - Ekstrak dari kolom "N.W(KGS)".
+   - Ambil angka numeriknya saja.
 
 8. pl_gw:
-   - Ekstrak total gross weight per item.
-   - Ambil nilai yang tidak diakhiri dengan @
-   - Jika item yang sama terpecah ke beberapa baris, jumlahkan semua nilai "G.W.(KG)".
-     - Contoh: 
-       G.W (KG)
-       11850.8
-       3.2
-       maka pl_gw = 11854.
+   - Ekstrak dari kolom "G.W(KGS)".
+   - Ambil angka numeriknya saja.
 
 9. pl_volume:
-   - Ekstrak total numeric value dari kolom "Measurement".
-   - Ambil nilai yang tidak diakhiri dengan @
-   - Jika item yang sama terpecah ke beberapa baris, jumlahkan semua nilai "Measurement".
+   - Ekstrak dari kolom "MEASUREMENT"
+   - Jika value volume adalah merge untuk beberapa line item, value volume hanya di ekstrak untuk line item teratas dari merge value tersebut, sedangkan sisa value lainnya di isi dengan 0.
      - Contoh:
-       Measurement
-       2236
-       0.8
-       maka pl_volume = 2236.8
-   - Jangan konversi value meskipun BL mungkin memiliki volume unit yang berbeda dari PL.
+       | Description  |   Measurement |
+       | Barang 1     |               |
+       | Barang 2     |     13.500    |
+       | Barang 3     |               |
+       | Barang 4     |               |
+       maka:
+       - Barang 1, pl_volume = 13.500
+       - Barang 2, pl_volume = 0
+       - Barang 3, pl_volume = 0
+       - Barang 4, pl_volume = 0
+   - Jangan membagi / mengarang volume per item
 
 BILL OF LADING (BL)
 
@@ -129,6 +122,7 @@ CERTIFICATE OF ORIGIN (COO)
    - Ekstrak dari field "7. Marks and numbers on packages".
    - Pada format vendor ini bisa berupa "N/M".
    - Ambil persis seperti tertulis.
+   - Jika tidak tersedia, isi dengan "null".
 
 2. coo_description:
    - Ekstrak dari field "8. Number and kind of packages; and description of goods".
@@ -138,20 +132,23 @@ CERTIFICATE OF ORIGIN (COO)
    - Fokus pada deskripsi barangnya saja.
    - Contoh hasil:
      "BICYCLE PARTS FORK SUSPENSION GSFXCM32DZ000036;SUNTOUR;SF23-XCM32DS;MATTEBLACKBLADE/CP STANCHION/MATTEBLACK CROWN;-;DISC PM160 QR/NUT,ALLOY BLADE/ALLOY CROWN, 27.5 THREADLESS 28(1-1/8") 255.00MMSTEEL STEERER 100.00 COIL W/ PRELOADADJUSTER - - W/ SEPARATEDECAL"
-
+   - Jika tidak tersedia, isi dengan "null".
 3. coo_hs_code:
    - Ekstrak dari field "9. HS Code of the goods".
    - Contoh: "8714.91".
+   - Jika tidak tersedia, isi dengan "null".
 
 4. coo_package_count:
    - Ekstrak angka numerik dari frasa jumlah kemasan dalam field 8.
    - Contoh:
      dari "FIVE HUNDRED AND SIXTY (560) CTNS"
-     ambil "560".
+     maka coo_package_count = 560
+   - Jika tidak tersedia, isi dengan "null".
 
 5. coo_package_unit:
    - Ekstrak unit kemasan dari frasa jumlah kemasan dalam field 8.
    - Contoh: "CTNS".
+   - Jika tidak tersedia, isi dengan "null".
 
 6. coo_gw & coo_quantity:
    - Untuk vendor ini, cek isi field "12. Quantity (Gross weight or other measurement)..."
@@ -159,19 +156,23 @@ CERTIFICATE OF ORIGIN (COO)
      - coo_quantity = 3355
      - coo_gw = null
    - Hanya isi coo_gw jika ada nilai berat eksplisit dengan unit seperti KG/KGS.
+   - Jika tidak tersedia, isi dengan "null".
 
 7. coo_unit:
    - Ekstrak unit yang melekat pada field 12.
    - Jika field 12 berisi quantity, ambil unit quantity tersebut.
    - Contoh: "SETS".
    - Jika field 12 berisi berat, ambil unit beratnya, misalnya "KG".
+   - Jika tidak tersedia, isi dengan "null".
 
 8. coo_criteria:
    - Ekstrak dari field "10. Origin Conferring Criterion".
    - Jika ada tanda kutip, hilangkan tanda kutipnya.
    - Contoh: "RVC".
-
+   - Jika tidak tersedia, isi dengan "null".
+   
 9. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit.
-   - Jika tidak ada referensi PO yang jelas, isi null.  
+   - Jika tidak ada referensi PO yang jelas, isi null.
+   - Jika tidak tersedia, isi dengan "null". 
 """

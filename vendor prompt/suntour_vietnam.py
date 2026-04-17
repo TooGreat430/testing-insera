@@ -1,6 +1,6 @@
 SUNTOUR_VIETNAM_PROMPT = """
 
-INVOICE (INV):
+INVOICE (INV)
 
 1. inv_customer_po_no:
    - Ekstrak dari kolom "PONo.".
@@ -62,7 +62,7 @@ PACKING LIST (PL)
      5 + 230 + 5 = 240.
 
 5. pl_package_unit:
-   - Ekstrak jenis kemasan dari statement total packing atau dari kolom package (misal "CARTON").
+   - Ekstrak jenis kemasan dari statement total packing atau dari nama kolom package (misal "CARTON").
    - Pada format vendor ini, gunakan unit kemasan sebagaimana tertulis, misalnya "CARTONS"
    - Jangan ubah ke unit lain.
 
