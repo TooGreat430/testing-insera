@@ -1,6 +1,6 @@
 SUNTOUR_SHENZEN_PROMPT = """
 
-INVOICE (INV):
+INVOICE (INV)
 
 1. inv_customer_po_no:
    - Ekstrak dari kolom "P/O No./Description".

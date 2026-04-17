@@ -1,6 +1,6 @@
 SUNTOUR_VIETNAM_PROMPT = """
 
-INVOICE (INV):
+INVOICE (INV)
 
 1. inv_customer_po_no:
    - Ekstrak dari kolom "PONo.".

@@ -1,6 +1,6 @@
 BAFANG_MOTOR_PROMPT = """
 
-INVOICE (INV):
+INVOICE (INV)
 
 1. inv_customer_po_no:
    - Ekstrak dari kolom "PO".
@@ -170,6 +170,7 @@ CERTIFICATE OF ORIGIN (COO)
    - Jika ada tanda kutip, hilangkan tanda kutipnya.
    - Contoh: "RVC".
    - Jika tidak tersedia, isi dengan "null".
+   
 9. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit.
    - Jika tidak ada referensi PO yang jelas, isi null.
