@@ -529,6 +529,26 @@ def _looks_like_invoice_no_candidate(value: str) -> bool:
 
     return True
 
+def _cleanup_coo_invoice_no(value: str) -> str:
+    s = str(value or "").strip().upper()
+    if not s or s == "NULL":
+        return "null"
+
+    # buang tanggal umum
+    s = re.sub(
+        r"\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\.?\s+\d{1,2},?\s+\d{4}\b",
+        "",
+        s
+    )
+
+    # gabungkan whitespace / line break
+    s = re.sub(r"\s+", "", s).strip()
+
+    # kalau kebaca certificate number, tolak
+    if s.startswith("RC"):
+        return "null"
+
+    return s or "null"
 
 def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> str:
     """
@@ -665,21 +685,29 @@ def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index
 ROLE:
 Anda hanya mengekstrak nomor invoice referensi dari SATU HALAMAN dokumen {doc_label}.
 
-ATURAN:
-- Cari nomor invoice utama yang benar-benar terlihat pada halaman ini.
-- Tanda invoice no adalah "INVOICE NO:", "INVOICE:", "INVOICE NUMBER:"
-- INVOICE NO SUDAH PASTI ADA JADI TOLONG DICEK DENGAN BAIK JANGAN ASAL AMBIL
-- Untuk:
-  - invoice -> ambil invoice number dokumen invoice
-  - packing -> ambil invoice number yang direferensikan pada packing list
-  - coo -> ambil invoice number yang direferensikan pada COO
-- Jangan ambil PO number.
-- Jangan ambil packing list number.
-- Jangan ambil COO number.
-- Jangan ambil LC number.
-- Jangan ambil page number.
-- Jika halaman ini hanya continuation page dan invoice number tidak tertulis eksplisit, isi "null".
-- Output HANYA JSON object valid.
+TUGAS:
+Ambil SATU nilai invoice reference yang valid dari halaman ini.
+
+ATURAN KHUSUS UNTUK COO/RCEP:
+- Prioritaskan kolom "Invoice number(s) and date of invoice(s)".
+- Jika sel tersebut berisi beberapa baris:
+  - gabungkan bagian invoice number yang alfanumerik
+  - abaikan tanggal invoice di bawahnya
+- Jika halaman ini adalah continuation sheet dan invoice number tidak muncul eksplisit, isi "null".
+
+JANGAN AMBIL:
+- Certificate No.
+- Form RCEP
+- verification number
+- page number
+- HS code
+- quantity
+- gross weight
+- country of origin
+- PO number
+- date
+
+OUTPUT HANYA JSON object valid.
 
 OUTPUT SCHEMA:
 {{
@@ -697,6 +725,9 @@ OUTPUT SCHEMA:
         raw_invoice_no = "null"
         if isinstance(obj, dict):
             raw_invoice_no = obj.get(target_key, "null")
+
+        if doc_type == "coo":
+            raw_invoice_no = _cleanup_coo_invoice_no(raw_invoice_no)
 
         return _preprocess_invoice_no_for_grouping(raw_invoice_no)
 
@@ -1203,35 +1234,40 @@ ROLE:
 Anda hanya mengekstrak nomor invoice referensi dari dokumen {doc_label}.
 
 TUGAS:
-Ambil SATU nomor invoice yang benar-benar merupakan document-level invoice reference.
+Ambil SATU nilai coo_invoice_no yang benar-benar merupakan invoice reference pada dokumen COO.
 
-ATURAN UMUM:
-- Fokus hanya pada area HEADER dokumen, bukan tabel line item.
-- Kandidat di body table / line item / kolom PO NO harus diabaikan.
-- Jangan ambil PO number.
-- Jangan ambil packing list number.
-- Jangan ambil COO number / certificate number.
-- Jangan ambil LC number.
-- Jangan ambil page number.
-- Jangan ambil date.
-- Jangan ambil item number, packing number, carton number, mark number, quantity, amount.
+ATURAN KHUSUS COO:
+- Untuk dokumen COO/RCEP, prioritas utama adalah membaca kolom:
+  "Invoice number(s) and date of invoice(s)".
+- Fokus pada page pertama terlebih dahulu.
+- coo_invoice_no sering berada di kolom paling kanan pada tabel utama.
+- Nilai invoice number dapat terpecah ke beberapa baris dalam 1 sel.
+- Gabungkan semua bagian invoice number yang alfanumerik menjadi satu value utuh.
+- Jika setelah invoice number ada tanggal invoice, tanggal tersebut HARUS dibuang.
 
-ATURAN PER DOKUMEN:
-- Jika doc_type = invoice:
-  ambil invoice number dokumen invoice.
-  Label valid bisa berupa: "INVOICE NO", "INV. NO.", "INVOICE:", "NO.:", "INVOICE NUMBER".
-- Jika doc_type = packing:
-  ambil invoice number yang direferensikan pada packing list.
-  Label valid bisa berupa: "INVOICE NO", "INV. NO.", "NO.:", "REF NO."
-  Pada beberapa packing list, invoice number dapat muncul sebagai angka header dekat judul "PACKING LIST" meskipun tanpa label invoice yang eksplisit.
-- Jika doc_type = coo:
-  ambil invoice number yang direferensikan pada COO, bukan nomor certificate.
+CONTOH POLA VALID:
+- Baris 1: SHXM22-2512000
+- Baris 2: 393
+- Baris 3: DEC. 31, 2025
+=> coo_invoice_no = SHXM22-2512000393
 
-RULE KHUSUS PEMILIHAN:
-- Prioritaskan kandidat yang paling dekat dengan judul dokumen atau area header vendor/messrs/date.
-- Jika ada kandidat di tabel item dengan label "PO NO" / "PO/NO", itu BUKAN invoice number.
-- Jika value terpotong ke baris berikutnya, gabungkan semua bagian menjadi satu value utuh.
-- Output hanya value invoice number tanpa label.
+JANGAN AMBIL:
+- Certificate No.
+- Form RCEP / form type
+- Verification number
+- page number
+- HS code
+- quantity / gross weight
+- country of origin
+- PO number
+- packing list number
+- invoice date
+
+PRIORITAS PEMILIHAN:
+1. first valid occurrence pada page pertama
+2. nilai pada kolom "Invoice number(s) and date of invoice(s)"
+3. value alfanumerik sebelum tanggal
+4. jika terpecah beberapa baris, gabungkan
 
 OUTPUT HANYA JSON object valid.
 Jika benar-benar tidak ditemukan, isi "null".
@@ -1252,6 +1288,8 @@ OUTPUT SCHEMA:
             focused_obj = {}
 
         focused_invoice_no = focused_obj.get(target_key, "null")
+        if doc_type == "coo":
+            focused_invoice_no = _cleanup_coo_invoice_no(focused_invoice_no)
         focused_preprocessed_invoice_no = _preprocess_invoice_no_for_grouping(focused_invoice_no)
         focused_group_key = _normalize_invoice_group_key(focused_preprocessed_invoice_no)
 
