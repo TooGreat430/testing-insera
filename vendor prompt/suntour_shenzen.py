@@ -20,7 +20,6 @@ INVOICE (INV):
 
 4. inv_gw & inv_gw_unit:
    - Isi null kecuali ada gross weight yang tertulis eksplisit pada invoice.
-   - Pada format contoh vendor ini, gross weight tidak dicantumkan per item.
 
 5. inv_quantity:
    - Ekstrak dari kolom "Qty".
