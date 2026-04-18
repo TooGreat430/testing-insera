@@ -28,9 +28,13 @@ Struktur umum invoice VELO:
     maka part number utuh = BAXVLPLG388020R
 - Di dalam area description sering muncul line "P.O. NO:45322360" atau format serupa.
 - Line "P.O. NO:..." adalah penanda grouping customer PO untuk item-item setelahnya, BUKAN bagian description barang.
+- Penting untuk layout / OCR reading order:
+  - Pada sebagian invoice VELO, part number dari kolom "Item/Part no." dapat ikut terbaca di bawah line "P.O. NO:..." sebelum description barang dimulai.
+  - Jika ada alphanumeric panjang tepat di bawah "P.O. NO:..." dan nilainya cocok dengan pola part number item, perlakukan itu sebagai inv_spart_item_no, BUKAN inv_description.
+  - Jangan salah menganggap line alphanumeric panjang di bawah "P.O. NO:..." sebagai pl_item_no; konteks invoice ini tetap milik inv_spart_item_no.
+  - Jika part number tersebut terpotong ke baris berikutnya, gabungkan seluruh fragmennya menjadi satu value utuh tanpa spasi.
 - Pada page pertama juga ada PO NO di area kanan atas. Jika item pertama belum punya line "P.O. NO:..." yang lebih dekat di atasnya, maka gunakan PO header/page tersebut.
 - Jika page berikutnya melanjutkan group PO yang sama dan belum ada PO baru, carry forward PO terakhir yang valid dari item sebelumnya.
-
 1. inv_customer_po_no
    - Ambil customer PO number dari "P.O. NO:" / "PO NO." terdekat yang menaungi item tersebut.
    - Prioritas:
@@ -61,13 +65,25 @@ Struktur umum invoice VELO:
 3. inv_spart_item_no
    - Ambil part number dari kolom "Item/Part no.".
    - Pada vendor VELO, part number berada di bawah seq dan sering wrap ke baris berikutnya.
+   - Dalam beberapa hasil OCR / flatten layout, part number yang sama juga bisa ikut muncul tepat di bawah line "P.O. NO:..." sebelum description barang.
+   - Jika ada line alphanumeric panjang di bawah "P.O. NO:..." yang jelas merupakan identitas item, line tersebut tetap diperlakukan sebagai inv_spart_item_no.
    - Gabungkan seluruh fragmen part number yang terpotong menjadi satu string tanpa spasi tambahan.
+   - Scan 1-2 line lanjutan di bawahnya untuk memastikan suffix part number yang terpotong ikut tergabung penuh.
    - Contoh:
      - BAXVLPLG38802 + 0R -> "BAXVLPLG388020R"
      - HBGVLVLG2154 + 0001R -> "HBGVLVLG21540001R"
      - FRXVLIS24PFK0 + 100R -> "FRXVLIS24PFK0100R"
+   - Jika urutan baca OCR menjadi:
+     - P.O. NO:45322358
+     - BAXVLPLG38802
+     - 0R
+     - BATTERY HOLDER DI2; VELO; ...
+     maka:
+     - inv_spart_item_no = "BAXVLPLG388020R"
+     - inv_description dimulai dari "BATTERY HOLDER DI2; VELO; ..."
    - Jangan ambil:
      - seq
+     - customer PO number
      - model pendek di description seperti PLG-38-802
      - quantity
      - unit price
@@ -86,10 +102,12 @@ Struktur umum invoice VELO:
      - warna
      - OEM PACKING
    - "OEM PACKING" dianggap bagian dari description dan boleh disertakan.
+   - Jika ada line alphanumeric panjang tepat di bawah "P.O. NO:..." yang sebenarnya adalah part number item, jangan masukkan line itu ke inv_description.
+   - inv_description dimulai setelah inv_spart_item_no selesai direkonstruksi penuh.
    - Jangan masukkan:
      - line "P.O. NO:..."
      - seq
-     - part number
+     - part number, termasuk part number yang ikut terbaca di bawah PO line karena OCR / reading order
      - quantity
      - unit
      - unit price
@@ -176,6 +194,12 @@ Struktur umum packing list VELO:
 
 2. pl_item_no
    - Ambil part number item dari awal blok description.
+   - Lokasi dari pl_item_no dibawah persis Po No:
+     BICYCLE PARTS
+     P.O. NO: 45322358
+     BAXVLPL388020GR
+     
+     Maka pl_item_no nya adalah BAXVLPL388020GR
    - Pada vendor VELO, part number muncul di awal item block dan sering berupa alphanumeric panjang.
    - Jika part number terpotong ke beberapa line, gabungkan menjadi satu string utuh.
    - Contoh:

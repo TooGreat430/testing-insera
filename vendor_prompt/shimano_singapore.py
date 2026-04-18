@@ -48,21 +48,13 @@ Struktur umum invoice SHIMANO (SINGAPORE):
    - Jangan membuat nomor urut sendiri.
 
 3. inv_spart_item_no
-   - Ambil dari kolom "SPART / CPART".
-   - Prioritas:
-     1) nilai sebelum "/" sebagai SPART
-     2) jika sisi kiri kosong, gunakan nilai setelah "/" sebagai fallback
-     3) hanya jika kolom SPART / CPART benar-benar tidak ada, baru fallback ke product/material code di awal row
-   - Contoh:
-     - "AMT401EJHFPRX085 / AMT401EJHFPRX085" -> inv_spart_item_no = "AMT401EJHFPRX085"
-     - "ACSLG30010148 / ACSLG30010148" -> inv_spart_item_no = "ACSLG30010148"
-     - "ARDTZ31AGSD / ARDTZ31AGSD" -> inv_spart_item_no = "ARDTZ31AGSD"
-   - Jangan ambil:
-     - P/O No.
-     - CTN NO.
-     - quantity
-     - price
-     - amount
+   - Value dari ambil inv_spart_item_no dapat diambil dari header/kolom "SPART/CPART"
+   - contoh value dari inv_spart_item_no:
+     AMT401EJHFPRX085 
+     AMT401EJGR9RX170 
+     ASTEF5002RV7AL 
+   - Value dari inv_spart_item_no tidak mungkin diawali dengan angka
+   - Jangan mengambil dari lokasi lain selain header/kolom "SPART/CPART"
 
 4. inv_description
    - Ambil deskripsi barang dari kolom DESCRIPTION saja.
@@ -168,16 +160,14 @@ Struktur umum packing list SHIMANO (SINGAPORE):
      - "P/O No.45324353" -> pl_customer_po_no = "45324353"
      - "P/O No. 45322131" -> pl_customer_po_no = "45322131"
 
-2. pl_item_no
-   - Ambil dari kolom "SPART / CPART".
-   - Prioritas:
-     1) nilai sebelum "/"
-     2) jika kosong, nilai setelah "/"
-     3) jika kolom itu tidak ada, fallback ke product/material code di awal block
-   - Contoh:
-     - "AMT401EJHFPRX085 / AMT401EJHFPRX085" -> pl_item_no = "AMT401EJHFPRX085"
-     - "ACSLG30010148 / ACSLG30010148" -> pl_item_no = "ACSLG30010148"
-     - "ARDTZ31AGSD / ARDTZ31AGSD" -> pl_item_no = "ARDTZ31AGSD"
+2. pl_item_no:
+   - Value dari ambil pl_item_no dapat diambil dari header/kolom "SPART/CPART"
+   - contoh value dari pl_item_no:
+     AMT401EJHFPRX085 
+     AMT401EJGR9RX170 
+     ASTEF5002RV7AL 
+   - Value dari pl_item_no tidak mungkin diawali dengan angka
+   - Jangan mengambil dari lokasi lain selain header/kolom "SPART/CPART"
 
 3. pl_description
    - Ambil deskripsi barang dari kolom DESCRIPTION saja.

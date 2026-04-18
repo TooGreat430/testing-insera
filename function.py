@@ -58,6 +58,8 @@ DETAIL_RECHECK_NUM_FIELDS = {
     if str(v).strip().lower() == "number"
 }
 
+CBM_TO_CUFT = 35.3147
+
 storage_client = storage.Client() 
 genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, )
 
@@ -1598,6 +1600,28 @@ def _build_total_from_detail_and_container(detail_rows: list, container_rows):
 
     return [total_obj]
 
+def _volume_values_match_with_conversion(left_value, right_value, eps=None, factor=CBM_TO_CUFT):
+    lv = _to_float(left_value)
+    rv = _to_float(right_value)
+
+    if lv is None or rv is None:
+        return False
+
+    # toleransi kecil untuk rounding OCR / pembulatan dokumen
+    if eps is None:
+        eps = max(0.01, max(abs(lv), abs(rv)) * 0.0001)
+
+    if abs(lv - rv) <= eps:
+        return True
+
+    if abs(lv - (rv * factor)) <= eps:
+        return True
+
+    if abs(lv - (rv / factor)) <= eps:
+        return True
+
+    return False
+
 def _validate_total_rows(total_data, detail_rows: list):
     if total_data is None:
         return None
@@ -1654,11 +1678,14 @@ def _validate_total_rows(total_data, detail_rows: list):
                 f"Total: {left_label} != {right_label} ({left_val} vs {right_val})"
             )
 
-    def _cmp_volume_num_with_unit_fallback(left_key: str, right_key: str, eps=0.01, factor=35.315):
+    def _cmp_volume_num_with_unit_fallback(left_key: str, right_key: str, eps=None, factor=35.3147):
         lv = _to_float(total_obj.get(left_key))
         rv = _to_float(total_obj.get(right_key))
         if lv is None or rv is None:
             return False
+
+        if eps is None:
+            eps = max(0.01, max(abs(lv), abs(rv)) * 0.0001)
 
         if abs(lv - rv) <= eps:
             return True
@@ -3358,8 +3385,12 @@ def _validate_packing_rows(rows: list):
             _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
         if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
             _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
-        if declared_vol is not None and abs(sum_vol - declared_vol) > 0.01:
-            _append_err(r, f"PackingList: total_volume mismatch (sum {sum_vol}, doc {declared_vol})")
+        if declared_vol is not None and not _volume_values_match_with_conversion(sum_vol, declared_vol):
+            _append_err(
+                r,
+                f"PackingList: total_volume mismatch "
+                f"(sum {sum_vol}, doc {declared_vol})"
+            )
         if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
             _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
 
@@ -3584,13 +3615,21 @@ def _validate_bl_rows(rows: list):
                 _append_err(r, f"BL: missing {k}")
 
         # seller compare 20 huruf pertama setelah normalisasi
-        _compare_text_values(
-            r,
-            r.get("inv_vendor_name"),
-            r.get("bl_seller_name"),
-            "BL: bl_seller_name != inv_vendor_name",
-            normalize_fn=norm_prefix_20
-        )
+        inv_vendor_name = r.get("inv_vendor_name")
+        bl_seller_name = r.get("bl_seller_name")
+
+        if not _is_null(inv_vendor_name) and not _is_null(bl_seller_name):
+            sim = _company_name_similarity(inv_vendor_name, bl_seller_name)
+
+            if sim >= 0.88:
+                # samakan value supaya downstream compare / output konsisten
+                r["bl_seller_name"] = inv_vendor_name
+            else:
+                _append_err(
+                    r,
+                    f"BL: bl_seller_name != inv_vendor_name "
+                    f"(inv {inv_vendor_name}, bl {bl_seller_name}, sim {round(sim, 4)})"
+                )
 
 
 def _validate_coo_rows(rows: list):

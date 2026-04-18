@@ -143,6 +143,7 @@ Struktur umum packing list HAOMENG:
 
 5. pl_package_unit
    - pl_package_unit hanya boleh diambil dari BUKTI package, bukan dari quantity unit.
+   - lokasi pl_package_unit biasanya ada di akhir ketika package di total contoh: TOTAL= 1,985.00 cartons. Maka pl_package_unit yaitu "CT"
    - Canonical value yang diperbolehkan hanya:
      ["CT", "PX", "BL", "PXCT", "null"]
    - Mapping canonical:
