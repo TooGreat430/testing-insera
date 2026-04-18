@@ -48,13 +48,24 @@ Struktur umum invoice SHIMANO (SINGAPORE):
    - Jangan membuat nomor urut sendiri.
 
 3. inv_spart_item_no
-   - Value dari ambil inv_spart_item_no dapat diambil dari header/kolom "SPART/CPART"
-   - contoh value dari inv_spart_item_no:
-     AMT401EJHFPRX085 
-     AMT401EJGR9RX170 
-     ASTEF5002RV7AL 
-   - Value dari inv_spart_item_no tidak mungkin diawali dengan angka
-   - Jangan mengambil dari lokasi lain selain header/kolom "SPART/CPART"
+   - HANYA ambil dari sel/area di kolom "SPART / CPART" pada row item yang sama.
+   - Jangan pernah mengambil dari kolom DESCRIPTION, meskipun ada kode alfanumerik yang terlihat jelas di sana.
+   - Product/material code di awal block description seperti:
+     - 22E9901D036
+     - 20RJ1480126
+     - 239P2000356
+     BUKAN inv_spart_item_no. Itu adalah code dari area DESCRIPTION.
+   - inv_spart_item_no harus berasal dari area kanan di bawah header "SPART / CPART", bukan dari token pertama yang terbaca pada row.
+   - Jika OCR membaca DESCRIPTION lebih dulu lalu SPART / CPART belakangan, tetap pilih value dari kolom "SPART / CPART".
+   - Jika value pada kolom "SPART / CPART" berbentuk:
+     - AMT401EJHFPRX085 / AMT401EJHFPRX085
+     maka ambil 1 nilai spart saja:
+     - "AMT401EJHFPRX085"
+   - Jika kiri dan kanan berbeda, ambil value sebelah kiri slash sebagai inv_spart_item_no kecuali ada rule vendor lain yang menyatakan sebaliknya.
+   - inv_spart_item_no tidak boleh diawali angka.
+   - Jika candidate diawali angka, candidate tersebut PASTI SALAH untuk inv_spart_item_no dan harus ditolak.
+   - Jika tidak ada bukti yang jelas pada kolom "SPART / CPART", isi "null".
+   - Jangan fallback ke DESCRIPTION.
 
 4. inv_description
    - Ambil deskripsi barang dari kolom DESCRIPTION saja.
@@ -160,14 +171,19 @@ Struktur umum packing list SHIMANO (SINGAPORE):
      - "P/O No.45324353" -> pl_customer_po_no = "45324353"
      - "P/O No. 45322131" -> pl_customer_po_no = "45322131"
 
-2. pl_item_no:
-   - Value dari ambil pl_item_no dapat diambil dari header/kolom "SPART/CPART"
-   - contoh value dari pl_item_no:
-     AMT401EJHFPRX085 
-     AMT401EJGR9RX170 
-     ASTEF5002RV7AL 
-   - Value dari pl_item_no tidak mungkin diawali dengan angka
-   - Jangan mengambil dari lokasi lain selain header/kolom "SPART/CPART"
+2. pl_item_no
+   - HANYA ambil dari sel/area di kolom "SPART / CPART" pada row item packing list yang sama.
+   - Jangan pernah mengambil dari kolom DESCRIPTION.
+   - Product/material code di awal block description BUKAN pl_item_no.
+   - pl_item_no harus berasal dari area kanan di bawah header "SPART / CPART".
+   - Jika OCR reading order mem-flatten kolom dan DESCRIPTION terbaca lebih dulu, tetap pilih value dari kolom "SPART / CPART", bukan token alfanumerik pertama.
+   - Jika value berbentuk:
+     - AMT401EJHFPRX085 / AMT401EJHFPRX085
+     maka pl_item_no = "AMT401EJHFPRX085"
+   - pl_item_no tidak boleh diawali angka.
+   - Jika candidate diawali angka, candidate tersebut salah dan harus ditolak.
+   - Jika tidak ada bukti jelas pada kolom "SPART / CPART", isi "null".
+   - Jangan fallback ke DESCRIPTION.
 
 3. pl_description
    - Ambil deskripsi barang dari kolom DESCRIPTION saja.

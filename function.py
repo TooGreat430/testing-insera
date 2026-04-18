@@ -696,6 +696,15 @@ ATURAN KHUSUS UNTUK COO/RCEP:
   - gabungkan bagian invoice number yang alfanumerik
   - abaikan tanggal invoice di bawahnya
 - Jika halaman ini adalah continuation sheet dan invoice number tidak muncul eksplisit, isi "null".
+- Jika dokumen COO memiliki invoice number pada kolom 13 yang setelah normalisasi sama dengan inv_invoice_no,
+  maka dokumen COO tersebut WAJIB dipakai untuk ekstraksi field COO item-level.
+- Nilai invoice number pada COO boleh terpotong ke beberapa baris dan harus digabung.
+- Contoh:
+  SHXM22-2512000
+  393
+  DEC. 31, 2025
+  => coo_invoice_no = "SHXM22-2512000393"
+- Jangan isi semua field COO sebagai null hanya karena invoice number pada COO ditulis split multiline.
 
 JANGAN AMBIL:
 - Certificate No.

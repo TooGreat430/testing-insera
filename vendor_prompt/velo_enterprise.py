@@ -65,8 +65,6 @@ Struktur umum invoice VELO:
 3. inv_spart_item_no
    - Ambil part number dari kolom "Item/Part no.".
    - Pada vendor VELO, part number berada di bawah seq dan sering wrap ke baris berikutnya.
-   - Dalam beberapa hasil OCR / flatten layout, part number yang sama juga bisa ikut muncul tepat di bawah line "P.O. NO:..." sebelum description barang.
-   - Jika ada line alphanumeric panjang di bawah "P.O. NO:..." yang jelas merupakan identitas item, line tersebut tetap diperlakukan sebagai inv_spart_item_no.
    - Gabungkan seluruh fragmen part number yang terpotong menjadi satu string tanpa spasi tambahan.
    - Scan 1-2 line lanjutan di bawahnya untuk memastikan suffix part number yang terpotong ikut tergabung penuh.
    - Contoh:
@@ -74,13 +72,11 @@ Struktur umum invoice VELO:
      - HBGVLVLG2154 + 0001R -> "HBGVLVLG21540001R"
      - FRXVLIS24PFK0 + 100R -> "FRXVLIS24PFK0100R"
    - Jika urutan baca OCR menjadi:
-     - P.O. NO:45322358
-     - BAXVLPLG38802
-     - 0R
-     - BATTERY HOLDER DI2; VELO; ...
+       06
+       BAXVLPLG38802
+       0R
      maka:
      - inv_spart_item_no = "BAXVLPLG388020R"
-     - inv_description dimulai dari "BATTERY HOLDER DI2; VELO; ..."
    - Jangan ambil:
      - seq
      - customer PO number
@@ -88,6 +84,7 @@ Struktur umum invoice VELO:
      - quantity
      - unit price
      - amount
+   - Pastikan inv_spart_item_no tidak ada yang tertinggal
 
 4. inv_description
    - Ambil deskripsi barang dari kolom Description.

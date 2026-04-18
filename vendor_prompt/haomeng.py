@@ -142,22 +142,25 @@ Struktur umum packing list HAOMENG:
      pl_quantity = quantity_per_package × pl_package_count
 
 5. pl_package_unit
-   - pl_package_unit hanya boleh diambil dari BUKTI package, bukan dari quantity unit.
-   - lokasi pl_package_unit biasanya ada di akhir ketika package di total contoh: TOTAL= 1,985.00 cartons. Maka pl_package_unit yaitu "CT"
-   - Canonical value yang diperbolehkan hanya:
+   - pl_package_unit adalah field package, BUKAN quantity unit.
+   - Untuk vendor HAOMENG, pl_package_unit boleh berasal dari bukti doc-level lalu diterapkan ke semua line item pada packing list yang sama.
+   - Jika pada dokumen ada total summary seperti:
+     - "TOTAL= 1,985.00 cartons"
+     - "TOTAL ... carton"
+     - "cartons"
+     maka pl_package_unit untuk SEMUA line item pada dokumen tersebut = "CT".
+   - Jika Mark & Nos berupa rentang karton (mis. 1-3, 31-54, 147-396) dan/atau ada referensi "C/NO.:A", itu juga merupakan bukti kuat bahwa package unit = carton.
+   - Jadi untuk HAOMENG:
+     - ada total summary cartons -> pl_package_unit = "CT" untuk semua row
+     - jangan isi "null" hanya karena unit package tidak diulang pada setiap row
+   - Canonical value yang diperbolehkan:
      ["CT", "PX", "BL", "PXCT", "null"]
    - Mapping canonical:
-     - CTN / CARTON / CARTONS -> CT
+     - CTN / CTNS / CARTON / CARTONS -> CT
      - PLT / PALLET / PALLETS -> PX
      - BALE / BALES -> BL
-     - Jika lebih dari 1 tipe package unit -> PXCT
-   - Khusus vendor HAOMENG:
-     - Mark & Nos berupa rentang nomor karton (contoh 1-3, 31-54, 147-396)
-     - Ada total summary "1,985.00 cartons"
-     - Ada referensi "C/NO.:A" yang menunjukkan carton numbering
-     Maka pl_package_unit untuk line item seperti ini = "CT"
+     - jika lebih dari 1 tipe package unit -> PXCT
    - Jangan ambil SET / PCS sebagai pl_package_unit.
-   - Jika tidak ada bukti package unit, isi "null".
 
 6. pl_package_count
    - Hitung jumlah package fisik line item.
