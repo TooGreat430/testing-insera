@@ -4,6 +4,36 @@ import json
 # HEADER FIELDS (doc-level)
 # =========================
 
+UNNULLABLE_FIELD = """
+{
+  "inv_customer_po_no": "string",
+  "inv_spart_item_no": "string",
+  "inv_description": "string",
+  "inv_quantity": "number",
+  "inv_quantity_unit": "string",
+  "inv_unit_price": "number",
+  "inv_amount": "number",
+
+  "pl_customer_po_no": "string",
+  "pl_item_no": "string",
+  "pl_description": "string",
+  "pl_quantity": "number",
+  "pl_package_unit": "string",
+  "pl_package_count": "number",
+  "pl_nw": "number",
+  "pl_gw": "number",
+  "pl_volume": "number",
+
+  "bl_description": "string",
+  "bl_hs_code": "string",
+
+  "coo_description": "string",
+  "coo_hs_code": "string",
+  "coo_quantity": "number",
+  "coo_amount": "number",
+  "coo_criteria": "string",
+}
+"""
 
 
 DETAIL_CSV_FIELD_ORDER_FULL = [
@@ -572,6 +602,33 @@ SANGAT PENTING (ANTI-SALAH INDEX):
 Saya berikan "ANCHOR INDEX" untuk item yang harus Anda ekstrak.
 Anda WAJIB mengembalikan output HANYA untuk index berikut:
 {anchors_json}
+
+- Anchor terdiri dari dua sumber:
+ 1) Invoice anchor (utama)
+ 2) PL anchor (pendukung)
+
+- Invoice anchor digunakan untuk menjaga identitas row:
+ inv_invoice_no, inv_customer_po_no, inv_spart_item_no, inv_description, inv_quantity, inv_quantity_unit, inv_unit_price, inv_price_unit, inv_amount.
+
+- Field inv_invoice_no WAJIB selalu ada di setiap row output dan nilainya HARUS sama persis dengan inv_invoice_no pada anchor row yang bersesuaian.
+- PL anchor digunakan sebagai bukti pendukung agar model memilih pasangan row Packing List yang benar:
+ pl_customer_po_no, pl_description, pl_quantity.
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. JANGAN MENGARANG.
+- Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
+- Field hanya boleh diisi dari dokumen sesuai prefix-nya:
+ inv_* → Invoice
+ pl_* → Packing List
+ bl_* → Bill of Lading
+ coo_* → Certificate of Origin
+- Jika dokumen tersedia, field coo_* WAJIB dicari dari COO dan tidak boleh diabaikan.
+
+OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
+{DETAIL_LINE_SCHEMA_TEXT}
+
+FIELD YANG TIDAK BOLEH NULL:
+{UNNULLABLE_FIELD}
 
 GENERAL KNOWLEDGE:
 {vendor_section}
