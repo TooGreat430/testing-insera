@@ -19,6 +19,14 @@ PACKING LIST (PL):
 4. `pl_quantity`: Ekstrak angka dari kolom "Quantity" yang ditandai dengan clue "TOTAL". Apabila terdapat beberapa baris dengan clue "TOTAL", maka jumlahkan semua nilai angka pada line item tersebut untuk mendapatkan `inv_quantity`.
 5. `pl_package_unit`: 
     - Ekstrak unit kemasan dari keterangan nomor paket (misal CTN No. 2).
+    - Lokasi dari pl_package_unit terletak sebelah dari value pl_package_count. Contoh:
+      CTN NO. 11- 16
+      (          10 C/T)
+
+      Maka valuenya adalah "CT"
+      Tapi jika ada dua unit seperti ini:
+      PLT NO. 15- 16
+      ( 2 P/T... 32 C/T)
     - Apabila nama paket seperti "CTN No. 2", maka unit kemasannya adalah "CT".
     - Apabila nama paket seperti "Plt No. 1", maka unit kemasannya adalah "PX".
     - Apabila unit dalam satu line item  terdapat beberapa jenis, maka ubah package unit line item tersebut menjadi "PK".
