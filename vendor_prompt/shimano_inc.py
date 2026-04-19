@@ -17,21 +17,33 @@ PACKING LIST (PL):
 2. `pl_item_no`: Ekstrak nilai teks setelah kata "PART#" atau "S.PART#".
 3. `pl_description`: Ekstrak teks deskripsi barang utama.
 4. `pl_quantity`: Ekstrak angka dari kolom "Quantity" yang ditandai dengan clue "TOTAL". Apabila terdapat beberapa baris dengan clue "TOTAL", maka jumlahkan semua nilai angka pada line item tersebut untuk mendapatkan `inv_quantity`.
-5. `pl_package_unit`: 
-    - Ekstrak unit kemasan dari keterangan nomor paket (misal CTN No. 2).
-    - pl_package_unit tidak dapat "null", jadi tolong pahami dan cari package unitnya.
-    - Lokasi dari pl_package_unit terletak sebelah dari value pl_package_count. Contoh:
-      CTN NO. 11- 16
-      (          10 C/T)
+5. pl_package_unit:
+    - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
+    - Sumber bukti yang VALID untuk pl_package_unit hanya:
+      1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail (Contoh: pada dokumen ada header bernama "Carton No.")
+      2) unit yang menempel langsung pada package_count
+      3) header rasio kemasan seperti PCS/CTN, SET/CTN, QTY/CARTON -> ambil unit packagenya, BUKAN unit quantity
 
-      Maka valuenya adalah "CT"
-      Tapi jika ada dua unit seperti ini:
-      PLT NO. 15- 16
-      ( 2 P/T... 32 C/T)
-      Maka valuenya adalah "PK"
-    - Apabila nama paket seperti "CTN No. 2", maka unit kemasannya adalah "CT".
-    - Apabila nama paket seperti "Plt No. 1", maka unit kemasannya adalah "PX".
-    - Apabila unit dalam satu line item  terdapat beberapa jenis, maka ubah package unit line item tersebut menjadi "PK".
+    - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
+      1) kolom quantity / qty / pcs / sets / units
+      2) inv_quantity_unit
+      3) unit penjualan barang
+      4) unit yang hanya menjelaskan isi per kemasan
+
+    - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
+
+    - pl_package_unit harus final dalam canonical value berikut saja: ["CT", "PX", "BL", "PXCT", "null"]
+      pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
+
+    - Mapping canonical:
+      - CTN / CARTON / CARTONS -> CT
+      - PLT / PALLET / PALLETS -> PX
+      - BALE / BALES -> BL
+      - Jika lebih dari 1 tipe package unit -> PXCT
+        - Contoh:
+          - 2 P/T   32 C/T
+            maka pl_package_unit = PXCT, karena memiliki lebih dari 1 tipe package unit (P/T -> Pallet dan C/T -> Carton) 
+            
 6. `pl_package_count`:
     - Ekstrak angka jumlah kemasan yang tertera sebelum unit kemasan di bawah nomor package (misalnya dari "(       20 C/T)", ekstrak 20).
     - Apabila pada 1 line item terdapat beberapa baris dengan nilai jumlah kemasan, maka jumlahkan semua nilai angka tersebut untuk mendapatkan `pl_package_count`.
