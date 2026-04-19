@@ -27,6 +27,7 @@ PACKING LIST (PL):
       Tapi jika ada dua unit seperti ini:
       PLT NO. 15- 16
       ( 2 P/T... 32 C/T)
+      Maka valuenya adalah "PX"
     - Apabila nama paket seperti "CTN No. 2", maka unit kemasannya adalah "CT".
     - Apabila nama paket seperti "Plt No. 1", maka unit kemasannya adalah "PX".
     - Apabila unit dalam satu line item  terdapat beberapa jenis, maka ubah package unit line item tersebut menjadi "PK".
