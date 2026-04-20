@@ -5034,8 +5034,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
         # =========================================
         _apply_header_to_rows(all_rows, header_obj)
-        _postprocess_package_unit_fields(rows)
-        _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
+        _postprocess_package_unit_fields(all_rows)
+        _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
 
         _reset_match_fields(all_rows)
 
