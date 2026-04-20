@@ -39,6 +39,7 @@ UNNULLABLE_FIELD = """
 DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_score",
     "match_description",
+    "confidence_score",
 
     "inv_invoice_no",
     "inv_invoice_date",
@@ -182,6 +183,7 @@ HEADER_SCHEMA_TEXT = [
 # CONTENT FIELDS (line-level)
 # =========================
 DETAIL_LINE_SCHEMA_TEXT = """{
+  "confidence_score": "number",
   "inv_customer_po_no": "string",
   "inv_seq": "number",
   "inv_spart_item_no": "string",
@@ -637,9 +639,6 @@ Anda WAJIB mengembalikan output HANYA untuk index berikut:
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS. JANGAN MENGARANG.
 - PAHAMI DOKUMEN DAN EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA
-- Cara melakukan mapping COO adalah dengan membandingkan antara inv_description dan coo_description
-  inv_description dan coo_description TIDAK SELALU SAMA PERSIS. MAP BERDASARKAN KEMIRIPAN!
-  Perhatikan juga line itemnya!
 - Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
 - Tidak boleh JSON literal null → gunakan "null".
 - Untuk FIELD BERTIPE NUMBER jika tidak ada → isi 0.
@@ -650,6 +649,7 @@ ATURAN:
   bl_* → Bill of Lading, tidak boleh dari dokumen lain
   coo_* → Certificate of Origin, tidak boleh dari dokumen lain
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
+- confidence_score adalah angka antara 1-100 yang merepresentasikan seberapa yakin model bahwa hasil ekstraksi sudah benar dan sesuai dengan dokumen.
 - Jika terdapat merged cell vertikal yang mencakup beberapa line item / beberapa row, maka nilai pada merged cell tersebut HANYA boleh diassign ke line item paling atas dalam merge group.
 - Semua line item lain yang berada di bawah merged cell yang sama WAJIB diisi 0 untuk field numerik yang berasal dari merged cell tersebut.
 - Jangan melakukan pembagian proporsional, jangan melakukan averaging, dan jangan menduplikasi nilai merged cell ke semua row.

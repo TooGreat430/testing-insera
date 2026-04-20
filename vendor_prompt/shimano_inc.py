@@ -39,7 +39,7 @@ PACKING LIST (PL):
 
     - pl_package_unit harus final dalam canonical value berikut saja: ["CT", "PX", "BL", "PXCT", "null"]
       pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
-      DILARANG KERAS RETURN SELAIN VALUE-VALUE TERSEBUT!
+      DILARANG KERAS MELAKUKAN RETURN SELAIN VALUE-VALUE TERSEBUT!
 
 
     - Mapping canonical:
