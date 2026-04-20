@@ -508,6 +508,10 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
     2P/T	<	32C/T &		83C/T
     Maka total package adalah 85 (2 + 83 = 85) karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T).
 
+    Atau seperti ini:
+    Total Packages: 4 PLT (108 CTN) & 95 CTN
+    Maka pl_total_package = 4 PLT + 95 CTN = 99 karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (PLT karena satu PLT bisa berisi beberapa CTN, sedangkan CTN tidak bisa berisi PLT).
+
 11. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.

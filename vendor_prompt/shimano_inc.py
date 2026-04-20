@@ -61,6 +61,7 @@ PACKING LIST (PL):
         CTN No. 2
         (       30 C/T)
         Maka: pl_package_count untuk line item A adalah 20 + 30 = 50.
+    - Jika pada suatu line item tidak ditemukan angka jumlah kemasan yang valid, maka biarkan `pl_package_count` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
 7. `pl_nw`: 
     - Ekstrak nilai angka dari kolom "Net Weight" baris atas yang tidak ada simbol "@" (Misal: ada "3.5Kg" dan "@0.5Kg", maka ekstrak yang "3.5").
     - Apabila pada 1 line item terdapat beberapa baris dengan nilai "Net Weight", maka jumlahkan semua nilai angka tersebut untuk mendapatkan `pl_nw`.
@@ -73,6 +74,7 @@ PACKING LIST (PL):
         @0.25Kg
 
         Maka: pl_nw untuk line item A adalah 3.5 + 2.5 = 6.0 (ignore yang ada simbol "@").
+    - Jika pada suatu line item tidak ditemukan nilai angka Net Weight yang valid, maka biarkan `pl_nw` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
 
 8. `pl_gw`: 
     - Ekstrak nilai angka dari kolom "Gross Weight" baris atas.
@@ -86,6 +88,8 @@ PACKING LIST (PL):
         @0.25Kg
 
         Maka: pl_gw untuk line item A adalah 14.40 + 10.00 = 24.40 (ignore yang ada simbol "@").
+    - Jika pada suatu line item tidak ditemukan nilai angka Gross Weight yang valid, maka biarkan `pl_gw` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
+    
 9. `pl_volume`: 
     - Ekstrak nilai angka dari kolom "Measure" baris atas (misalnya dari "0.080M3", ekstrak 0.080).
     - Biasanya pl_volume ditandai dengan satuan M3.
@@ -99,6 +103,7 @@ PACKING LIST (PL):
         @0.002M3
 
         Maka: pl_volume untuk line item A adalah 0.080 + 0.050 = 0.130 (ignore yang ada simbol "@").
+    - Jika pada suatu line item tidak ditemukan nilai angka Measure yang valid, maka biarkan `pl_volume` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
 
 BILL OF LADING (BL):
 1. `bl_description`: 
