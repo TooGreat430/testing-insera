@@ -93,21 +93,31 @@ PACKING LIST (PL)
 BILL OF LADING (BL)
 
 1. bl_description dan bl_hs_code:
-   - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null saja.
+   - bl_description dimapping dengan inv_spart_item_no. 
+   - Pada bl_description terdapat nomor spart item. Contoh:
+     - FORK SUSPENSION GSFM3010APV00034, 
+       maka nomor spart item = GSFM3010APV00034.
+     Jika nomor spart item pada BL sama dengan inv_spart_item_no, maka bl_description di mapping dengan invoice.
+   - Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null saja.
    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya.
    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
 
    - Contoh:
-     FRAME PART A-F3306-1 HS NUMBER: 8714.91
-     FRAME PART A-HG009 HS NUMBER: 8714.91
-     FRAME PART A-HG011 HS NUMBER: 8714.91
-     FRAME PART A-HG045 HS NUMBER: 8714.91
-     FRAME TUBING HS NUMBER: 8714.91
+     - FORK SUSPENSION GSFM3010APV00034
+       HS CODE: 8714.91
+     - FORK SUSPENSION GSFNEXDSV0000261
+       HS CODE: 8714.91
+     - FORK SUSPENSION GSFNEXE25DSV0830
+       HS CODE: 8714.91
+     - FORK SUSPENSION GSFNEXE25PDV0021
+       HS CODE: 8714.91
+     - FORK SUSPENSION GSFNVX30DSV00484
+       HS CODE: 8714.91
 
-     - Misalkan pada inv_description ada value FRAME PART AF-9F-0270, dimana itu tidak ada pada description item BL. 
+     - Misalkan pada inv_spart_item_no adalah GSFB3010AXV00047, dimana itu tidak ada pada description item BL. 
        Maka bl_description dan bl_hs_code isi null saja.
-     - Misalkan pada inv_description ada value FRAME PART A-HG009, dimana itu ada pada description item BL.
-       Maka bl_description isi FRAME PART A-HG009 dan bl_hs_code isi 8714.91
+     - Misalkan pada inv_spart_item_no adalah GSFM3010APV00034, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFM3010APV00034".
+       Maka bl_description isi FORK SUSPENSION GSFM3010APV00034 dan bl_hs_code isi 8714.91
 
 CERTIFICATE OF ORIGIN (COO)
 
