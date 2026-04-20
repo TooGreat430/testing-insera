@@ -649,6 +649,15 @@ ATURAN:
   - row ke-2: pl_volume = 0
   - row ke-3: pl_volume = 0
 
+- Apabila pada package count terdapat dua atau lebih value yang berbeda, tambahkan values tersebut dengan package unit terbesar
+  Contoh:
+  ( 2 P/T     &     83 C/T)
+  < 32 C/T>
+  Artinya: Total package count terdapat 2 palet yang berisi 32 carton dan 80 carton.
+  Maka: pl_total_package = 2 P/T + 83 C/T = 82
+  Karena: satuan P/T > C/T, sehingga yang ditambahkan adalah 2 P/T dan bukan 32 P/T.
+
+
 - Apabila ditemukan dokumen dengan format seperti berikut:
   [2006722]               Battery; BT-DN300;        Part# KBTDN3003
   PT. IS                  Spec: Bulk                PRODUCT CD 27HK000A066
