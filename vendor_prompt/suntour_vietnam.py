@@ -69,12 +69,11 @@ PACKING LIST (PL)
      - BL (Ballet)
      - PK (Unit campuran contoh: Carton dan Pallet)
        Selain value diatas itu bukan pl_package_unit jadi tolong teliti dalam mengekstrak
-   - Lokasi dari pl_package_unit biasnya ada pada header. Contoh:
-   CARTON NO. | CARTON # | ITEM # CUST ITEM No | Unit | Q'ty | N.W.(Kg) | G.W.(Kg)
-   Maka value dari pl_package_unit adalah "CT"
-Unit Volume
-   - Pada format vendor ini, gunakan unit kemasan sebagaimana tertulis, misalnya "CARTONS"
-   - Jangan ubah ke unit lain.
+   - Lokasi dari pl_package_unit ada pada header kolom. Contoh:
+      CARTON NO. | CARTON # | ITEM # CUST ITEM No | Unit | Q'ty | N.W.(Kg) | G.W.(Kg)
+      karena kolom "CARTON NO." dan "CARTON #" berarti tipe package adalah Carton.
+      Maka value dari pl_package_unit adalah "CT" 
+   - Valuenya pasti pl_package_unit = "CT" untuk semua line item
 
 6. pl_package_count:
    - Ekstrak jumlah karton per item.
