@@ -63,6 +63,16 @@ PACKING LIST (PL)
 
 5. pl_package_unit:
    - Ekstrak jenis kemasan dari statement total packing atau dari nama kolom package (misal "CARTON").
+   - Value dari pl_package_unit hanya ada 4:
+     - PX (Pallet)
+     - CT (Carton)
+     - BL (Ballet)
+     - PK (Unit campuran contoh: Carton dan Pallet)
+       Selain value diatas itu bukan pl_package_unit jadi tolong teliti dalam mengekstrak
+   - Lokasi dari pl_package_unit biasnya ada pada header. Contoh:
+   CARTON NO. | CARTON # | ITEM # CUST ITEM No | Unit | Q'ty | N.W.(Kg) | G.W.(Kg)
+   Maka value dari pl_package_unit adalah "CT"
+Unit Volume
    - Pada format vendor ini, gunakan unit kemasan sebagaimana tertulis, misalnya "CARTONS"
    - Jangan ubah ke unit lain.
 
