@@ -756,6 +756,9 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
             candidate = _cleanup_candidate(lines[j])
             if candidate and _looks_like_invoice_no_candidate(candidate):
                 return candidate
+                
+    if doc_type == "coo":
+        return ""
 
     # fallback regex generik
     generic_candidates = re.findall(
@@ -1213,6 +1216,40 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str):
 
     if total_pages == 0:
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
+
+    # KHUSUS COO:
+    # jika trace whole-document gagal, fallback HARUS treat 1 file COO
+    # sebagai 1 invoice reference document-level.
+    # Jangan split page-by-page, karena continuation sheet biasanya tidak
+    # menampilkan ulang invoice_no dan body table bisa memunculkan SKU.
+    if doc_type == "coo":
+        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(
+            local_pdf_path,
+            doc_type="coo"
+        )
+        only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
+
+        if not only_key:
+            raise Exception(
+                f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(local_pdf_path)}"
+            )
+
+        print(
+            f"[GROUPING][COO_PAGE_FALLBACK][SINGLE_DOC_KEY] "
+            f"file='{os.path.basename(local_pdf_path)}' "
+            f"coo_invoice_no='{raw_invoice_no}' "
+            f"group_key='{only_key}'"
+        )
+
+        return [{
+            "group_key": only_key,
+            "invoice_no": raw_invoice_no if raw_invoice_no else only_key,
+            "path": local_pdf_path,
+            "source_file": os.path.basename(local_pdf_path),
+            "page_range": f"1-{total_pages}",
+            "is_temp": False,
+            "doc_type": doc_type,
+        }]
 
     page_invoice_keys = []
     last_known_key = ""
@@ -4934,22 +4971,23 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # VENDOR CONTEXT
         # =========================
         invoice_pdf_for_vendor = None
-        if invoice_paths and isinstance(invoice_paths, list) and invoice_paths[0]:
-            invoice_pdf_for_vendor = invoice_paths[0]
+        if normalized_pdf_paths and isinstance(normalized_pdf_paths, list) and normalized_pdf_paths[0]:
+            invoice_pdf_for_vendor = normalized_pdf_paths[0]
 
-        # kalau ada manual override dari request / parameter, isi di sini
-        forced_vendor_id = normalize_vendor_id(locals().get("vendor_id", "default"))
+        vendor_id = "default"
+        vendor_prompt_text = ""
 
-        vendor_ctx = resolve_vendor_context(
-            pdf_path=invoice_pdf_for_vendor,
-            forced_vendor_id=forced_vendor_id,
-        )
-
-        vendor_id = vendor_ctx["vendor_id"]
-        vendor_prompt_text = vendor_ctx["vendor_prompt_text"]
-
-        print(f"[VENDOR] source={vendor_ctx['vendor_source']} vendor_id={vendor_id}")
-        print(f"[VENDOR] prompt_loaded={bool(vendor_prompt_text)}")
+        try:
+            if invoice_pdf_for_vendor:
+                vendor_id = detect_vendor_from_invoice_pdf(invoice_pdf_for_vendor)
+                vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+                print(f"[VENDOR DETECTED] vendor_id={vendor_id}")
+            else:
+                print("[VENDOR DETECTED] invoice path tidak tersedia, pakai default")
+        except Exception as e:
+            print(f"[VENDOR DETECTION FALLBACK] err={e}")
+            vendor_id = "default"
+            vendor_prompt_text = ""
 
         # BATCH DETAIL EXTRACTION
         jobs = []
