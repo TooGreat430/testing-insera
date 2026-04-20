@@ -48,20 +48,20 @@ Struktur umum invoice SHIMANO (SINGAPORE):
    - Jangan membuat nomor urut sendiri.
 
 3. inv_spart_item_no
-   - HANYA ambil dari sel/area di kolom "SPART / CPART" pada row item yang sama.
-   - Jangan pernah mengambil dari kolom DESCRIPTION, meskipun ada kode alfanumerik yang terlihat jelas di sana.
-   - Product/material code di awal block description seperti:
+   - HANYA ambil dari kolom "SPART / CPART" pada row item yang sama.
+   - JANGAN AMBIL dari kolom DESCRIPTION, meskipun ada kode alfanumerik yang terlihat jelas di sana.
+   - JANGAN AMBIL product/material code di awal block description seperti:
      - 22E9901D036
      - 20RJ1480126
      - 239P2000356
-     BUKAN inv_spart_item_no. Itu adalah code dari area DESCRIPTION.
-   - inv_spart_item_no harus berasal dari area kanan di bawah header "SPART / CPART", bukan dari token pertama yang terbaca pada row.
+     tapi ambil dari kolom "SPART / CPART"
+   - inv_spart_item_no harus berasal dari kolom "SPART / CPART", bukan dari token pertama yang terbaca pada row.
    - Jika OCR membaca DESCRIPTION lebih dulu lalu SPART / CPART belakangan, tetap pilih value dari kolom "SPART / CPART".
    - Jika value pada kolom "SPART / CPART" berbentuk:
      - AMT401EJHFPRX085 / AMT401EJHFPRX085
      maka ambil 1 nilai spart saja:
      - "AMT401EJHFPRX085"
-   - Jika kiri dan kanan berbeda, ambil value sebelah kiri slash sebagai inv_spart_item_no kecuali ada rule vendor lain yang menyatakan sebaliknya.
+   - Jika kiri dan kanan berbeda, ambil value sebelah kiri slash sebagai inv_spart_item_no.
    - inv_spart_item_no tidak boleh diawali angka.
    - Jika candidate diawali angka, candidate tersebut PASTI SALAH untuk inv_spart_item_no dan harus ditolak.
    - Jika tidak ada bukti yang jelas pada kolom "SPART / CPART", isi "null".
@@ -172,11 +172,25 @@ Struktur umum packing list SHIMANO (SINGAPORE):
      - "P/O No. 45322131" -> pl_customer_po_no = "45322131"
 
 2. pl_item_no
-   - HANYA ambil dari sel/area di kolom "SPART / CPART" pada row item packing list yang sama.
-   - Jangan pernah mengambil dari kolom DESCRIPTION.
-   - Product/material code di awal block description BUKAN pl_item_no.
-   - pl_item_no harus berasal dari area kanan di bawah header "SPART / CPART".
-   - Jika OCR reading order mem-flatten kolom dan DESCRIPTION terbaca lebih dulu, tetap pilih value dari kolom "SPART / CPART", bukan token alfanumerik pertama.
+   - HANYA ambil dari kolom "SPART / CPART" pada row item yang sama.
+   - JANGAN AMBIL dari kolom DESCRIPTION, meskipun ada kode alfanumerik yang terlihat jelas di sana.
+   - JANGAN AMBIL product/material code di awal block description seperti:
+     - 22E9901D036
+     - 20RJ1480126
+     - 239P2000356
+     tapi ambil dari kolom "SPART / CPART"
+   - inv_spart_item_no harus berasal dari kolom "SPART / CPART", bukan dari token pertama yang terbaca pada row.
+   - Jika OCR membaca kolom "DESCRIPTION" lebih dulu lalu kolom "SPART / CPART" setelahnya, tetap pilih value dari kolom "SPART / CPART".
+   - Jika value pada kolom "SPART / CPART" berbentuk:
+     - AMT401EJHFPRX085 / AMT401EJHFPRX085
+     maka ambil 1 nilai spart saja:
+     - "AMT401EJHFPRX085"
+   - Jika kiri dan kanan berbeda, ambil value sebelah kiri slash sebagai inv_spart_item_no.
+   - Jika candidate diawali angka, candidate tersebut PASTI SALAH untuk inv_spart_item_no dan harus ditolak.
+   - Jika tidak ada bukti yang jelas pada kolom "SPART / CPART", isi "null".
+   - Jangan fallback ke DESCRIPTION.
+
+      - Jika OCR reading order mem-flatten kolom dan DESCRIPTION terbaca lebih dulu, tetap pilih value dari kolom "SPART / CPART", bukan token alfanumerik pertama.
    - Jika value berbentuk:
      - AMT401EJHFPRX085 / AMT401EJHFPRX085
      maka pl_item_no = "AMT401EJHFPRX085"
@@ -205,37 +219,42 @@ Struktur umum packing list SHIMANO (SINGAPORE):
      - "DISC BRAKE ASSEMBLED SET/J-KIT; BL-MT201(L); BR-UR300(F); BLACK; FOR 160MM ROTOR; RESIN PAD(W/O FIN); 850MM HOSE(SM-BH59 BLACK); BULK"
 
 4. pl_quantity
-   - Ambil angka quantity dari kolom "QTY & UNIT".
+   - Ambil value numerik/angka quantity dari kolom "QTY & UNIT".
    - Contoh:
      - "20 PCS" -> 20
      - "28 SET" -> 28
      - "530 PCS" -> 530
 
 5. pl_package_unit
-   - pl_package_unit hanya boleh diambil dari bukti package, bukan dari quantity unit.
+   - pl_package_unit hanya boleh diambil dari kolom "PACKING TYPE"
+   - JANGAN AMBIL dari kolom "QTY & UNIT"
    - Canonical value yang diperbolehkan hanya:
      ["CT", "PX", "BL", "PXCT", "null"]
    - Aturan mapping:
      - Carton / Full Carton / Loose Carton / CTN -> "CT"
      - Pallet / PLT -> "PX"
      - Bale -> "BL"
-     - Jika satu item memakai campuran pallet + carton -> "PXCT"
+     - Jika satu item menggunakan lebih dari 1 package unit -> "PXCT"
+       Contoh: 4 Pallet & 4 Carton
+               maka pl_package_unit = "PXCT", karena memiliki lebih dari 1 package unit (PX dan CT).
    - Prioritas bukti:
-     1) total line package item, misalnya:
+     1) total line package item dari kolom "PACKING TYPE", misalnya:
         - "5 Carton"
         - "1 Pallet & 6 Carton"
         - "2 Pallet"
-     2) jika total line tidak jelas, fallback ke marks block PLT NO. / CTN NO.
+     2) jika total line tidak jelas, fallback ke marks block pada kolom "MARKS" yaitu PLT NO. / CTN NO.
    - Contoh:
-     - "5 Carton" -> pl_package_unit = "CT"
-     - "2 Pallet" -> pl_package_unit = "PX"
-     - "1 Pallet & 6 Carton" -> pl_package_unit = "PXCT"
+     - CTN NO.23-25-> pl_package_unit = "CT"
+     - PLT NO.21-22 -> pl_package_unit = "PX"
+     - PLT NO.21-22
+       CTN NO.23-25
+       maka pl_package_unit = "PXCT"
 
 6. pl_package_count
-   - Ambil jumlah total package fisik untuk item tersebut.
+   - Ambil jumlah total line package untuk item tersebut.
    - Prioritas:
-     1) gunakan total line package item
-     2) jika total line tidak ada, hitung dari PLT NO / CTN NO pada marks block
+     1) gunakan total line package item, dari kolom "PACKING TYPE"
+     2) jika total line tidak ada, hitung dari PLT NO / CTN NO pada marks block dari kolom "MARKS"
    - Aturan hitung dari total line:
      - "1 Carton" -> 1
      - "5 Carton" -> 5
@@ -247,32 +266,34 @@ Struktur umum packing list SHIMANO (SINGAPORE):
      - "CTN NO.34-46" -> 13
      - "PLT NO.30-33" -> 4
      - "PLT NO.30-33" + "CTN NO.34-46" -> 4 + 13 = 17
-   - Jangan ambil total footer dokumen sebagai package_count item-level.
+   - Jangan ambil total packages dari footer dokumen sebagai package_count item-level.
 
 7. pl_nw
-   - Ambil net weight item-level.
+   - Ambil net weight item-level dari kolom "NET/GROSS WEIGHT".
    - Prioritas:
      1) gunakan angka net pada total line item
-     2) jika total line tidak ada, jumlahkan semua net weight component line untuk item itu
+     2) jika total line tidak ada, jumlahkan semua net weight component line untuk item tersebut
    - Pada total line, format umumnya:
-     net/gross
+     NET WEIGHT/GROSS WEIGHT
    - Contoh:
      - "42.0000/46.6100" -> pl_nw = 42.0
      - "152.5400/214.7900" -> pl_nw = 152.54
      - "983.1600/1149.3000" -> pl_nw = 983.16
 
 8. pl_gw
-   - Ambil gross weight item-level.
+   - Ambil gross weight item-level dari kolom "NET/GROSS WEIGHT".
    - Prioritas:
      1) gunakan angka gross pada total line item
      2) jika total line tidak ada, jumlahkan semua gross weight component line untuk item itu
+   - Pada total line, format umumnya:
+     NET WEIGHT/GROSS WEIGHT
    - Contoh:
      - "42.0000/46.6100" -> pl_gw = 46.61
      - "152.5400/214.7900" -> pl_gw = 214.79
      - "983.1600/1149.3000" -> pl_gw = 1149.3
 
 9. pl_volume
-   - Ambil volume item-level dalam M3.
+   - Ambil volume item-level dalam M3 dari kolom "DIMENSION (CM, M3)".
    - Prioritas:
      1) gunakan volume pada total line item
      2) jika total line tidak ada, jumlahkan semua M3 component line untuk item itu
@@ -299,36 +320,35 @@ Struktur umum BL SHIMANO (SINGAPORE):
   - CASSETTE SPROCKET HS NUMBER: 8714.93
 - BL SHIMANO bersifat summary-level, bukan detail spart/item penuh seperti invoice atau COO.
 
-1. bl_description
-   - Ambil hanya description category dari B/L ATTACHMENT.
-   - Ambil teks sebelum "HS NUMBER:".
+Dokumen BL dimapping terhadap invoice berdasarkan kemiripan dari inv_description dan bl_description.
+
+1. bl_description dan bl_hs_code:
+   - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null saja.
+   - Value bl_hs_code diisi sesuai dengan bl_descriptionnya.
+   - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
+
    - Contoh:
-     - "FRONT DERAILLEUR HS NUMBER: 8714.99" -> bl_description = "FRONT DERAILLEUR"
-     - "REAR DERAILLEUR HS NUMBER: 8714.99" -> bl_description = "REAR DERAILLEUR"
-     - "SHIFT LEVER HS NUMBER: 8714.99" -> bl_description = "SHIFT LEVER"
-     - "SHIFT/BRAKE LEVER HS NUMBER: 8714.99" -> bl_description = "SHIFT/BRAKE LEVER"
-     - "CASSETTE SPROCKET HS NUMBER: 8714.93" -> bl_description = "CASSETTE SPROCKET"
-   - Jangan ambil:
-     - "BICYCLE PARTS"
-     - "AS PER ATTACHED LIST"
-     - container sentence
-     - package total
-     - gross weight
-     - volume
-     - vessel/voyage
-     - LC number
+     - "FRONT DERAILLEUR HS NUMBER: 8714.99"
+     - "REAR DERAILLEUR HS NUMBER: 8714.99"
+     - "SHIFT LEVER HS NUMBER: 8714.99"
+     - "SHIFT/BRAKE LEVER HS NUMBER: 8714.99"
+     - "CASSETTE SPROCKET HS NUMBER: 8714.93
 
-2. bl_hs_code
-   - Ambil value setelah "HS NUMBER:" pada attachment.
-   - Contoh:
-     - "HS NUMBER: 8714.99" -> bl_hs_code = "8714.99"
-     - "HS NUMBER: 8714.93" -> bl_hs_code = "8714.93"
+     - Misalkan pada inv_description ada value:
+       SPROCKET FOR INTERNAL HUB;
+       18T(2.3MM) SILVER(DX); BULK
+       dimana itu tidak ada pada description item BL jika dibandingkan berdasarkan kemiripan. 
+       Maka bl_description dan bl_hs_code isi null saja.
 
-Catatan tambahan BL:
-- BL vendor SHIMANO hanya merangkum category barang.
-- Jadi satu bl_description bisa mewakili banyak item invoice / packing list / COO yang berbeda.
-- Jangan memaksa one-to-one matching berdasarkan spart code.
-
+     - Misalkan pada inv_description ada value:
+       SHIFT LEVER; SL-M315-8R; RIGHT;
+       8-SPEED RAPIDFIRE PLUS 2400MM
+       STAINLESS INNER; W/ OPTICAL GEAR
+       DISPLAY; BULK
+       dimana itu ada pada description item BL jika dibandingkan berdasarkan kemiripan (SHIFT LEVER HS NUMBER: 8714.99).
+       Maka bl_description isi "SHIFT LEVER" dan bl_hs_code isi "8714.99"
+     
+     - Item pada BL dapat dimapping beberapa kali atau dimapping pada banyak item pada invoice, tidak one to one.
 
 CERTIFICATE OF ORIGIN (COO)
 
@@ -363,15 +383,17 @@ Struktur umum COO SHIMANO (SINGAPORE):
   13) criterion + country + unit + quantity + FOB value
 - Jika item dicetak sebagai block terpisah, anggap sebagai row/item terpisah.
 
+Dokumen COO dimapping terhadap invoice berdasarkan kemiripan dari inv_description dan coo_description.
+
 1. coo_seq
-   - Pada COO SHIMANO sampel, tidak ada item number / seq numerik yang tercetak jelas.
+   - Pada COO SHIMANO, tidak ada item number / seq numerik yang tercetak jelas.
    - Product/material code seperti "239P2000356" BUKAN coo_seq.
    - Karena itu:
      coo_seq = null
    - Jangan membuat nomor urut sendiri.
 
 2. coo_mark_number
-   - Ambil seluruh isi marks block sebagai satu string ter-normalisasi.
+   - Ambil seluruh isi marks block dari kolom "MARKIN" sebagai satu string ter-normalisasi.
    - Marks block diambil dari awal item sampai sebelum "INVOICE NUMBER:".
    - Sertakan elemen berikut jika memang ada:
      - PT.IS
@@ -416,20 +438,20 @@ Struktur umum COO SHIMANO (SINGAPORE):
      - "HS CODE: 871493" -> coo_hs_code = "871493"
 
 5. coo_quantity
-   - Ambil angka quantity pada line terakhir item yang berisi criterion + country + unit + quantity + FOB value.
+   - Ambil value numerik/angka quantity dari kolom "QUANTITY".
    - Contoh:
      - "RVC 100% CHINA PCS 2650 $ 4,929.00" -> coo_quantity = 2650
      - "RVC 96.12% MALAYSIA PCS 20 $ 585.80" -> coo_quantity = 20
      - "RVC 76.41% MALAYSIA SET 50 $ 282.50" -> coo_quantity = 50
 
 6. coo_unit
-   - Ambil unit yang muncul tepat sebelum quantity pada line terakhir item.
+   - Ambil unit dari kolom "UNIT".
    - Contoh:
      - "RVC 100% CHINA PCS 2650 $ 4,929.00" -> coo_unit = "PCS"
      - "RVC 76.41% MALAYSIA SET 50 $ 282.50" -> coo_unit = "SET"
 
 7. coo_package_count
-   - Hitung dari marks block berdasarkan range PLT NO. dan CTN NO.
+   - Hitung dari marks block dari kolom "MARKING" berdasarkan range PLT NO. dan CTN NO.
    - Aturan:
      - "CTN NO.1-1" -> 1
      - "CTN NO.10-21" -> 12
@@ -443,12 +465,13 @@ Struktur umum COO SHIMANO (SINGAPORE):
    - Jika tidak ada package evidence yang jelas, isi null.
 
 8. coo_package_unit
+   - Ambil dari marking block dari kolom "MARKING".
    - Canonical value yang diperbolehkan hanya:
      ["CT", "PX", "BL", "PXCT", "null"]
    - Aturan:
      - hanya ada CTN NO. -> "CT"
      - hanya ada PLT NO. -> "PX"
-     - ada PLT NO. dan CTN NO. -> "PXCT"
+     - jika ada PLT NO. dan CTN NO. -> "PXCT"
      - jika tidak ada package evidence -> "null"
    - Contoh:
      - "CTN NO.10-21" -> "CT"
@@ -456,7 +479,7 @@ Struktur umum COO SHIMANO (SINGAPORE):
      - "PLT NO.1-1" + "CTN NO.2-22" -> "PXCT"
 
 9. coo_gw
-   - Pada COO SHIMANO sampel, tidak ada gross weight item-level yang tercantum eksplisit.
+   - Pada COO SHIMANO, tidak ada gross weight item-level yang tercantum eksplisit.
    - Kolom akhir hanya menunjukkan:
      - criterion
      - country
@@ -468,7 +491,7 @@ Struktur umum COO SHIMANO (SINGAPORE):
    - Jangan ambil GW dari invoice atau packing list untuk mengisi coo_gw.
 
 10. coo_amount
-   - Ambil FOB value / amount pada line terakhir item.
+   - Ambil FOB value / amount dari kolom "FOB VALUE (USD)"
    - Ambil angka numeric saja, tanpa "$" dan tanpa koma ribuan.
    - Contoh:
      - "$ 4,929.00" -> 4929.0
@@ -476,19 +499,19 @@ Struktur umum COO SHIMANO (SINGAPORE):
      - "$ 45,903.63" -> 45903.63
 
 11. coo_criteria
-   - Ambil origin conferring criterion sebagaimana tercetak, sebelum nama country pada line terakhir item.
+   - Ambil origin conferring criterion dari kolom "ORIGIN CONFERING CRITERION".
    - Untuk vendor SHIMANO pada sampel, criterion muncul sebagai bentuk lengkap:
      - "RVC 100%"
      - "RVC 96.12%"
      - "RVC 85.51%"
      - "RVC 65.56%"
    - Contoh:
-     - "RVC 100% CHINA PCS 2650 $ 4,929.00" -> coo_criteria = "RVC 100%"
-     - "RVC 96.12% MALAYSIA PCS 20 $ 585.80" -> coo_criteria = "RVC 96.12%"
-   - Jangan masukkan country, unit, quantity, atau amount ke dalam coo_criteria.
+     - "RVC 100% CHINA PCS 2650 $ 4,929.00" -> coo_criteria = "RVC"
+     - "RVC 96.12% MALAYSIA PCS 20 $ 585.80" -> coo_criteria = "RVC"
+   - Jangan masukkan persentase, country, unit, quantity, atau amount ke dalam coo_criteria.
 
 12. coo_customer_po_no
-   - Ambil dari line "P/O No." pada marks block COO.
+   - Ambil dari line "P/O No." pada marks block dari kolom "MARKING" pada COO.
    - Ambil angka PO saja.
    - Contoh:
      - "P/O No.45324415" -> coo_customer_po_no = "45324415"

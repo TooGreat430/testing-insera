@@ -471,7 +471,11 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - JANGAN SAMPAI SALAH EKSTRAK! PAHAMI KONTEKS. Jika messrs address maka yang ditanyakan adalah alamat jadi penulisan harus tepat
      contoh: Di dokumen seperti ini JI VETERAN maka perlu di convert menjadi "JL VETERAN" karena konteksnua adalah JALAN
 
-7. inv_price_unit SAMA dengan inv_amount_unit:
+7. inv_total_quantity:
+   - Jika tidak tersedia secara eksplisit dan jelas dari dokumen invoice, maka isi dengan "null".
+   - JANGAN menghitung, menjumlahkan, mengarang, atau mengambil dari dokumen lain jika value total quantity tidak tersedia.
+
+8. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
 
@@ -488,11 +492,11 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD.
 
-8. pl_total_package dan pl_total_quantity:
+9. pl_total_package dan pl_total_quantity:
    - Jika pada dokumen terdapat dua value dengan UNIT yang berbeda, maka sum kedua value tersebut
      contoh: pada dokumen terlampir total dari quantity seperti ini 2139PCE/150SET. Maka sum kedua value tersebut adalah 2289 (2139 + 150 = 2289)
 
-9. pl_total_package:
+10. pl_total_package:
    - Untuk total package yang digunakan, liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
    - Jika tidak secara eksplisit, contoh:
      Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
@@ -502,24 +506,24 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
     2P/T	<	32C/T &		83C/T
     Maka total package adalah 85 (2 + 83 = 85) karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T).
 
-10. LC Logic pada Bill of Lading (BL):
+11. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.
 
-11. Jika pada dokumen Bill of Lading (BL) bertipe LC:
+12. Jika pada dokumen Bill of Lading (BL) bertipe LC:
     - bl_consignee_name diambil dari notify party
     - bl_consignee_address diambil dari notify party
 
-12. inv_coo_commodity_origin
+13. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-13. pl_volume_unit
+14. pl_volume_unit
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
   - JIKA PADA DOKUMEN TIDAK TERTERA VOLUME UNIT DARI Packing List Volume Unit, maka biarkan "null".
 
-14. coo_gw_unit:
+15. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -533,9 +537,9 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-15. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
+16. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 
-16. bl_shipper dan bl_seller
+17. bl_shipper dan bl_seller
    - Penempatan bl_shipper selalu diatas dari bl_seller
    - Jika bingung, terdapat tulisan "O/B" Untuk memisahkan antara bl_shipper dan bl_seller
      contoh:
@@ -547,18 +551,18 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
 
    Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
 
-17. bl_voyage_no:
+18. bl_voyage_no:
    - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
    - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode. Tugas anda ambil setelah V nya
      Contoh:
      V.S018
      Berarti value tersebut adalah S018
 
-18. inv_invoice_no, pl_invoice_no & coo_invoice_no:
+19. inv_invoice_no, pl_invoice_no & coo_invoice_no:
     - PADA SETIAP DOKUMEN INVOICE, PACKING LIST DAN COO, PASTI ADA INVOICE NO JADI TOLONG CARI DENGAN TELITI.
     - inv_invoice_no, pl_invoice_no & coo_invoice_no TIDAK BERSIFAT NULLABLE, JADI TOLONG PERHATIKAN DENGAN TELITI
 
-19. coo_invoice_no:
+20. coo_invoice_no:
     - Merepresentasikan invoice number yang direferensikan pada dokumen COO.
     - Biasanya memiliki kolom sendiri
     - Biasanya kolom ditaruh di paling kanan dari dokumen.
@@ -573,11 +577,11 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
 
         Maka, coo_invoice_no: SHXM22-2512000393
 
-20. bl_mark_number:
+21. bl_mark_number:
     - bl_mark_number hanya di ekstrak apa bila label "SHIPPING MARKS",
       apabila tidak ada label "SHIPPING MARKS" maka bl_mark_number = "null"
 
-21. coo_no
+22. coo_no
     - coo_no merupakan nomor certificate dari dokumen
     - Biasanya di labelkan dengan "Certificate No:..."
 """
