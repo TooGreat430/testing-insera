@@ -28,6 +28,21 @@ PACKING LIST (PL):
          CTN -> pl_package_unit line tersebut = CT
          PLT -> pl_package_unit line tersebut = PX
          Ada PLT dan CTN -> pl_package_unit line tersebut = PK
+    
+    - Contoh:
+      (1)
+      CTN No. 1-5
+      CTN No. 6-7
+      Maka pl_package_unit = 'CT"
+
+      (2)
+      PLT No. 15- 16
+      CTN No. 19-20
+      Maka pl_package_unit = "PK"
+
+      (3)
+      PLT No. 21
+      Maka pl_package_unit = "PX"
 
     - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
       1) kolom quantity / qty / pcs / sets / units
@@ -37,19 +52,9 @@ PACKING LIST (PL):
 
     - Jika satuan yang ditemukan berasal dari quantity column, quantity header, atau quantity-per-package header, MAKA JANGAN gunakan untuk pl_package_unit.
 
-    - pl_package_unit harus final dalam canonical value berikut saja: ["CT", "PX", "BL", "PXCT", "null"]
+    - pl_package_unit harus final dalam canonical value berikut saja: ["CT", "PX", "BL", "PXCT", "PK", "null"]
       pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
       DILARANG KERAS RETURN SELAIN VALUE-VALUE TERSEBUT!
-
-
-    - Mapping canonical:
-      - CTN / CARTON / CARTONS -> CT
-      - PLT / PALLET / PALLETS -> PX
-      - BALE / BALES -> BL
-      - Jika lebih dari 1 tipe package unit -> PXCT
-        - Contoh:
-          - 2 P/T &  32 C/T
-            maka pl_package_unit = PXCT, karena memiliki lebih dari 1 tipe package unit (P/T -> Pallet dan C/T -> Carton) 
             
 6. `pl_package_count`:
     - Ekstrak angka jumlah kemasan yang tertera sebelum unit kemasan di bawah nomor package (misalnya dari "(       20 C/T)", ekstrak 20).

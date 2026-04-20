@@ -633,6 +633,9 @@ Anda WAJIB mengembalikan output HANYA untuk index berikut:
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS. JANGAN MENGARANG.
 - PAHAMI DOKUMEN DAN EKSTRAK SESUAI DENGAN KEBUTUHAN KOLOMNYA
+- Cara melakukan mapping COO adalah dengan membandingkan antara inv_description dan coo_description
+  inv_description dan coo_description TIDAK SELALU SAMA PERSIS. MAP BERDASARKAN KEMIRIPAN!
+  Perhatikan juga line itemnya!
 - Jika suatu field tidak ada di dokumen → isi "null" (string) atau 0 (angka).
 - Tidak boleh JSON literal null → gunakan "null".
 - Untuk FIELD BERTIPE NUMBER jika tidak ada → isi 0.
