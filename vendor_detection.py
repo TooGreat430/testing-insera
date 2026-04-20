@@ -44,15 +44,26 @@ VENDOR_PROMPT_DIR = Path(
     os.getenv("VENDOR_PROMPT_DIR", str(BASE_DIR / "vendor_prompt"))
 )
 
+
+def normalize_vendor_id(vendor_id: str) -> str:
+    vendor_id = str(vendor_id or "").strip().lower()
+    if vendor_id in VENDOR_LIST:
+        return vendor_id
+    return "default"
+
+
 def _read_first_invoice_text(pdf_path: str, max_pages: int = 2) -> str:
     reader = PdfReader(pdf_path)
     texts = []
+
     for i in range(min(max_pages, len(reader.pages))):
         try:
             texts.append(reader.pages[i].extract_text() or "")
         except Exception:
             pass
+
     return "\n".join(texts)
+
 
 def _extract_json_safe(raw: str) -> dict:
     raw = (raw or "").strip()
@@ -65,7 +76,9 @@ def _extract_json_safe(raw: str) -> dict:
     obj = json.loads(raw)
     if not isinstance(obj, dict):
         raise Exception("Vendor detector output bukan JSON object")
+
     return obj
+
 
 def detect_vendor_from_invoice_text(invoice_text: str) -> str:
     prompt = f"""
@@ -109,11 +122,7 @@ INVOICE TEXT:
 
             raw = getattr(response, "text", "") or ""
             obj = _extract_json_safe(raw)
-            vendor_id = str(obj.get("vendor_id", "default")).strip().lower()
-
-            if vendor_id not in VENDOR_LIST:
-                return "default"
-            return vendor_id
+            return normalize_vendor_id(obj.get("vendor_id", "default"))
 
         except Exception as e:
             last_err = e
@@ -121,15 +130,20 @@ INVOICE TEXT:
     print(f"[VENDOR DETECTOR ERROR] {last_err}")
     return "default"
 
+
 def detect_vendor_from_invoice_pdf(pdf_path: str) -> str:
     invoice_text = _read_first_invoice_text(pdf_path, max_pages=2)
+
     if not invoice_text.strip():
         return "default"
+
     return detect_vendor_from_invoice_text(invoice_text)
+
 
 def _load_module_from_path(py_path: str):
     module_name = f"_vendor_prompt_{Path(py_path).stem}"
     spec = importlib.util.spec_from_file_location(module_name, py_path)
+
     if spec is None or spec.loader is None:
         raise Exception(f"Gagal load module: {py_path}")
 
@@ -137,8 +151,11 @@ def _load_module_from_path(py_path: str):
     spec.loader.exec_module(module)
     return module
 
+
 def load_vendor_prompt_text(vendor_id: str) -> str:
-    if not vendor_id or vendor_id == "default":
+    vendor_id = normalize_vendor_id(vendor_id)
+
+    if vendor_id == "default":
         print("[VENDOR PROMPT] vendor_id=default -> pakai prompt bawaan")
         return ""
 
@@ -156,4 +173,30 @@ def load_vendor_prompt_text(vendor_id: str) -> str:
                 print(f"[VENDOR PROMPT] loaded constant={attr_name} vendor_id={vendor_id}")
                 return value.strip()
 
+    print(f"[VENDOR PROMPT] tidak ada *_PROMPT yang valid untuk vendor_id={vendor_id}")
     return ""
+
+
+def resolve_vendor_context(
+    pdf_path: str = None,
+    forced_vendor_id: str = None,
+) -> dict:
+    forced_vendor_id = normalize_vendor_id(forced_vendor_id)
+
+    if forced_vendor_id != "default":
+        vendor_id = forced_vendor_id
+        vendor_source = "forced"
+    elif pdf_path:
+        vendor_id = detect_vendor_from_invoice_pdf(pdf_path)
+        vendor_source = "detected"
+    else:
+        vendor_id = "default"
+        vendor_source = "default"
+
+    vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+
+    return {
+        "vendor_id": vendor_id,
+        "vendor_prompt_text": vendor_prompt_text,
+        "vendor_source": vendor_source,
+    }

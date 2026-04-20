@@ -34,7 +34,12 @@ import uuid
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 import pymupdf as fitz
-from vendor_detection import detect_vendor_from_invoice_pdf, load_vendor_prompt_text
+from vendor_detection import (
+    detect_vendor_from_invoice_pdf,
+    load_vendor_prompt_text,
+    resolve_vendor_context,
+    normalize_vendor_id,
+)
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
@@ -1902,11 +1907,13 @@ FORCE_CT_VENDORS = {
 }
 
 def _should_force_ct_pl_package_unit(vendor_id: str) -> bool:
-    return str(vendor_id or "").strip().lower() in FORCE_CT_VENDORS
+    return normalize_vendor_id(vendor_id) in FORCE_CT_VENDORS
 
 
 def _postprocess_pl_package_unit(rows: list, vendor_id: str = "default"):
     force_ct = _should_force_ct_pl_package_unit(vendor_id)
+
+    print(f"[PL_PACKAGE_UNIT] vendor_id={vendor_id} force_ct={force_ct}")
 
     for row in rows:
         if not isinstance(row, dict):
@@ -4679,11 +4686,12 @@ FAILED ROWS YANG HARUS DICEK ULANG:
 {rows_json}
 """
 
-def _run_detail_precheck_pass(rows: list, header_obj: dict):
+def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "default"):
     _ensure_all_detail_keys(rows)
 
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
     _postprocess_package_unit_fields(rows)
+    _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
 
     _reset_match_fields(rows)
 
@@ -4923,29 +4931,25 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _fill_forward(index_items, "pl_customer_po_no")
 
         # =========================
-        # VENDOR DETECTION (invoice only)
+        # VENDOR CONTEXT
         # =========================
-        vendor_id = "default"
-        vendor_prompt_text = ""
+        invoice_pdf_for_vendor = None
+        if invoice_paths and isinstance(invoice_paths, list) and invoice_paths[0]:
+            invoice_pdf_for_vendor = invoice_paths[0]
 
-        try:
-            invoice_pdf_for_vendor = None
-            if invoice_paths and isinstance(invoice_paths, list) and invoice_paths[0]:
-                invoice_pdf_for_vendor = invoice_paths[0]
+        # kalau ada manual override dari request / parameter, isi di sini
+        forced_vendor_id = normalize_vendor_id(locals().get("vendor_id", "default"))
 
-            if invoice_pdf_for_vendor:
-                vendor_id = detect_vendor_from_invoice_pdf(invoice_pdf_for_vendor)
-                vendor_prompt_text = load_vendor_prompt_text(vendor_id)
-                print(f"[VENDOR DETECTED] vendor_id={vendor_id}")
-            else:
-                print("[VENDOR DETECTED] invoice path tidak tersedia, pakai default")
-                vendor_id = "default"
-                vendor_prompt_text = ""
+        vendor_ctx = resolve_vendor_context(
+            pdf_path=invoice_pdf_for_vendor,
+            forced_vendor_id=forced_vendor_id,
+        )
 
-        except Exception as e:
-            print(f"[VENDOR DETECTION FALLBACK] err={e}")
-            vendor_id = "default"
-            vendor_prompt_text = ""
+        vendor_id = vendor_ctx["vendor_id"]
+        vendor_prompt_text = vendor_ctx["vendor_prompt_text"]
+
+        print(f"[VENDOR] source={vendor_ctx['vendor_source']} vendor_id={vendor_id}")
+        print(f"[VENDOR] prompt_loaded={bool(vendor_prompt_text)}")
 
         # BATCH DETAIL EXTRACTION
         jobs = []
@@ -5000,7 +5004,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # isi match_score + match_description
         # hanya untuk menentukan row gagal
         # =========================================
-        all_rows = _run_detail_precheck_pass(all_rows, header_obj)
+        all_rows = _run_detail_precheck_pass(all_rows, header_obj, vendor_id=vendor_id)
         _assign_detail_row_numbers(all_rows)
 
         # =========================================
