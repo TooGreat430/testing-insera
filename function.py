@@ -84,6 +84,7 @@ PL_PACKAGE_UNIT_MAP = {
     "bales": "BL",
 
     "pxct": "PK"
+    "packages": "PK"
 }
 
 TOTAL_OUTPUT_FIELDS = [
@@ -751,6 +752,13 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
             if candidate and _looks_like_invoice_no_candidate(candidate):
                 return candidate
 
+    # KHUSUS COO:
+    # jangan pakai fallback regex generik dari body text,
+    # karena continuation sheet sering membuat SKU/item code
+    # (mis. SOLID-244A-F, TM-CY10, dst.) kebaca sebagai invoice_no.
+    if doc_type == "coo":
+        return ""
+
     # fallback regex generik
     generic_candidates = re.findall(
         r"\b[A-Z0-9][A-Z0-9\-/]{3,}\b",
@@ -1207,6 +1215,40 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str):
 
     if total_pages == 0:
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
+
+    # KHUSUS COO:
+    # jika trace whole-document gagal, fallback HARUS treat 1 file COO
+    # sebagai 1 invoice reference document-level.
+    # Jangan split page-by-page, karena continuation sheet biasanya tidak
+    # menampilkan ulang invoice_no dan body table bisa memunculkan SKU.
+    if doc_type == "coo":
+        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(
+            local_pdf_path,
+            doc_type="coo"
+        )
+        only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
+
+        if not only_key:
+            raise Exception(
+                f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(local_pdf_path)}"
+            )
+
+        print(
+            f"[GROUPING][COO_PAGE_FALLBACK][SINGLE_DOC_KEY] "
+            f"file='{os.path.basename(local_pdf_path)}' "
+            f"coo_invoice_no='{raw_invoice_no}' "
+            f"group_key='{only_key}'"
+        )
+
+        return [{
+            "group_key": only_key,
+            "invoice_no": raw_invoice_no if raw_invoice_no else only_key,
+            "path": local_pdf_path,
+            "source_file": os.path.basename(local_pdf_path),
+            "page_range": f"1-{total_pages}",
+            "is_temp": False,
+            "doc_type": doc_type,
+        }]
 
     page_invoice_keys = []
     last_known_key = ""
@@ -1893,7 +1935,20 @@ def _sanitize_pl_package_unit(value):
 
     return raw
 
-def _postprocess_pl_package_unit(rows: list):
+# tambahkan dekat area sanitizer pl_package_unit
+FORCE_CT_VENDORS = {
+    "haomeng",
+    "suntour_vietnam",
+    "suntour_shenzhen",
+}
+
+def _should_force_ct_pl_package_unit(vendor_id: str) -> bool:
+    return str(vendor_id or "").strip().lower() in FORCE_CT_VENDORS
+
+
+def _postprocess_pl_package_unit(rows: list, vendor_id: str = "default"):
+    force_ct = _should_force_ct_pl_package_unit(vendor_id)
+
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1901,6 +1956,9 @@ def _postprocess_pl_package_unit(rows: list):
         row["pl_package_unit"] = _sanitize_pl_package_unit(
             row.get("pl_package_unit")
         )
+
+        if force_ct:
+            row["pl_package_unit"] = "CT"
 
 def _normalize_running_name(invoice_name: str) -> str:
     return str(invoice_name).strip().replace("/", "_").replace("\\", "_")
@@ -3396,6 +3454,37 @@ def _validate_invoice_rows(rows: list):
         if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
             _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
 
+def _normalize_pt_insera_sena_name(value):
+    if value is None:
+        return ""
+
+    s = str(value).strip().upper()
+    if s == "" or s == "NULL":
+        return ""
+
+    # buang punctuation jadi spasi
+    s = re.sub(r"[^A-Z0-9]+", " ", s)
+
+    # samakan variasi legal entity
+    s = re.sub(r"\bPERSEROAN\s+TERBATAS\b", "PT", s)
+
+    # satukan variasi INSERASENA / INSERA SENA
+    s = re.sub(r"\bINSERASENA\b", "INSERA SENA", s)
+
+    # rapikan spasi
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _is_pt_insera_sena_name(value) -> bool:
+    s = _normalize_pt_insera_sena_name(value)
+    if not s:
+        return False
+
+    if "PT" not in s:
+        return False
+
+    return ("INSERA SENA" in s) or ("INSERA" in s and "SENA" in s)
+
 
 def _validate_packing_rows(rows: list):
     required = [
@@ -3452,8 +3541,11 @@ def _validate_packing_rows(rows: list):
             if str(r["pl_invoice_date"]).strip() != str(r["inv_invoice_date"]).strip():
                 _append_err(r, "PackingList: pl_invoice_date != inv_invoice_date")
 
-        if norm(r.get("pl_messrs")) and "PT INSERA SENA" not in norm(r.get("pl_messrs")):
-            _append_err(r, "PackingList: pl_messrs bukan PT Insera Sena")
+        if not _is_null(r.get("pl_messrs")) and not _is_pt_insera_sena_name(r.get("pl_messrs")):
+            _append_err(
+                r,
+                f"PackingList: pl_messrs bukan PT Insera Sena (got {r.get('pl_messrs')})"
+            )
 
     # totals PL
     declared_qty = _to_float(_first_non_null_nonzero(rows, "pl_total_quantity"))
@@ -3510,13 +3602,22 @@ def _validate_invoice_vs_packing_extra(rows: list):
         if not isinstance(r, dict):
             continue
 
-        _compare_text_values(
-            r,
-            r.get("inv_messrs"),
-            r.get("pl_messrs"),
-            "Invoice vs PL: inv_messrs != pl_messrs",
-            normalize_fn=norm_prefix_20
+        inv_messrs = r.get("inv_messrs")
+        pl_messrs = r.get("pl_messrs")
+
+        same_known_company = (
+            _is_pt_insera_sena_name(inv_messrs) and
+            _is_pt_insera_sena_name(pl_messrs)
         )
+
+        if not same_known_company:
+            _compare_text_values(
+                r,
+                inv_messrs,
+                pl_messrs,
+                "Invoice vs PL: inv_messrs != pl_messrs",
+                normalize_fn=norm_prefix_20
+            )
 
         inv_messrs_address = r.get("inv_messrs_address")
         pl_messrs_address = r.get("pl_messrs_address")
@@ -4974,7 +5075,8 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
         # =========================================
         _apply_header_to_rows(all_rows, header_obj)
-        _postprocess_pl_package_unit(all_rows)
+        _postprocess_package_unit_fields(rows)
+        _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
 
         _reset_match_fields(all_rows)
 
