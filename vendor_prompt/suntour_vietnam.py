@@ -62,18 +62,8 @@ PACKING LIST (PL)
      5 + 230 + 5 = 240.
 
 5. pl_package_unit:
-   - Ekstrak jenis kemasan dari statement total packing atau dari nama kolom package (misal "CARTON").
-   - Value dari pl_package_unit hanya ada 4:
-     - PX (Pallet)
-     - CT (Carton)
-     - BL (Ballet)
-     - PK (Unit campuran contoh: Carton dan Pallet)
-       Selain value diatas itu bukan pl_package_unit jadi tolong teliti dalam mengekstrak
-   - Lokasi dari pl_package_unit ada pada header kolom. Contoh:
-      CARTON NO. | CARTON # | ITEM # CUST ITEM No | Unit | Q'ty | N.W.(Kg) | G.W.(Kg)
-      karena kolom "CARTON NO." dan "CARTON #" berarti tipe package adalah Carton.
-      Maka value dari pl_package_unit adalah "CT" 
-   - Valuenya pasti pl_package_unit = "CT" untuk semua line item
+   - PL package unit sudah pasti Carton untuk semua line item,
+   MAKA pl_package_unit = "CT" untuk semua line item
 
 6. pl_package_count:
    - Ekstrak jumlah karton per item.
@@ -172,11 +162,8 @@ CERTIFICATE OF ORIGIN (COO)
        coo_package_count = 50
 
 7. coo_package_unit:
-   - Pada format e-COO ini, package unit diambil dari baris kedua pada kolom "Quantity Code".
-   - Contoh:
-     baris atas = "SET"
-     baris bawah = "CT"
-     Maka coo_package_unit = "CT".
+   - COO package unit sudah pasti Carton untuk semua line item,
+   MAKA coo_package_unit = "CT" untuk semua line item.
 
 8. coo_gw:
    - Ambil dari kolom "Gross weight or Other Quantity".
@@ -189,8 +176,8 @@ CERTIFICATE OF ORIGIN (COO)
 
 10. coo_criteria:
    - Ekstrak kode origin criterion dari kolom "Origin Criterion".
-   - Jika kolom berisi "RVC 49.92%" atau format sejenis, ambil kode kriterianya saja, yaitu "RVC".
-   - Abaikan persentasenya.
+   - Jika kolom berisi "RVC 49.92%" atau format sejenisnya, abaikan value numerik presentasenya.
+     maka coo_criteria = "RVC"
 
 11. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit pada COO.
