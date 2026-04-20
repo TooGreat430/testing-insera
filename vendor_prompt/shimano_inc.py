@@ -23,6 +23,11 @@ PACKING LIST (PL):
       1) kolom/header package, packing, pkgs, cartons, ctn, pallet, plt, bale, package detail (Contoh: pada dokumen ada header bernama "Carton No.")
       2) unit yang menempel langsung pada package_count
       3) header rasio kemasan seperti PCS/CTN, SET/CTN, QTY/CARTON -> ambil unit packagenya, BUKAN unit quantity
+      4) CLUE PENTING: Untuk menentukan pl_package_unit, lihat pada bagian kiri penomoran paket (Misal: CTN No.)
+         Apabila penomoran paket:
+         CTN -> pl_package_unit line tersebut = CT
+         PLT -> pl_package_unit line tersebut = PX
+         Ada PLT dan CTN -> pl_package_unit line tersebut = PK
 
     - Sumber bukti yang TIDAK VALID untuk pl_package_unit:
       1) kolom quantity / qty / pcs / sets / units
@@ -34,6 +39,8 @@ PACKING LIST (PL):
 
     - pl_package_unit harus final dalam canonical value berikut saja: ["CT", "PX", "BL", "PXCT", "null"]
       pl_package_unit TIDAK BISA DILUAR UNIT INI. JIKA DILUAR UNIT YANG DISEDIAKAN MAKA BUKAN UNIT DARI pl_package_unit.
+      DILARANG KERAS MELAKUKAN RETURN SELAIN VALUE-VALUE TERSEBUT!
+
 
     - Mapping canonical:
       - CTN / CARTON / CARTONS -> CT
@@ -41,7 +48,7 @@ PACKING LIST (PL):
       - BALE / BALES -> BL
       - Jika lebih dari 1 tipe package unit -> PXCT
         - Contoh:
-          - 2 P/T   32 C/T
+          - 2 P/T &  32 C/T
             maka pl_package_unit = PXCT, karena memiliki lebih dari 1 tipe package unit (P/T -> Pallet dan C/T -> Carton) 
             
 6. `pl_package_count`:
