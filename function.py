@@ -83,7 +83,7 @@ PL_PACKAGE_UNIT_MAP = {
     "bale": "BL",
     "bales": "BL",
 
-    "pxct": "PK"
+    "pxct": "PK",
     "packages": "PK"
 }
 
