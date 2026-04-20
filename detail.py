@@ -224,7 +224,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 
 # dipakai Python untuk "ensure semua kolom ada"
 DETAIL_LINE_FIELDS = [
-    "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
+    "confidence_score","inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
