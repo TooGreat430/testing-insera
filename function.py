@@ -752,13 +752,6 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
             if candidate and _looks_like_invoice_no_candidate(candidate):
                 return candidate
 
-    # KHUSUS COO:
-    # jangan pakai fallback regex generik dari body text,
-    # karena continuation sheet sering membuat SKU/item code
-    # (mis. SOLID-244A-F, TM-CY10, dst.) kebaca sebagai invoice_no.
-    if doc_type == "coo":
-        return ""
-
     # fallback regex generik
     generic_candidates = re.findall(
         r"\b[A-Z0-9][A-Z0-9\-/]{3,}\b",
@@ -1215,40 +1208,6 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str):
 
     if total_pages == 0:
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
-
-    # KHUSUS COO:
-    # jika trace whole-document gagal, fallback HARUS treat 1 file COO
-    # sebagai 1 invoice reference document-level.
-    # Jangan split page-by-page, karena continuation sheet biasanya tidak
-    # menampilkan ulang invoice_no dan body table bisa memunculkan SKU.
-    if doc_type == "coo":
-        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(
-            local_pdf_path,
-            doc_type="coo"
-        )
-        only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
-
-        if not only_key:
-            raise Exception(
-                f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(local_pdf_path)}"
-            )
-
-        print(
-            f"[GROUPING][COO_PAGE_FALLBACK][SINGLE_DOC_KEY] "
-            f"file='{os.path.basename(local_pdf_path)}' "
-            f"coo_invoice_no='{raw_invoice_no}' "
-            f"group_key='{only_key}'"
-        )
-
-        return [{
-            "group_key": only_key,
-            "invoice_no": raw_invoice_no if raw_invoice_no else only_key,
-            "path": local_pdf_path,
-            "source_file": os.path.basename(local_pdf_path),
-            "page_range": f"1-{total_pages}",
-            "is_temp": False,
-            "doc_type": doc_type,
-        }]
 
     page_invoice_keys = []
     last_known_key = ""
