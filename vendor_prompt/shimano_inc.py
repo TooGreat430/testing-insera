@@ -66,6 +66,15 @@ PACKING LIST (PL):
         CTN No. 2
         (       30 C/T)
         Maka: pl_package_count untuk line item A adalah 20 + 30 = 50.
+    - Apabila pada 1 line item terdapat beberapa baris dengan nilai jumlah kemasan dalam satuan yang berbeda, jumlahkan value terhadap satuan yang terbesar.
+      Contoh:
+      PLT No. 15-   16
+      (         2 P/T...    32 C/T)
+      CTN No. 17-   22
+      (                      6 C/T)
+      CTN No. 23
+      (                      1 C/T)
+      Maka pl_package_count = 2 P/T + 6 C/T + 1 C/T = 9 (karena satuan P/T paling besar di mana 1 P/T bisa memuat banyak C/T)
 7. `pl_nw`: 
     - Ekstrak nilai angka dari kolom "Net Weight" baris atas yang tidak ada simbol "@" (Misal: ada "3.5Kg" dan "@0.5Kg", maka ekstrak yang "3.5").
     - Apabila pada 1 line item terdapat beberapa baris dengan nilai "Net Weight", maka jumlahkan semua nilai angka tersebut untuk mendapatkan `pl_nw`.
@@ -135,4 +144,5 @@ CERTIFICATE OF ORIGIN (COO):
 7. `coo_unit`: Ekstrak unit dari kolom "10. Quantity" (misalnya "PCS") dan bukan nilai numeriknya.
 8. `coo_criteria`: Ekstrak dari kolom "8. Origin conferring criterion" dan hanya ekstrak kode alphabetic-nya tanpa nomor numeriknya (misalnya "RVC40", maka ekstrak "RVC").
 9. `coo_customer_po_no`: Ekstrak teks setelah "PO No:" di dalam kolom "6. Description of goods", biasanya diawali dengan angka 4 (misal: "43018041").
+
 """
