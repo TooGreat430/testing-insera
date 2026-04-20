@@ -13,6 +13,7 @@ from google import genai
 from google.genai import types 
 import time
 import random
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import * 
 from total import TOTAL_SYSTEM_INSTRUCTION 
@@ -43,6 +44,15 @@ from vendor_detection import (
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
+DETAIL_CONFIDENCE_MAX_WORKERS = int(os.getenv("DETAIL_CONFIDENCE_MAX_WORKERS", "8"))
+DETAIL_CONFIDENCE_ENUM_VALUES = ["5", "4", "3", "2", "1"]
+DETAIL_CONFIDENCE_SCORE_RANGES = {
+    "5": (85, 100),
+    "4": (70, 84),
+    "3": (50, 69),
+    "2": (25, 49),
+    "1": (1, 24),
+}
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -2481,34 +2491,13 @@ def _upload_temp_pdf_to_gcs(local_path: str, run_prefix: str, name: str) -> str:
     bucket.blob(blob_path).upload_from_filename(local_path)
     return f"gs://{BUCKET_NAME}/{blob_path}"
 
-def _call_gemini_uri(file_uri: str, prompt: str):
-    parts = [
-        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
-        types.Part.from_text(text=prompt),
-    ]
-
-    response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[types.Content(role="user", parts=parts)],
-        config=types.GenerateContentConfig(
-            temperature=0,
-            top_p=0,
-            seed=42,
-            candidate_count = 1,
-            max_output_tokens=65535,
-        ),
-    )
-
-    if not response:
-        raise Exception("Empty response from Gemini")
-
-    print(f"(Gemini Run ID: {response.response_id})")
-
+def _extract_text_from_gemini_response(response):
     if hasattr(response, "text") and response.text:
-        return response.text.strip()
+        return str(response.text).strip()
 
-    if getattr(response, "candidates", None):
-        content = response.candidates[0].content
+    candidates = getattr(response, "candidates", None) or []
+    if candidates:
+        content = getattr(candidates[0], "content", None)
         parts_resp = getattr(content, "parts", None) or []
         text_output = ""
         for p in parts_resp:
@@ -2517,7 +2506,297 @@ def _call_gemini_uri(file_uri: str, prompt: str):
         if text_output.strip():
             return text_output.strip()
 
-    raise Exception("Gemini response tidak mengandung text")
+    return ""
+
+
+def _get_obj_value(obj, *names, default=None):
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj.get(name)
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return default
+
+
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _normalize_confidence_band(value: str) -> str:
+    s = str(value or "").strip().upper()
+    if s in DETAIL_CONFIDENCE_ENUM_VALUES:
+        return s
+    m = re.search(r"[1-5]", s)
+    return m.group(0) if m else ""
+
+
+def _extract_confidence_logprob_from_response(response):
+    candidates = _get_obj_value(response, "candidates", default=[]) or []
+    if not candidates:
+        return None
+
+    first_candidate = candidates[0]
+    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
+
+    chosen_candidates = _get_obj_value(
+        logprobs_result,
+        "chosen_candidates",
+        "chosenCandidates",
+        default=[]
+    ) or []
+
+    for chosen in chosen_candidates:
+        token = _get_obj_value(chosen, "token", default="")
+        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
+        if logprob is None:
+            continue
+        if str(token).strip() == "":
+            continue
+        try:
+            return float(logprob)
+        except Exception:
+            continue
+
+    avg_logprobs = _get_obj_value(first_candidate, "avg_logprobs", "avgLogprobs")
+    if avg_logprobs is not None:
+        try:
+            return float(avg_logprobs)
+        except Exception:
+            pass
+
+    return None
+
+
+def _fallback_confidence_score(row: dict) -> int:
+    return 78 if str(row.get("match_score", "")).strip().lower() == "true" else 35
+
+
+def _confidence_score_from_band_and_logprob(band: str, chosen_logprob, match_score: str):
+    band = _normalize_confidence_band(band)
+    if not band:
+        return 0
+
+    low, high = DETAIL_CONFIDENCE_SCORE_RANGES.get(band, (0, 0))
+
+    probability = 0.5
+    if chosen_logprob is not None:
+        try:
+            probability = math.exp(float(chosen_logprob))
+        except Exception:
+            probability = 0.5
+
+    probability = _clamp(probability, 0.0, 1.0)
+    score = int(round(low + ((high - low) * probability)))
+    score = _clamp(score, 1, 100)
+
+    if str(match_score or "").strip().lower() == "false":
+        score = min(score, 49)
+
+    return score
+
+
+def _build_detail_confidence_row_payload(row: dict) -> dict:
+    excluded_fields = {"confidence_score", "confidence_band", "confidence_logprob"}
+
+    preferred_order = [
+        "_detail_row_no",
+        "match_score",
+        "match_description",
+        "inv_invoice_no",
+        "pl_invoice_no",
+        "coo_invoice_no",
+    ] + [k for k in DETAIL_LINE_FIELDS if k not in excluded_fields]
+
+    payload = {}
+    seen = set()
+
+    for key in preferred_order:
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if key not in row:
+            continue
+
+        value = row.get(key)
+
+        if key in DETAIL_LINE_NUM_FIELDS:
+            if value is None:
+                value = 0
+        else:
+            if value is None:
+                value = "null"
+
+        payload[key] = value
+
+    return payload
+
+
+def _build_detail_confidence_prompt(row: dict) -> str:
+    row_payload = _build_detail_confidence_row_payload(row)
+    row_json = json.dumps(row_payload, ensure_ascii=False, indent=2)
+
+    return f"""
+ROLE:
+Anda adalah AI reviewer untuk menilai tingkat keyakinan hasil ekstraksi 1 line item.
+PDF pada request ini adalah source of truth utama.
+
+TUGAS:
+Lihat row JSON berikut lalu nilai seberapa yakin Anda bahwa row itu SUDAH BENAR secara keseluruhan terhadap isi PDF.
+
+OUTPUT HARUS HANYA SALAH SATU ENUM:
+- 5 = sangat yakin row ini benar secara keseluruhan
+- 4 = yakin, mungkin hanya ada kekurangan kecil
+- 3 = cukup ambigu / sebagian benar tetapi masih ada keraguan berarti
+- 2 = kemungkinan ada salah mapping, salah angka, atau salah pasangan row
+- 1 = besar kemungkinan row ini salah
+
+ATURAN:
+- Nilai confidence adalah untuk KESELURUHAN row, bukan per-field.
+- missing value boleh tetap dinilai tinggi jika memang value itu tidak ada di dokumen.
+- Jika match_score=false atau match_description berisi error validasi, anggap itu sebagai sinyal kuat untuk menurunkan confidence.
+- Jangan jelaskan alasan. Output hanya satu angka enum: 5 / 4 / 3 / 2 / 1.
+
+ROW JSON:
+{row_json}
+""".strip()
+
+
+def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
+    prompt = _build_detail_confidence_prompt(row)
+    extra_config = {
+        "response_mime_type": "text/x.enum",
+        "response_schema": {
+            "type": "STRING",
+            "enum": DETAIL_CONFIDENCE_ENUM_VALUES,
+        },
+        "response_logprobs": True,
+        "logprobs": 5,
+        "max_output_tokens": 4,
+    }
+
+    for attempt in range(1, 4):
+        try:
+            raw_text, response = _call_gemini_uri(
+                file_uri,
+                prompt,
+                extra_config=extra_config,
+                return_response=True,
+            )
+            band = _normalize_confidence_band(raw_text)
+            if not band:
+                raise Exception(f"enum confidence tidak valid: {raw_text}")
+
+            chosen_logprob = _extract_confidence_logprob_from_response(response)
+            score = _confidence_score_from_band_and_logprob(
+                band,
+                chosen_logprob,
+                row.get("match_score", "null")
+            )
+
+            return {
+                "_detail_row_no": row.get("_detail_row_no"),
+                "confidence_band": band,
+                "confidence_score": score,
+                "confidence_logprob": chosen_logprob,
+            }
+
+        except Exception as e:
+            msg = str(e).lower()
+            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
+                time.sleep((2 ** attempt) + random.random())
+                continue
+            if attempt < 3:
+                time.sleep(0.5)
+                continue
+            break
+
+    return {
+        "_detail_row_no": row.get("_detail_row_no"),
+        "confidence_band": "",
+        "confidence_score": _fallback_confidence_score(row),
+        "confidence_logprob": None,
+    }
+
+
+def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
+    target_rows = [r for r in (rows or []) if isinstance(r, dict)]
+    if not target_rows:
+        return rows
+
+    for row in target_rows:
+        row.pop("confidence_score", None)
+
+    max_workers = max(1, min(DETAIL_CONFIDENCE_MAX_WORKERS, len(target_rows)))
+    scored_by_no = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {
+            ex.submit(_score_single_detail_row_with_logprobs, file_uri, row): row
+            for row in target_rows
+        }
+
+        for fut in as_completed(futures):
+            scored = fut.result()
+            row_no = scored.get("_detail_row_no")
+            if row_no is None:
+                continue
+            scored_by_no[int(row_no)] = scored
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_no = row.get("_detail_row_no")
+        if row_no is None:
+            row["confidence_score"] = _fallback_confidence_score(row)
+            continue
+
+        scored = scored_by_no.get(int(row_no))
+        if not scored:
+            row["confidence_score"] = _fallback_confidence_score(row)
+            continue
+
+        row["confidence_score"] = scored.get("confidence_score", _fallback_confidence_score(row))
+
+    return rows
+
+
+def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, return_response: bool = False):
+    parts = [
+        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
+        types.Part.from_text(text=prompt),
+    ]
+
+    config_kwargs = {
+        "temperature": 0,
+        "top_p": 0,
+        "seed": 42,
+        "candidate_count": 1,
+        "max_output_tokens": 65535,
+    }
+    if extra_config:
+        config_kwargs.update(extra_config)
+
+    response = genai_client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[types.Content(role="user", parts=parts)],
+        config=types.GenerateContentConfig(**config_kwargs),
+    )
+
+    if not response:
+        raise Exception("Empty response from Gemini")
+
+    print(f"(Gemini Run ID: {response.response_id})")
+
+    text_output = _extract_text_from_gemini_response(response)
+    if not text_output:
+        raise Exception("Gemini response tidak mengandung text")
+
+    if return_response:
+        return text_output, response
+
+    return text_output
 
 def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3):
     """
@@ -5120,6 +5399,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _validate_coo_rows(all_rows)
 
         _finalize_match_fields(all_rows)
+        all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
         _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
 
         if with_total_container:

@@ -183,7 +183,6 @@ HEADER_SCHEMA_TEXT = [
 # CONTENT FIELDS (line-level)
 # =========================
 DETAIL_LINE_SCHEMA_TEXT = """{
-  "confidence_score": "number",
   "inv_customer_po_no": "string",
   "inv_seq": "number",
   "inv_spart_item_no": "string",
@@ -224,7 +223,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 
 # dipakai Python untuk "ensure semua kolom ada"
 DETAIL_LINE_FIELDS = [
-    "confidence_score","inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
+    "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
     "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
@@ -653,7 +652,6 @@ ATURAN:
   bl_* → Bill of Lading, tidak boleh dari dokumen lain
   coo_* → Certificate of Origin, tidak boleh dari dokumen lain
 - Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
-- confidence_score adalah angka antara 1-100 yang merepresentasikan seberapa yakin model bahwa hasil ekstraksi sudah benar dan sesuai dengan dokumen.
 - Jika terdapat merged cell vertikal yang mencakup beberapa line item / beberapa row, maka nilai pada merged cell tersebut HANYA boleh diassign ke line item paling atas dalam merge group.
 - Semua line item lain yang berada di bawah merged cell yang sama WAJIB diisi 0 untuk field numerik yang berasal dari merged cell tersebut.
 - Jangan melakukan pembagian proporsional, jangan melakukan averaging, dan jangan menduplikasi nilai merged cell ke semua row.
