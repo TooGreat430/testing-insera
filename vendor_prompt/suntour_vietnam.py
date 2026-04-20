@@ -116,8 +116,18 @@ BILL OF LADING (BL)
 
      - Misalkan pada inv_spart_item_no adalah GSFB3010AXV00047, dimana itu tidak ada pada description item BL. 
        Maka bl_description dan bl_hs_code isi null saja.
+
      - Misalkan pada inv_spart_item_no adalah GSFM3010APV00034, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFM3010APV00034".
        Maka bl_description isi FORK SUSPENSION GSFM3010APV00034 dan bl_hs_code isi 8714.91
+     - Misalkan pada inv_spart_item_no adalah GSFNEXDSV0000261, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNEXDSV0000261".
+       Maka bl_description isi FORK SUSPENSION GSFNEXDSV0000261 dan bl_hs_code isi 8714.91
+     - Misalkan pada inv_spart_item_no adalah GSFNEXE25DSV0830, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNEXE25DSV0830".
+       Maka bl_description isi FORK SUSPENSION GSFNEXE25DSV0830 dan bl_hs_code isi 8714.91
+     - Misalkan pada inv_spart_item_no adalah GSFNEXE25PDV0021, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNEXE25PDV0021".
+       Maka bl_description isi FORK SUSPENSION GSFNEXE25PDV0021 dan bl_hs_code isi 8714.91
+     - Misalkan pada inv_spart_item_no adalah GSFNVX30DSV00484, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNVX30DSV00484".
+       Maka bl_description isi FORK SUSPENSION GSFNVX30DSV00484 dan bl_hs_code isi 8714.91
+   
 
 CERTIFICATE OF ORIGIN (COO)
 
