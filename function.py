@@ -552,6 +552,119 @@ def _cleanup_coo_invoice_no(value: str) -> str:
 
     return s or "null"
 
+def _should_force_recheck_invoice_no(doc_type: str, raw_invoice_no: str) -> bool:
+    normalized = _preprocess_invoice_no_for_grouping(raw_invoice_no)
+    raw_upper = str(raw_invoice_no or "").strip().upper()
+
+    if not normalized:
+        return True
+
+    if not _looks_like_invoice_no_candidate(normalized):
+        return True
+
+    if doc_type == "coo":
+        if raw_upper.startswith("RC"):
+            return True
+
+        if re.search(r"\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b", raw_upper):
+            if len(normalized) < 8:
+                return True
+
+        suspicious_keywords = [
+            "CERTIFICATE",
+            "VERIFICATION",
+            "COUNTRY",
+            "ORIGIN",
+            "VESSEL",
+            "VOYAGE",
+            "PORT",
+            "HS CODE",
+            "G.W",
+            "GROSS WEIGHT",
+        ]
+        if any(keyword in raw_upper for keyword in suspicious_keywords):
+            return True
+
+    return False
+
+
+def _build_focused_invoice_prompt(doc_type: str, target_key: str, doc_label: str) -> str:
+    if doc_type == "coo":
+        return f"""
+ROLE:
+Anda hanya mengekstrak SATU field dari dokumen COO/RCEP:
+{target_key}
+
+TUGAS:
+Ambil nomor invoice referensi yang tertulis pada dokumen COO.
+
+ATURAN PALING PENTING:
+- Baca tata letak VISUAL PDF, bukan urutan text OCR linear.
+- Fokus ke KOLOM 13 dengan label:
+  "Invoice number(s) and date of invoice(s)"
+- Kolom ini biasanya berada di sisi PALING KANAN tabel utama COO.
+- Ambil HANYA invoice number.
+- Abaikan tanggal invoice walaupun berada dalam sel yang sama.
+- Jika invoice number terpecah ke beberapa baris, gabungkan semua fragmennya tanpa spasi.
+
+CONTOH:
+Isi sel:
+SHXM22-2512000
+393
+DEC. 31, 2025
+
+Output:
+{{
+  "{target_key}": "SHXM22-2512000393"
+}}
+
+JANGAN AMBIL:
+- Certificate No.
+- verification number
+- tanggal
+- alamat
+- nama shipper / consignee / producer
+- description barang
+- HS code
+- quantity
+- gross weight
+- country of origin
+- vessel / voyage / port
+- page number
+
+ATURAN TAMBAHAN:
+- Fokus page pertama terlebih dahulu.
+- Jika continuation sheet tidak menampilkan ulang invoice number,
+  tetap gunakan invoice number yang muncul pada page pertama dokumen yang sama.
+- Hasil harus mengandung huruf dan angka.
+- Hasil boleh mengandung dash (-) atau slash (/).
+- Hasil tidak boleh diawali RC bila itu certificate number.
+
+OUTPUT HANYA JSON:
+{{
+  "{target_key}": "string"
+}}
+""".strip()
+
+    return f"""
+ROLE:
+Anda hanya mengekstrak nomor invoice referensi dari dokumen {doc_label}.
+
+TUGAS:
+Ambil SATU nilai {target_key} yang benar-benar merupakan invoice reference dokumen.
+
+ATURAN:
+- Fokus pada area header / judul / metadata dokumen.
+- Jangan ambil PO number, item number, page number, date, quantity, amount, atau reference lain yang bukan invoice number.
+- Jika nilai invoice number terpotong ke beberapa baris, gabungkan menjadi satu nilai utuh.
+- Hasil harus mengandung huruf dan/atau angka yang wajar sebagai invoice reference.
+
+OUTPUT HANYA JSON:
+{{
+  "{target_key}": "string"
+}}
+""".strip()
+
 def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> str:
     """
     Fast path: ambil invoice no referensi dari text page tanpa Gemini.
@@ -1200,8 +1313,10 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     """
     Grouping key extractor.
     Berlaku untuk invoice / packing / coo.
-    - PASS 1: pakai prompt existing build_header_prompt()
-    - PASS 2: kalau target invoice key belum ketemu, paksa re-check dengan prompt fokus
+
+    Flow:
+    - PASS 1: pakai build_header_prompt()
+    - PASS 2: re-check pakai focused prompt jika hasil PASS 1 kosong ATAU suspicious
     """
 
     target_key = _get_grouping_target_key(doc_type)
@@ -1211,9 +1326,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     grouping_name = f"{doc_type}_{uuid.uuid4().hex}"
     file_uri = _upload_temp_pdf_to_gcs(local_pdf_path, grouping_run_prefix, grouping_name)
 
-    # =========================
-    # PASS 1: existing header prompt
-    # =========================
+    # PASS 1
     header_obj = _call_gemini_json_uri(
         file_uri,
         build_header_prompt(),
@@ -1225,6 +1338,11 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
         header_obj = {}
 
     raw_invoice_no = header_obj.get(target_key, "null")
+
+    if doc_type == "coo":
+        raw_invoice_no = _cleanup_coo_invoice_no(raw_invoice_no)
+        header_obj[target_key] = raw_invoice_no
+
     preprocessed_invoice_no = _preprocess_invoice_no_for_grouping(raw_invoice_no)
     group_key = _normalize_invoice_group_key(preprocessed_invoice_no)
 
@@ -1236,58 +1354,16 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
         f"file='{os.path.basename(local_pdf_path)}'"
     )
 
-    # =========================
-    # PASS 2: FORCE RECHECK untuk semua doc_type
-    # =========================
-    if not group_key:
-        focused_prompt = f"""
-ROLE:
-Anda hanya mengekstrak nomor invoice referensi dari dokumen {doc_label}.
+    # PASS 2
+    need_recheck = _should_force_recheck_invoice_no(doc_type, raw_invoice_no)
 
-TUGAS:
-Ambil SATU nilai coo_invoice_no yang benar-benar merupakan invoice reference pada dokumen COO.
+    if need_recheck:
+        focused_prompt = _build_focused_invoice_prompt(
+            doc_type=doc_type,
+            target_key=target_key,
+            doc_label=doc_label,
+        )
 
-ATURAN KHUSUS COO:
-- Untuk dokumen COO/RCEP, prioritas utama adalah membaca kolom:
-  "Invoice number(s) and date of invoice(s)".
-- Fokus pada page pertama terlebih dahulu.
-- coo_invoice_no sering berada di kolom paling kanan pada tabel utama.
-- Nilai invoice number dapat terpecah ke beberapa baris dalam 1 sel.
-- Gabungkan semua bagian invoice number yang alfanumerik menjadi satu value utuh.
-- Jika setelah invoice number ada tanggal invoice, tanggal tersebut HARUS dibuang.
-
-CONTOH POLA VALID:
-- Baris 1: SHXM22-2512000
-- Baris 2: 393
-- Baris 3: DEC. 31, 2025
-=> coo_invoice_no = SHXM22-2512000393
-
-JANGAN AMBIL:
-- Certificate No.
-- Form RCEP / form type
-- Verification number
-- page number
-- HS code
-- quantity / gross weight
-- country of origin
-- PO number
-- packing list number
-- invoice date
-
-PRIORITAS PEMILIHAN:
-1. first valid occurrence pada page pertama
-2. nilai pada kolom "Invoice number(s) and date of invoice(s)"
-3. value alfanumerik sebelum tanggal
-4. jika terpecah beberapa baris, gabungkan
-
-OUTPUT HANYA JSON object valid.
-Jika benar-benar tidak ditemukan, isi "null".
-
-OUTPUT SCHEMA:
-{{
-  "{target_key}": "string"
-}}
-"""
         focused_obj = _call_gemini_json_uri(
             file_uri,
             focused_prompt,
@@ -1299,27 +1375,34 @@ OUTPUT SCHEMA:
             focused_obj = {}
 
         focused_invoice_no = focused_obj.get(target_key, "null")
+
         if doc_type == "coo":
             focused_invoice_no = _cleanup_coo_invoice_no(focused_invoice_no)
+
         focused_preprocessed_invoice_no = _preprocess_invoice_no_for_grouping(focused_invoice_no)
         focused_group_key = _normalize_invoice_group_key(focused_preprocessed_invoice_no)
 
-        if focused_group_key:
+        print(
+            f"[GROUPING][RECHECK_CANDIDATE][{doc_type.upper()}] "
+            f"{target_key} raw='{focused_invoice_no}' "
+            f"preprocessed='{focused_preprocessed_invoice_no}' "
+            f"group_key='{focused_group_key}' "
+            f"file='{os.path.basename(local_pdf_path)}'"
+        )
+
+        if focused_group_key and not _should_force_recheck_invoice_no(doc_type, focused_invoice_no):
             header_obj[target_key] = focused_invoice_no
             raw_invoice_no = focused_invoice_no
             group_key = focused_group_key
 
             print(
-                f"[GROUPING][RECHECK][{doc_type.upper()}] "
+                f"[GROUPING][RECHECK_ACCEPTED][{doc_type.upper()}] "
                 f"{target_key} raw='{focused_invoice_no}' "
                 f"preprocessed='{focused_preprocessed_invoice_no}' "
                 f"group_key='{focused_group_key}' "
                 f"file='{os.path.basename(local_pdf_path)}'"
             )
 
-    # =========================
-    # HARD FAIL untuk semua doc_type
-    # =========================
     if not group_key:
         raise Exception(
             f"Gagal membaca {target_key} untuk file {doc_type}: {os.path.basename(local_pdf_path)}. "

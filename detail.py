@@ -393,7 +393,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_departure_date": "string",
   "coo_vessel": "string",
   "coo_voyage_no": "string",
-  "coo_port_of_discharge": "string"
+  "coo_port_of_discharge": "string",
   "coo_gw_unit": "string",
   "coo_amount_unit": "string",
   "coo_origin_country": "string",
@@ -431,11 +431,27 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Jika ada beberapa kandidat, pilih yang paling dekat dengan judul dokumen / area header dan yang paling konsisten dengan invoice reference dokumen tersebut.
 
 3. coo_invoice_no:
-   - Ambil nomor invoice yang direferensikan oleh dokumen COO pada level header/metadata COO.
-   - coo_invoice_no bukan COO number / certificate number.
-   - Jangan ambil "Certificate No", "Form", "Reference No" lain, PO number, LC number, page number.
-   - Jika invoice number pada COO pecah ke beberapa baris, gabungkan menjadi satu nilai utuh.
-   - coo_invoice_no sering berada di area kanan / kolom khusus / field terpisah dari item description.
+   - Ambil nomor invoice yang direferensikan oleh dokumen COO/RCEP.
+   - coo_invoice_no BUKAN COO number / certificate number.
+   - Untuk dokumen COO/RCEP, prioritas utama adalah membaca KOLOM / BOX 13 dengan label:
+     "Invoice number(s) and date of invoice(s)".
+   - Gunakan layout visual tabel dokumen, bukan urutan OCR linear.
+   - Kolom ini biasanya berada di paling kanan tabel utama.
+   - Ambil HANYA bagian invoice number.
+   - Jika dalam 1 sel terdapat invoice number dan tanggal invoice:
+     1) ambil semua fragmen invoice number,
+     2) gabungkan tanpa spasi / line break,
+     3) buang tanggal invoice sepenuhnya.
+   - Contoh:
+     SHXM22-2512000
+     393
+     DEC. 31, 2025
+     Maka coo_invoice_no = SHXM22-2512000393
+   - Jangan ambil:
+     Certificate No., verification number, PO number, LC number, page number,
+     HS code, quantity, gross weight, country of origin, vessel, voyage, port, date.
+   - Jika continuation sheet tidak menampilkan ulang invoice number,
+     tetap gunakan invoice number yang muncul pada page pertama dokumen yang sama.
 
 4. inv_vendor_name pada Invoice:
    - BUKAN berasal dari PT Insera Sena.
