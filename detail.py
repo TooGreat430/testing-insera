@@ -41,7 +41,7 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_description",
     "confidence_label",
     "confidence_probability",
-
+    "confidence_percent",
     "inv_invoice_no",
     "inv_invoice_date",
     "inv_customer_po_no",

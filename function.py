@@ -2950,9 +2950,9 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
 
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": "negative",
-        "confidence_probability": None,
-        "confidence_percent": None,
+        "confidence_label": final_info["confidence_label"],
+        "confidence_probability": final_info["confidence_probability"],
+        "confidence_percent": final_info["confidence_percent"],
     }
 
 
@@ -2991,14 +2991,14 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         row_no = row.get("_detail_row_no")
         if row_no is None:
             row["confidence_label"] = "negative"
-            row["confidence_probability"] = 0.0
+            row["confidence_probability"] = None
             row["confidence_percent"] = None
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
             row["confidence_label"] = "negative"
-            row["confidence_probability"] = 0.0
+            row["confidence_probability"] = None
             row["confidence_percent"] = None
             continue
 
