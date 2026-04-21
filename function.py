@@ -2619,13 +2619,6 @@ def _extract_binary_label_scores(response):
 
 
 def _finalize_binary_confidence_from_scores(label_scores: dict):
-    """
-    Label akhir tetap 2:
-    - positive
-    - negative
-
-    Tapi penentuannya berdasarkan agregasi score dari 3 alternative token.
-    """
     positive_score = float(label_scores.get("positive_score", 0.0))
     negative_score = float(label_scores.get("negative_score", 0.0))
 
@@ -2633,21 +2626,22 @@ def _finalize_binary_confidence_from_scores(label_scores: dict):
     if total <= 0:
         return {
             "confidence_label": "negative",
-            "confidence_probability": 0.0,
+            "confidence_probability": None,   # jangan 0 palsu
+            "confidence_percent": None,
         }
 
     positive_probability = positive_score / total
-    negative_probability = negative_score / total
 
-    if positive_probability >= DETAIL_CONFIDENCE_PROB_THRESHOLD:
-        return {
-            "confidence_label": "positive",
-            "confidence_probability": round(float(positive_probability), 6),
-        }
+    final_label = (
+        "positive"
+        if positive_probability >= DETAIL_CONFIDENCE_PROB_THRESHOLD
+        else "negative"
+    )
 
     return {
-        "confidence_label": "negative",
-        "confidence_probability": round(float(negative_probability), 6),
+        "confidence_label": final_label,
+        "confidence_probability": round(float(positive_probability), 6),
+        "confidence_percent": round(float(positive_probability * 100), 2),
     }
 
 def _normalize_confidence_band(value: str) -> str:
@@ -2834,7 +2828,8 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     return {
         "_detail_row_no": row.get("_detail_row_no"),
         "confidence_label": "negative",
-        "confidence_probability": 0.0,
+        "confidence_probability": None,
+        "confidence_percent": None,
     }
 
 
@@ -2874,17 +2869,22 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         if row_no is None:
             row["confidence_label"] = "negative"
             row["confidence_probability"] = 0.0
+            row["confidence_percent"] = None
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
             row["confidence_label"] = "negative"
             row["confidence_probability"] = 0.0
+            row["confidence_percent"] = None
             continue
 
         row["confidence_label"] = scored.get("confidence_label", "negative")
         prob = scored.get("confidence_probability")
-        row["confidence_probability"] = 0.0 if prob is None else round(float(prob), 6)
+        row["confidence_probability"] = None if prob is None else round(float(prob), 6)
+
+        pct = scored.get("confidence_percent")
+        row["confidence_percent"] = None if pct is None else round(float(pct), 2)
 
     return rows
 
