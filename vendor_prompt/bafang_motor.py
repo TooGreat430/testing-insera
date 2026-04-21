@@ -83,18 +83,24 @@ PACKING LIST (PL)
 
 9. pl_volume:
    - Ekstrak dari kolom "MEASUREMENT"
-   - Jika value volume adalah merge untuk beberapa line item, value volume hanya di ekstrak untuk line item teratas dari merge value tersebut, sedangkan sisa value lainnya di isi dengan 0.
+   - Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
+     - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
+     - Semua baris setelahnya dalam merge grup yang sama → diisi 0.
      - Contoh:
+       ________________________________
        | Description  |   Measurement |
-       | Barang 1     |               |
-       | Barang 2     |     13.500    |
-       | Barang 3     |               |
-       | Barang 4     |               |
+       --------------------------------
+       | Row 1        |               |
+       | Row 2        |    13.500     |
+       | Row 3        |               |
+       | Row 4        |               |
+       --------------------------------
        maka:
-       - Barang 1, pl_volume = 13.500
-       - Barang 2, pl_volume = 0
-       - Barang 3, pl_volume = 0
-       - Barang 4, pl_volume = 0
+       - Row 1 → pl_volume = 13.5
+       - Row 2 → pl_volume = 0
+       - Row 3 → pl_volume = 0
+       - Row 4 → pl_volume = 0
+       Jadi untuk kasus merge cell ini 13.5000 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0.
    - Jangan membagi / mengarang volume per item
 
 BILL OF LADING (BL)
