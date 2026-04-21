@@ -53,6 +53,15 @@ PACKING LIST (PL):
             
 6. `pl_package_count`:
     - Ekstrak angka jumlah kemasan yang tertera sebelum unit kemasan di bawah nomor package (misalnya dari "(       20 C/T)", ekstrak 20).
+    - ATURAN SANGAT PENTING: Jika pada dokumen terdapat dua value dengan UNIT yang beda yang tergabung dalam satu UNIT dengan satuan yang lebih besar, seperti:
+      PLT No. 15- 16
+      (       2 P/T...      32 C/T)
+      CTN No. 17- 22
+      (       6 C/T)
+      CTN No. 23
+      (       1 C/T)
+      Maka:
+      pl_package_count untuk line item tersebut adalah 2 P/T + 6 C/T + 1 C/T = 2 + 6 + 1 = 9 (Totalkan dari satuan terbesarnya yaitu PLT, baru kemudian totalkan dengan satuan yang lebih kecil yaitu CTN).
     - Apabila pada 1 line item terdapat beberapa baris dengan nilai jumlah kemasan, maka jumlahkan semua nilai angka tersebut untuk mendapatkan `pl_package_count`.
     - Contoh:
         Line item A:
