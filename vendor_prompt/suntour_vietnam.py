@@ -94,7 +94,7 @@ BILL OF LADING (BL)
 
 1. bl_description dan bl_hs_code:
    - Field bl_description dan bl_hs_code merupakan SATU PAKET dan WAJIB selalu terisi (TIDAK BOLEH NULL).
-   - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL), TIDAK BOLEH mengambil dari dokumen lain.
+   - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL) saja, TIDAK BOLEH mengambil dari dokumen lain.
 
    =========================
    LOGIC MAPPING (BERURUTAN)
@@ -118,13 +118,23 @@ BILL OF LADING (BL)
    - Maka PILIH SECARA ACAK (RANDOM) satu pasangan data dari item BL:
      - bl_description = salah satu description item dari BL
      - bl_hs_code = HS CODE yang sesuai dengan item tersebut
-
+   - JANGAN MEMBUAT BL DESCRIPTION DAN BL HS CODE BARU YANG TIDAK ADA DI DOKUMEN BILL OF LADING (BL). GUNAKAN RANDOM ITEM YANG ADA SAJA DI DOKUMEN BILL OF LADING (BL).
+     Contoh:
+     DATA DI BL SEPERTI INI:
+     FORK SUSPENSION GSFM3010APV00034  HS CODE: 8714.91
+     FORK SUSPENSION GSFNEXDSV0000261  HS CODE: 8714.91
+     FORK SUSPENSION GSFNEXE25DSV0830  HS CODE: 8714.91
+     FORK SUSPENSION GSFNEXE25PDV0021  HS CODE: 8714.91
+     FORK SUSPENSION GSFNVX30DSV00484  HS CODE: 8714.91
+     
+     JANGAN BUAT DATA BARU SEPERTI = FORK SUSPENSION GSFXCM32DSV00012, YANG TIDAK ADA PADA DOKUMEN BILL OF LADING SEBAGAI HASIL EKSTRAKSI DAN MAPPING.
    =========================
    ATURAN PENTING
    =========================
    - Tidak boleh mengosongkan field (NO NULL VALUE).
    - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
-   - Tidak boleh membuat atau mengarang data di luar BL.
+   - Sumber data hanya boleh dari dokumen Bill of Lading (BL) saja.
+   - Tidak boleh membuat atau mengarang data di luar dari dokumen Bill of Lading (BL).
    - Tidak boleh mengambil HS CODE dari item yang berbeda dengan bl_description.
    - Prioritas mapping:
        1. inv_description (utama)
