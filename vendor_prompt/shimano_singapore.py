@@ -316,12 +316,7 @@ Struktur umum packing list SHIMANO (SINGAPORE):
     ------------------
     |   1.3820       |
     ------------------
-    Maka pl_volume untuk item tersebut adalah 1.382 (gunakan angka pada total line).
-   - Jika total line item tidak ada, jumlahkan semua M3 component line untuk item itu.
-   - Contoh:
-     - "0.1270" -> pl_volume = 0.127
-     - "1.6060" -> pl_volume = 1.606
-     - "4.9840" -> pl_volume = 4.984
+    Maka pl_volume untuk item tersebut adalah 1.382 (gunakan angka pada total line) dan BUKAN 1.0690, 0.2680, ataupun 0.0450!
 
 BILL OF LADING (BL)
 
