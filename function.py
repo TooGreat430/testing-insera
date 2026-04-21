@@ -48,7 +48,7 @@ DETAIL_CONFIDENCE_MAX_WORKERS = int(os.getenv("DETAIL_CONFIDENCE_MAX_WORKERS", "
 DETAIL_CONFIDENCE_LABELS = ["positive", "negative"]
 
 DETAIL_CONFIDENCE_PROB_THRESHOLD = float(
-    os.getenv("DETAIL_CONFIDENCE_PROB_THRESHOLD", "0.90")
+    os.getenv("DETAIL_CONFIDENCE_PROB_THRESHOLD", "0.70")
 )
 DETAIL_CONFIDENCE_MARGIN_THRESHOLD = float(
     os.getenv("DETAIL_CONFIDENCE_MARGIN_THRESHOLD", "1.0")
@@ -2902,6 +2902,18 @@ ROW JSON:
 """.strip()
 
 
+def _fallback_business_confidence_probability(row: dict):
+    match_score = str(row.get("match_score", "")).strip().lower()
+    match_description = str(row.get("match_description", "")).strip().lower()
+
+    if match_score == "true":
+        if match_description in ("", "null"):
+            return 0.85
+        return 0.65
+
+    return 0.25
+
+
 def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     prompt = _build_detail_confidence_prompt(row)
 
@@ -2912,7 +2924,7 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
             "enum": DETAIL_CONFIDENCE_LABELS,
         },
         "response_logprobs": True,
-        "logprobs": 3,   # <- sekarang 3 alternative token
+        "logprobs": 3,
         "max_output_tokens": 8,
     }
 
@@ -2936,6 +2948,7 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 "_detail_row_no": row.get("_detail_row_no"),
                 "confidence_label": final_info["confidence_label"],
                 "confidence_probability": final_info["confidence_probability"],
+                "confidence_percent": final_info["confidence_percent"],
             }
 
         except Exception as e:
@@ -2948,11 +2961,17 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 continue
             break
 
+    fallback_prob = _fallback_business_confidence_probability(row)
+
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": final_info["confidence_label"],
-        "confidence_probability": final_info["confidence_probability"],
-        "confidence_percent": final_info["confidence_percent"],
+        "confidence_label": (
+            "positive"
+            if fallback_prob >= DETAIL_CONFIDENCE_PROB_THRESHOLD
+            else "negative"
+        ),
+        "confidence_probability": round(float(fallback_prob), 6),
+        "confidence_percent": round(float(fallback_prob * 100), 2),
     }
 
 
@@ -2990,19 +3009,30 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
 
         row_no = row.get("_detail_row_no")
         if row_no is None:
-            row["confidence_label"] = "negative"
-            row["confidence_probability"] = None
-            row["confidence_percent"] = None
+            fallback_prob = _fallback_business_confidence_probability(row)
+            row["confidence_label"] = (
+                "positive"
+                if fallback_prob >= DETAIL_CONFIDENCE_PROB_THRESHOLD
+                else "negative"
+            )
+            row["confidence_probability"] = round(float(fallback_prob), 6)
+            row["confidence_percent"] = round(float(fallback_prob * 100), 2)
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
-            row["confidence_label"] = "negative"
-            row["confidence_probability"] = None
-            row["confidence_percent"] = None
+            fallback_prob = _fallback_business_confidence_probability(row)
+            row["confidence_label"] = (
+                "positive"
+                if fallback_prob >= DETAIL_CONFIDENCE_PROB_THRESHOLD
+                else "negative"
+            )
+            row["confidence_probability"] = round(float(fallback_prob), 6)
+            row["confidence_percent"] = round(float(fallback_prob * 100), 2)
             continue
 
         row["confidence_label"] = scored.get("confidence_label", "negative")
+
         prob = scored.get("confidence_probability")
         row["confidence_probability"] = None if prob is None else round(float(prob), 6)
 
