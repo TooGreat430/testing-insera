@@ -2652,34 +2652,20 @@ def _normalize_binary_confidence_label(value: str) -> str:
     m = re.search(r"\b(positive|negative)\b", s)
     return m.group(1) if m else ""
 
-def _extract_binary_label_scores(response):
+def _extract_pure_binary_logprob(response):
     """
-    Ambil top-3 alternative token untuk langkah label pertama,
-    lalu agregasikan ke 2 bucket:
-    - positive_score
-    - negative_score
-
-    Kalau token ketiga bukan positive/negative, dia diabaikan.
+    Ambil label yang benar-benar dipilih Gemini + chosen logprob-nya.
+    Pure dari Gemini response.
     """
-    positive_score = 0.0
-    negative_score = 0.0
-
     candidates = _get_obj_value(response, "candidates", default=[]) or []
     if not candidates:
-        return {
-            "positive_score": 0.0,
-            "negative_score": 0.0,
-        }
+        return None, None
 
     first_candidate = candidates[0]
     logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
     if not logprobs_result:
-        return {
-            "positive_score": 0.0,
-            "negative_score": 0.0,
-        }
+        return None, None
 
-    # 1) Backfill dari chosen candidate
     chosen_candidates = _get_obj_value(
         logprobs_result,
         "chosen_candidates",
@@ -2692,80 +2678,15 @@ def _extract_binary_label_scores(response):
             _get_obj_value(chosen, "token", default="")
         )
         logprob = _get_obj_value(chosen, "log_probability", "logProbability")
-        if token not in DETAIL_CONFIDENCE_LABELS or logprob is None:
-            continue
 
-        try:
-            p = math.exp(float(logprob))
-        except Exception:
-            continue
-
-        if token == "positive":
-            positive_score = max(positive_score, p)
-        elif token == "negative":
-            negative_score = max(negative_score, p)
-
-    # 2) Agregasi dari top-3 alternatives pada step pertama
-    top_candidates = _get_obj_value(
-        logprobs_result,
-        "top_candidates",
-        "topCandidates",
-        default=[]
-    ) or []
-
-    if top_candidates:
-        first_step = top_candidates[0]
-        candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
-
-        for cand in candidate_list[:3]:
-            token = _normalize_binary_confidence_label(
-                _get_obj_value(cand, "token", default="")
-            )
-            logprob = _get_obj_value(cand, "log_probability", "logProbability")
-            if token not in DETAIL_CONFIDENCE_LABELS or logprob is None:
-                continue
-
+        if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
             try:
-                p = math.exp(float(logprob))
+                return token, float(logprob)
             except Exception:
                 continue
 
-            if token == "positive":
-                positive_score += p
-            elif token == "negative":
-                negative_score += p
+    return None, None
 
-    return {
-        "positive_score": positive_score,
-        "negative_score": negative_score,
-    }
-
-
-def _finalize_binary_confidence_from_scores(label_scores: dict):
-    positive_score = float(label_scores.get("positive_score", 0.0))
-    negative_score = float(label_scores.get("negative_score", 0.0))
-
-    total = positive_score + negative_score
-    if total <= 0:
-        return {
-            "confidence_label": "negative",
-            "confidence_probability": None,   # jangan 0 palsu
-            "confidence_percent": None,
-        }
-
-    positive_probability = positive_score / total
-
-    final_label = (
-        "positive"
-        if positive_probability >= DETAIL_CONFIDENCE_PROB_THRESHOLD
-        else "negative"
-    )
-
-    return {
-        "confidence_label": final_label,
-        "confidence_probability": round(float(positive_probability), 6),
-        "confidence_percent": round(float(positive_probability * 100), 2),
-    }
 
 def _normalize_confidence_band(value: str) -> str:
     s = str(value or "").strip().upper()
@@ -2901,19 +2822,6 @@ ROW JSON:
 {row_json}
 """.strip()
 
-
-def _fallback_business_confidence_probability(row: dict):
-    match_score = str(row.get("match_score", "")).strip().lower()
-    match_description = str(row.get("match_description", "")).strip().lower()
-
-    if match_score == "true":
-        if match_description in ("", "null"):
-            return 0.85
-        return 0.65
-
-    return 0.25
-
-
 def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     prompt = _build_detail_confidence_prompt(row)
 
@@ -2941,14 +2849,22 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
             if not predicted_label:
                 raise Exception(f"binary confidence label tidak valid: {raw_text}")
 
-            label_scores = _extract_binary_label_scores(response)
-            final_info = _finalize_binary_confidence_from_scores(label_scores)
+            chosen_label, chosen_logprob = _extract_pure_binary_logprob(response)
+
+            # label tetap dari Gemini
+            final_label = chosen_label or predicted_label
+
+            probability = None
+            percent = None
+            if chosen_logprob is not None:
+                probability = math.exp(float(chosen_logprob))
+                percent = probability * 100.0
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": final_info["confidence_label"],
-                "confidence_probability": final_info["confidence_probability"],
-                "confidence_percent": final_info["confidence_percent"],
+                "confidence_label": final_label,
+                "confidence_probability": probability,
+                "confidence_percent": percent,
             }
 
         except Exception as e:
@@ -2961,17 +2877,12 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 continue
             break
 
-    fallback_prob = _fallback_business_confidence_probability(row)
-
+    # pure mode: tidak inject angka / label hardcoded
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": (
-            "positive"
-            if fallback_prob >= DETAIL_CONFIDENCE_PROB_THRESHOLD
-            else "negative"
-        ),
-        "confidence_probability": round(float(fallback_prob), 6),
-        "confidence_percent": round(float(fallback_prob * 100), 2),
+        "confidence_label": None,
+        "confidence_probability": None,
+        "confidence_percent": None,
     }
 
 
@@ -2983,6 +2894,7 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
     for row in target_rows:
         row.pop("confidence_label", None)
         row.pop("confidence_probability", None)
+        row.pop("confidence_percent", None)
         row.pop("confidence_margin", None)
         row.pop("confidence_predicted_label", None)
         row.pop("confidence_source", None)
@@ -3009,35 +2921,21 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
 
         row_no = row.get("_detail_row_no")
         if row_no is None:
-            fallback_prob = _fallback_business_confidence_probability(row)
-            row["confidence_label"] = (
-                "positive"
-                if fallback_prob >= DETAIL_CONFIDENCE_PROB_THRESHOLD
-                else "negative"
-            )
-            row["confidence_probability"] = round(float(fallback_prob), 6)
-            row["confidence_percent"] = round(float(fallback_prob * 100), 2)
+            row["confidence_label"] = None
+            row["confidence_probability"] = None
+            row["confidence_percent"] = None
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
-            fallback_prob = _fallback_business_confidence_probability(row)
-            row["confidence_label"] = (
-                "positive"
-                if fallback_prob >= DETAIL_CONFIDENCE_PROB_THRESHOLD
-                else "negative"
-            )
-            row["confidence_probability"] = round(float(fallback_prob), 6)
-            row["confidence_percent"] = round(float(fallback_prob * 100), 2)
+            row["confidence_label"] = None
+            row["confidence_probability"] = None
+            row["confidence_percent"] = None
             continue
 
-        row["confidence_label"] = scored.get("confidence_label", "negative")
-
-        prob = scored.get("confidence_probability")
-        row["confidence_probability"] = None if prob is None else round(float(prob), 6)
-
-        pct = scored.get("confidence_percent")
-        row["confidence_percent"] = None if pct is None else round(float(pct), 2)
+        row["confidence_label"] = scored.get("confidence_label")
+        row["confidence_probability"] = scored.get("confidence_probability")
+        row["confidence_percent"] = scored.get("confidence_percent")
 
     return rows
 
