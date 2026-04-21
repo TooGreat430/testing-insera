@@ -1766,6 +1766,129 @@ def _volume_values_match_with_conversion(left_value, right_value, eps=None, fact
         return True
 
     return False
+DETAIL_ROW_DEDUP_COMPARE_FIELDS = [
+    "inv_customer_po_no",
+    "inv_spart_item_no",
+    "inv_quantity",
+    "inv_unit_price",
+    "pl_customer_po_no",
+    "pl_spart_item_no",   # alias -> pl_item_no bila field ini tidak ada
+    "pl_package_count",
+    "pl_quantity",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+]
+
+DETAIL_ROW_DEDUP_NUM_FIELDS = {
+    "inv_quantity",
+    "inv_unit_price",
+    "pl_package_count",
+    "pl_quantity",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+}
+
+
+def _get_detail_dedup_raw_value(row: dict, field: str):
+    if not isinstance(row, dict):
+        return None
+
+    # alias karena di codebase saat ini field packing item = pl_item_no
+    if field == "pl_spart_item_no":
+        if "pl_spart_item_no" in row:
+            return row.get("pl_spart_item_no")
+        return row.get("pl_item_no")
+
+    return row.get(field)
+
+
+def _normalize_detail_dedup_numeric(value):
+    if _is_null(value):
+        return "null"
+
+    raw = str(value).strip().replace(",", "")
+    if raw == "":
+        return "null"
+
+    try:
+        d = Decimal(raw)
+    except Exception:
+        try:
+            return str(float(raw))
+        except Exception:
+            return raw
+
+    # samakan 10, 10.0, 10.000 -> "10"
+    normalized = format(d.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized or "0"
+
+
+def _normalize_detail_dedup_text(value):
+    if _is_null(value):
+        return "null"
+
+    s = str(value).strip().upper()
+    if s == "":
+        return "null"
+
+    # supaya "A  B" == "A B"
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _normalize_detail_dedup_value(field: str, value):
+    if field in DETAIL_ROW_DEDUP_NUM_FIELDS:
+        return _normalize_detail_dedup_numeric(value)
+
+    return _normalize_detail_dedup_text(value)
+
+
+def _build_detail_dedup_key(row: dict):
+    return tuple(
+        _normalize_detail_dedup_value(
+            field,
+            _get_detail_dedup_raw_value(row, field)
+        )
+        for field in DETAIL_ROW_DEDUP_COMPARE_FIELDS
+    )
+
+
+def _deduplicate_detail_rows_before_validation(rows: list):
+    if not isinstance(rows, list):
+        return rows
+
+    deduped = []
+    seen = set()
+    removed = 0
+
+    for idx, row in enumerate(rows or [], start=1):
+        if not isinstance(row, dict):
+            deduped.append(row)
+            continue
+
+        key = _build_detail_dedup_key(row)
+
+        # fail-safe: jangan collapse row yang semua key pembandingnya kosong/null
+        if all(v == "null" for v in key):
+            deduped.append(row)
+            continue
+
+        if key in seen:
+            removed += 1
+            print(f"[DETAIL_DEDUP][DROP] row_no={idx} key={key}")
+            continue
+
+        seen.add(key)
+        deduped.append(row)
+
+    print(
+        f"[DETAIL_DEDUP] before={len(rows)} after={len(deduped)} removed={removed}"
+    )
+    return deduped
 
 def _validate_total_rows(total_data, detail_rows: list):
     if total_data is None:
@@ -3580,18 +3703,117 @@ def _recompute_seq_by_key(rows: list, group_key: str, seq_key: str):
         counter[gk] = counter.get(gk, 0) + 1
         r[seq_key] = counter[gk]
 
+COO_ITEM_LEVEL_FIELDS = [
+    "coo_seq",
+    "coo_description",
+    "coo_hs_code",
+    "coo_quantity",
+    "coo_unit",
+    "coo_criteria",
+    "coo_origin_country",
+    "coo_amount_unit",
+    "coo_amount",
+    "coo_gw_unit",
+    "coo_gw",
+    "coo_package_count",
+    "coo_package_unit",
+]
+
+def _row_has_meaningful_coo_item(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+
+    item_fields = [
+        "coo_description",
+        "coo_hs_code",
+        "coo_quantity",
+        "coo_unit",
+        "coo_criteria",
+        "coo_origin_country",
+        "coo_amount",
+        "coo_gw",
+        "coo_package_count",
+    ]
+
+    return any(not _is_null(row.get(k)) for k in item_fields)
+
+def _nullify_coo_item_fields(row: dict):
+    for k in COO_ITEM_LEVEL_FIELDS:
+        row[k] = "null"
+
+def _coo_item_matches_row(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+
+    coo_desc = row.get("coo_description")
+    coo_hs = row.get("coo_hs_code")
+    coo_qty = row.get("coo_quantity")
+
+    inv_desc = row.get("inv_description")
+    inv_item = row.get("inv_spart_item_no")
+    pl_item = row.get("pl_item_no")
+    inv_hs = row.get("inv_hs_code")
+    inv_qty = row.get("inv_quantity")
+
+    # 1) code-based match dari deskripsi COO
+    coo_codes = _extract_bl_description_codes(coo_desc)
+
+    code_match = any(
+        _code_exists_in_value(code, inv_desc) or
+        _code_exists_in_value(code, inv_item) or
+        _code_exists_in_value(code, pl_item)
+        for code in coo_codes
+    )
+
+    # 2) fallback description contains
+    desc_match = False
+    if not code_match:
+        desc_match = (
+            _text_exists_in_description(coo_desc, inv_desc) or
+            _text_exists_in_description(inv_desc, coo_desc)
+        )
+
+    # 3) optional support: HS + qty
+    hs_match = False
+    if not _is_null(coo_hs) and not _is_null(inv_hs):
+        hs_match = _normalize_code_compare_value(coo_hs) == _normalize_code_compare_value(inv_hs)
+
+    qty_match = False
+    coo_qty_num = _to_float(coo_qty)
+    inv_qty_num = _to_float(inv_qty)
+    if coo_qty_num is not None and inv_qty_num is not None:
+        qty_match = abs(coo_qty_num - inv_qty_num) <= 0.01
+
+    # aturan utama:
+    # - kalau ada code match -> match
+    # - kalau desc match + (hs match atau qty match) -> match
+    # - kalau hanya hs+qty tanpa desc/code, boleh dianggap match konservatif
+    if code_match:
+        return True
+
+    if desc_match and (hs_match or qty_match):
+        return True
+
+    if hs_match and qty_match:
+        return True
+
+    return False
+
+def _postprocess_coo_item_mapping(rows: list):
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        # kalau row ini bahkan tidak punya payload COO item-level, biarkan
+        if not _row_has_meaningful_coo_item(row):
+            continue
+
+        if not _coo_item_matches_row(row):
+            _nullify_coo_item_fields(row)
+
 
 def _postprocess_coo_no_and_seq(rows: list):
-    """
-    Rule:
-    - Jalankan hanya kalau data COO memang ada.
-    - Jika coo_no kosong/null, fallback ke inv_invoice_no.
-    - coo_seq dihitung ulang berdasarkan coo_no hasil fallback tsb.
-    """
-
-    # COO dianggap ada kalau minimal salah satu field COO berikut terisi.
-    # coo_no sengaja tidak dipakai sebagai penanda presence,
-    # karena justru field ini yang mau kita fallback.
+    # COO dianggap ada kalau minimal ada header/doc-level COO
     coo_keys_presence = [
         "coo_form_type",
         "coo_invoice_no",
@@ -3603,21 +3825,28 @@ def _postprocess_coo_no_and_seq(rows: list):
 
     has_coo = _doc_present(rows, coo_keys_presence)
 
+    active_rows = []
+
     for r in rows or []:
         if not isinstance(r, dict):
             continue
 
         if not has_coo:
-            # konsisten dengan flow lama: kalau tidak ada COO, seq = 0
-            r["coo_seq"] = 0
+            r["coo_seq"] = "null"
             continue
 
-        # fallback coo_no dari invoice number
+        # hanya row yang masih punya item COO meaningful yang boleh ikut seq
+        if not _row_has_meaningful_coo_item(r):
+            r["coo_seq"] = "null"
+            continue
+
         if _is_null(r.get("coo_no")) and not _is_null(r.get("inv_invoice_no")):
             r["coo_no"] = str(r.get("inv_invoice_no")).strip()
 
-    if has_coo:
-        _recompute_seq_by_key(rows, "coo_no", "coo_seq")
+        active_rows.append(r)
+
+    if active_rows:
+        _recompute_seq_by_key(active_rows, "coo_no", "coo_seq")
 
     return rows
 
@@ -4266,64 +4495,18 @@ def _validate_coo_rows(rows: list):
         if not isinstance(r, dict):
             continue
 
+        # NEW:
+        # kalau row ini tidak punya COO item yang berhasil match,
+        # jangan divalidasi sebagai COO row
+        if not _row_has_meaningful_coo_item(r):
+            continue
+
         for k in required:
             if _is_null(r.get(k)):
                 _append_err(r, f"COO: missing {k}")
 
         crit = norm(r.get("coo_criteria"))
-        if crit == "RVC":
-            if _is_null(r.get("coo_amount_unit")):
-                _append_err(r, "COO: missing coo_amount_unit for RVC")
-            if _is_null(r.get("coo_amount")):
-                _append_err(r, "COO: missing coo_amount for RVC")
-        elif crit == "PE":
-            if _is_null(r.get("coo_gw_unit")):
-                _append_err(r, "COO: missing coo_gw_unit for PE")
-            if _is_null(r.get("coo_gw")):
-                _append_err(r, "COO: missing coo_gw for PE")
-
-        inv_qty = r.get("inv_quantity")
-        coo_qty = r.get("coo_quantity")
-        _compare_num_values(
-            r,
-            inv_qty,
-            coo_qty,
-            f"COO: coo_quantity != inv_quantity (inv {_to_float(inv_qty)}, coo {_to_float(coo_qty)})"
-        )
-
-        _compare_text_values(
-            r,
-            r.get("inv_quantity_unit"),
-            r.get("coo_unit"),
-            f"COO: coo_unit != inv_quantity_unit "
-            f"(inv {r.get('inv_quantity_unit')}, coo {r.get('coo_unit')})",
-            normalize_fn=norm
-        )
-
-        inv_amt = r.get("inv_amount")
-        coo_amt = r.get("coo_amount")
-        _compare_num_values(
-            r,
-            inv_amt,
-            coo_amt,
-            f"COO: coo_amount != inv_amount (inv {_to_float(inv_amt)}, coo {_to_float(coo_amt)})"
-        )
-
-        _compare_text_values(
-            r,
-            r.get("inv_amount_unit"),
-            r.get("coo_amount_unit"),
-            "COO: coo_amount_unit != inv_amount_unit",
-            normalize_fn=norm
-        )
-
-        _compare_text_values(
-            r,
-            r.get("coo_invoice_no"),
-            r.get("inv_invoice_no"),
-            "COO: coo_invoice_no != inv_invoice_no",
-            normalize_fn=lambda x: str(x).strip()
-        )
+        ...
 
 # ==============================
 # (NEW) MAP PO -> TOTAL
@@ -5207,13 +5390,16 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _fill_inv_price_unit_from_amount_unit(rows)
 
     _recompute_seq_by_key(rows, "inv_invoice_no", "inv_seq")
-    _postprocess_coo_no_and_seq(rows)
 
     _postprocess_customer_po_no(rows)
     _postprocess_inv_description(rows)
     _postprocess_item_no_fields(rows)
     _postprocess_unit_fields(rows)
     _postprocess_coo_description(rows)
+
+    _postprocess_coo_item_mapping(rows)
+    _postprocess_coo_no_and_seq(rows)
+
     _postprocess_bl_description(rows)
     _postprocess_bl_seller_name_similarity(rows)
 
@@ -5565,13 +5751,19 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         print("PO LINES FOUND:", len(po_lines))
 
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
-        _postprocess_coo_no_and_seq(all_rows)
 
         _postprocess_customer_po_no(all_rows)
         _postprocess_inv_description(all_rows)
         _postprocess_item_no_fields(all_rows)
         _postprocess_unit_fields(all_rows)
         _postprocess_coo_description(all_rows)
+
+        # NEW: null-kan COO item yang tidak match ke row detail
+        _postprocess_coo_item_mapping(all_rows)
+
+        # NEW: hitung coo_seq hanya untuk row COO yang masih valid/matched
+        _postprocess_coo_no_and_seq(all_rows)
+
         _postprocess_bl_description(all_rows)
         _postprocess_bl_seller_name_similarity(all_rows)
 
@@ -5579,6 +5771,12 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         all_rows = _generate_inv_amount_before_validation(all_rows)
 
         _postprocess_bl_coo_zero_to_null(all_rows)
+
+        all_rows = _deduplicate_detail_rows_before_validation(all_rows)
+
+        _assign_detail_row_numbers(all_rows)
+        _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
+        _postprocess_coo_no_and_seq(all_rows)
 
         all_rows = _validate_po(all_rows)
 
