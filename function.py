@@ -2530,37 +2530,60 @@ def _normalize_binary_confidence_label(value: str) -> str:
     return m.group(1) if m else ""
 
 def _extract_binary_logprob_bundle(response):
-    candidates = getattr(response, "candidates", None) or []
+    candidates = _get_obj_value(response, "candidates", default=[]) or []
     if not candidates:
         return None, []
 
     first_candidate = candidates[0]
-    logprobs_result = getattr(first_candidate, "logprobs_result", None)
+    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
     if not logprobs_result:
         return None, []
 
-    chosen_candidates = getattr(logprobs_result, "chosen_candidates", None) or []
-    top_candidates = getattr(logprobs_result, "top_candidates", None) or []
+    chosen_candidates = _get_obj_value(
+        logprobs_result,
+        "chosen_candidates",
+        "chosenCandidates",
+        default=[]
+    ) or []
+
+    top_candidates = _get_obj_value(
+        logprobs_result,
+        "top_candidates",
+        "topCandidates",
+        default=[]
+    ) or []
 
     chosen_logprob = None
     for chosen in chosen_candidates:
-        token = _normalize_binary_confidence_label(getattr(chosen, "token", ""))
-        logprob = getattr(chosen, "log_probability", None)
+        token = _normalize_binary_confidence_label(
+            _get_obj_value(chosen, "token", default="")
+        )
+        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
         if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-            chosen_logprob = float(logprob)
-            break
+            try:
+                chosen_logprob = float(logprob)
+                break
+            except Exception:
+                pass
 
     best_by_label = {}
     if top_candidates:
         first_step = top_candidates[0]
-        candidate_list = getattr(first_step, "candidates", None) or []
+        candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
 
         for cand in candidate_list:
-            token = _normalize_binary_confidence_label(getattr(cand, "token", ""))
-            logprob = getattr(cand, "log_probability", None)
+            token = _normalize_binary_confidence_label(
+                _get_obj_value(cand, "token", default="")
+            )
+            logprob = _get_obj_value(cand, "log_probability", "logProbability")
             if token not in DETAIL_CONFIDENCE_LABELS or logprob is None:
                 continue
-            lp = float(logprob)
+
+            try:
+                lp = float(logprob)
+            except Exception:
+                continue
+
             if token not in best_by_label or lp > best_by_label[token]:
                 best_by_label[token] = lp
 
@@ -2575,7 +2598,10 @@ def _extract_binary_logprob_bundle(response):
 def _finalize_binary_confidence(predicted_label: str, chosen_logprob, ranked_candidates: list):
     probability = None
     if chosen_logprob is not None:
-        probability = math.exp(float(chosen_logprob))
+        try:
+            probability = math.exp(float(chosen_logprob))
+        except Exception:
+            probability = None
 
     top1 = ranked_candidates[0] if len(ranked_candidates) >= 1 else None
     top2 = ranked_candidates[1] if len(ranked_candidates) >= 2 else None
@@ -2596,8 +2622,6 @@ def _finalize_binary_confidence(predicted_label: str, chosen_logprob, ranked_can
     return {
         "confidence_label": final_label,
         "confidence_probability": probability,
-        "confidence_margin": margin,
-        "confidence_predicted_label": predicted_label,
     }
 
 def _normalize_confidence_band(value: str) -> str:
@@ -2773,9 +2797,6 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 "_detail_row_no": row.get("_detail_row_no"),
                 "confidence_label": final_info["confidence_label"],
                 "confidence_probability": final_info["confidence_probability"],
-                "confidence_margin": final_info["confidence_margin"],
-                "confidence_predicted_label": final_info["confidence_predicted_label"],
-                "confidence_source": "logprobs",
             }
 
         except Exception as e:
@@ -2791,10 +2812,7 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     return {
         "_detail_row_no": row.get("_detail_row_no"),
         "confidence_label": "negative",
-        "confidence_probability": None,
-        "confidence_margin": None,
-        "confidence_predicted_label": "",
-        "confidence_source": "fallback",
+        "confidence_probability": 0.0,
     }
 
 
@@ -2833,26 +2851,18 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         row_no = row.get("_detail_row_no")
         if row_no is None:
             row["confidence_label"] = "negative"
-            row["confidence_probability"] = None
-            row["confidence_margin"] = None
-            row["confidence_predicted_label"] = ""
-            row["confidence_source"] = "fallback"
+            row["confidence_probability"] = 0.0
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
             row["confidence_label"] = "negative"
-            row["confidence_probability"] = None
-            row["confidence_margin"] = None
-            row["confidence_predicted_label"] = ""
-            row["confidence_source"] = "fallback"
+            row["confidence_probability"] = 0.0
             continue
 
         row["confidence_label"] = scored.get("confidence_label", "negative")
-        row["confidence_probability"] = scored.get("confidence_probability")
-        row["confidence_margin"] = scored.get("confidence_margin")
-        row["confidence_predicted_label"] = scored.get("confidence_predicted_label", "")
-        row["confidence_source"] = scored.get("confidence_source", "fallback")
+        prob = scored.get("confidence_probability")
+        row["confidence_probability"] = 0.0 if prob is None else round(float(prob), 6)
 
     return rows
 
@@ -5559,7 +5569,15 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
         _finalize_match_fields(all_rows)
         all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
-        _drop_columns(all_rows, ["inv_messrs", "inv_messrs_address", "inv_gw", "inv_gw_unit"])
+        _drop_columns(all_rows, [
+            "inv_messrs",
+            "inv_messrs_address",
+            "inv_gw",
+            "inv_gw_unit",
+            "confidence_margin",
+            "confidence_predicted_label",
+            "confidence_source",
+        ])
 
         if with_total_container:
             total_data = _build_total_from_detail_and_container(all_rows, container_data)
