@@ -271,17 +271,20 @@ Struktur umum packing list SHIMANO (SINGAPORE):
 7. pl_nw
    - Ambil net weight item-level dari kolom "NET/GROSS WEIGHT".
    - Gunakan pl_nw pada sel total line item sebelum tanda '/' (Terletak di bagian bawah), bukan dari component line.
+   - Prioritas:
+     1) gunakan volume pada total line item
+     2) jika total line tidak ada, jumlahkan semua M3 component line untuk item itu
    - Contoh:
     |NET/GROSS WEIGHT(KG)|
     |====================|
-    |     2.7600         |
+    |     12.7600         |
     |     16.4700        |
     |     1.9100         |
     |     3.6000         |
     ---------------------|
     |   14.6700/20.0700  |
     ---------------------|
-    Maka pl_nw untuk item tersebut adalah 14.6700 (gunakan angka pada total line).
+    Maka pl_nw untuk item tersebut adalah 14.6700 (gunakan angka pada total line) dan BUKAN 12.76 ataupun 1.9100.
 
 8. pl_gw
    - Ambil gross weight item-level dari kolom "NET/GROSS WEIGHT".
@@ -289,14 +292,14 @@ Struktur umum packing list SHIMANO (SINGAPORE):
    - Contoh:
     |NET/GROSS WEIGHT(KG)|
     |====================|
-    |     2.7600         |
+    |     12.7600         |
     |     16.4700        |
     |     1.9100         |
     |     3.6000         |
     ---------------------|
     |   14.6700/20.0700  |
     ---------------------|
-    Maka pl_gw untuk item tersebut adalah 20.0700 (gunakan angka pada total line).
+    Maka pl_gw untuk item tersebut adalah 20.0700 (gunakan angka pada total line) dan BUKAN 16.47 ataupun 3.6000.
 
 9. pl_volume
    - Ambil volume item-level dalam M3 dari kolom "DIMENSION (CM, M3)".
@@ -314,6 +317,11 @@ Struktur umum packing list SHIMANO (SINGAPORE):
     |   1.3820       |
     ------------------
     Maka pl_volume untuk item tersebut adalah 1.382 (gunakan angka pada total line).
+   - Jika total line item tidak ada, jumlahkan semua M3 component line untuk item itu.
+   - Contoh:
+     - "0.1270" -> pl_volume = 0.127
+     - "1.6060" -> pl_volume = 1.606
+     - "4.9840" -> pl_volume = 4.984
 
 BILL OF LADING (BL)
 
