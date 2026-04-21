@@ -270,33 +270,40 @@ Struktur umum packing list SHIMANO (SINGAPORE):
 
 7. pl_nw
    - Ambil net weight item-level dari kolom "NET/GROSS WEIGHT".
-   - Prioritas:
-     1) gunakan angka net pada total line item
-     2) jika total line tidak ada, jumlahkan semua net weight component line untuk item tersebut
-   - Pada total line, format umumnya:
-     NET WEIGHT/GROSS WEIGHT
+   - Gunakan pl_nw pada sel total line item sebelum tanda '/' (Terletak di bagian bawah), bukan dari component line.
    - Contoh:
-     - "42.0000/46.6100" -> pl_nw = 42.0
-     - "152.5400/214.7900" -> pl_nw = 152.54
-     - "983.1600/1149.3000" -> pl_nw = 983.16
+    |NET/GROSS WEIGHT(KG)|
+    |====================|
+    |     2.7600         |
+    |     16.4700        |
+    |     1.9100         |
+    |     3.6000         |
+    ---------------------|
+    |   14.6700/20.0700  |
+    ---------------------|
+    Maka pl_nw untuk item tersebut adalah 14.6700 (gunakan angka pada total line).
 
 8. pl_gw
    - Ambil gross weight item-level dari kolom "NET/GROSS WEIGHT".
-   - Prioritas:
-     1) gunakan angka gross pada total line item
-     2) jika total line tidak ada, jumlahkan semua gross weight component line untuk item itu
-   - Pada total line, format umumnya:
-     NET WEIGHT/GROSS WEIGHT
+   - Gunakan pl_gw pada sel total line item setelah tanda '/' (Terletak di bagian bawah), bukan dari component line.
    - Contoh:
-     - "42.0000/46.6100" -> pl_gw = 46.61
-     - "152.5400/214.7900" -> pl_gw = 214.79
-     - "983.1600/1149.3000" -> pl_gw = 1149.3
+    |NET/GROSS WEIGHT(KG)|
+    |====================|
+    |     2.7600         |
+    |     16.4700        |
+    |     1.9100         |
+    |     3.6000         |
+    ---------------------|
+    |   14.6700/20.0700  |
+    ---------------------|
+    Maka pl_gw untuk item tersebut adalah 20.0700 (gunakan angka pada total line).
 
 9. pl_volume
    - Ambil volume item-level dalam M3 dari kolom "DIMENSION (CM, M3)".
    - Gunakan volume pada sel total line item (Terletak di bagian bawah), bukan dari component line.
    - Contoh:
     |DIMENSION(CM,M3)|
+    |================|
     |   108X110X90   |
     |   1.0690       |
     |   52X33X39     |
