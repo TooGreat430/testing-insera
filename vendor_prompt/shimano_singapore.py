@@ -294,14 +294,19 @@ Struktur umum packing list SHIMANO (SINGAPORE):
 
 9. pl_volume
    - Ambil volume item-level dalam M3 dari kolom "DIMENSION (CM, M3)".
-   - Prioritas:
-     1) gunakan volume pada total line item
-     2) jika total line tidak ada, jumlahkan semua M3 component line untuk item itu
+   - Gunakan volume pada sel total line item (Terletak di bagian bawah), bukan dari component line.
    - Contoh:
-     - "0.1270" -> pl_volume = 0.127
-     - "1.6060" -> pl_volume = 1.606
-     - "4.9840" -> pl_volume = 4.984
-
+    |DIMENSION(CM,M3)|
+    |   108X110X90   |
+    |   1.0690       |
+    |   52X33X39     |
+    |   0.2680       |
+    |   54X35X24     |
+    |   .0450        |
+    ------------------
+    |   1.3820       |
+    ------------------
+    Maka pl_volume untuk item tersebut adalah 1.382 (gunakan angka pada total line).
 
 BILL OF LADING (BL)
 
