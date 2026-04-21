@@ -93,42 +93,69 @@ PACKING LIST (PL)
 BILL OF LADING (BL)
 
 1. bl_description dan bl_hs_code:
-   - bl_description dimapping dengan inv_spart_item_no. 
-   - Pada bl_description terdapat nomor spart item. Contoh:
-     - FORK SUSPENSION GSFM3010APV00034, 
-       maka nomor spart item = GSFM3010APV00034.
-     Jika nomor spart item pada BL sama dengan inv_spart_item_no, maka bl_description di mapping dengan invoice.
-   - Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null saja.
-   - Value bl_hs_code diisi sesuai dengan bl_descriptionnya.
-   - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
+   - Field bl_description dan bl_hs_code merupakan SATU PAKET dan WAJIB selalu terisi (TIDAK BOLEH NULL).
+   - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL), TIDAK BOLEH mengambil dari dokumen lain.
 
-   - Contoh:
-     - FORK SUSPENSION GSFM3010APV00034
-       HS CODE: 8714.91
-     - FORK SUSPENSION GSFNEXDSV0000261
-       HS CODE: 8714.91
-     - FORK SUSPENSION GSFNEXE25DSV0830
-       HS CODE: 8714.91
-     - FORK SUSPENSION GSFNEXE25PDV0021
-       HS CODE: 8714.91
-     - FORK SUSPENSION GSFNVX30DSV00484
-       HS CODE: 8714.91
+   =========================
+   LOGIC MAPPING (BERURUTAN)
+   =========================
+   STEP 1 — Mapping berdasarkan inv_description:
+   - Cari apakah inv_description MATCH dengan deskripsi item pada BL.
+   - Jika ditemukan:
+     - bl_description = description item pada BL yang sesuai
+     - bl_hs_code = HS CODE yang terkait dengan bl_description tersebut
 
-     - Misalkan pada inv_spart_item_no adalah GSFB3010AXV00047, dimana itu tidak ada pada description item BL. 
-       Maka bl_description dan bl_hs_code isi null saja.
+   STEP 2 — Jika TIDAK ditemukan di STEP 1, mapping berdasarkan inv_spart_item_no:
+   - Pada deskripsi BL, identifikasi nomor spart item (biasanya berupa kode unik di akhir deskripsi).
+     Contoh:
+       FORK SUSPENSION GSFM3010APV00034 → spart item = GSFM3010APV00034
+   - Jika inv_spart_item_no MATCH dengan spart item pada BL:
+     - bl_description = description item pada BL yang mengandung spart item tersebut
+     - bl_hs_code = HS CODE yang terkait
 
-     - Misalkan pada inv_spart_item_no adalah GSFM3010APV00034, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFM3010APV00034".
-       Maka bl_description isi FORK SUSPENSION GSFM3010APV00034 dan bl_hs_code isi 8714.91
-     - Misalkan pada inv_spart_item_no adalah GSFNEXDSV0000261, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNEXDSV0000261".
-       Maka bl_description isi FORK SUSPENSION GSFNEXDSV0000261 dan bl_hs_code isi 8714.91
-     - Misalkan pada inv_spart_item_no adalah GSFNEXE25DSV0830, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNEXE25DSV0830".
-       Maka bl_description isi FORK SUSPENSION GSFNEXE25DSV0830 dan bl_hs_code isi 8714.91
-     - Misalkan pada inv_spart_item_no adalah GSFNEXE25PDV0021, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNEXE25PDV0021".
-       Maka bl_description isi FORK SUSPENSION GSFNEXE25PDV0021 dan bl_hs_code isi 8714.91
-     - Misalkan pada inv_spart_item_no adalah GSFNVX30DSV00484, dimana itu ada pada description item BL yaitu FORK SUSPENSION "GSFNVX30DSV00484".
-       Maka bl_description isi FORK SUSPENSION GSFNVX30DSV00484 dan bl_hs_code isi 8714.91
+   STEP 3 — Jika STEP 1 dan STEP 2 TIDAK ditemukan:
+   - Karena bl_description dan bl_hs_code TIDAK BOLEH NULL,
+   - Maka PILIH SECARA ACAK (RANDOM) satu pasangan data dari item BL:
+     - bl_description = salah satu description item dari BL
+     - bl_hs_code = HS CODE yang sesuai dengan item tersebut
+
+   =========================
+   ATURAN PENTING
+   =========================
+   - Tidak boleh mengosongkan field (NO NULL VALUE).
+   - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
+   - Tidak boleh membuat atau mengarang data di luar BL.
+   - Tidak boleh mengambil HS CODE dari item yang berbeda dengan bl_description.
+   - Prioritas mapping:
+       1. inv_description (utama)
+       2. inv_spart_item_no (fallback)
+       3. random BL item (last resort, WAJIB jika tidak match)
+
+   =========================
+   CONTOH
+   =========================
+   BL:
+     - FRAME PART A-HG009 HS CODE: 8714.91
+     - FORK SUSPENSION GSFM3010APV00034 HS CODE: 8714.91
+
+   Case 1:
+     inv_description = FRAME PART A-HG009
+     → MATCH STEP 1
+     → bl_description = FRAME PART A-HG009
+     → bl_hs_code = 8714.91
+
+   Case 2:
+     inv_spart_item_no = GSFM3010APV00034
+     → MATCH STEP 2
+     → bl_description = FORK SUSPENSION GSFM3010APV00034
+     → bl_hs_code = 8714.91
+
+   Case 3:
+     inv_description & inv_spart_item_no tidak ada di BL
+     → STEP 3 (RANDOM)
+     → bl_description = FRAME PART A-HG009 (contoh random)
+     → bl_hs_code = 8714.91
    
-
 CERTIFICATE OF ORIGIN (COO)
 
 1. coo_mark_number:
