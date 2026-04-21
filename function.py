@@ -45,14 +45,14 @@ from vendor_detection import (
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 DETAIL_CONFIDENCE_MAX_WORKERS = int(os.getenv("DETAIL_CONFIDENCE_MAX_WORKERS", "8"))
-DETAIL_CONFIDENCE_ENUM_VALUES = ["5", "4", "3", "2", "1"]
-DETAIL_CONFIDENCE_SCORE_RANGES = {
-    "5": (85, 100),
-    "4": (70, 84),
-    "3": (50, 69),
-    "2": (25, 49),
-    "1": (1, 24),
-}
+DETAIL_CONFIDENCE_LABELS = ["positive", "negative"]
+
+DETAIL_CONFIDENCE_PROB_THRESHOLD = float(
+    os.getenv("DETAIL_CONFIDENCE_PROB_THRESHOLD", "0.90")
+)
+DETAIL_CONFIDENCE_MARGIN_THRESHOLD = float(
+    os.getenv("DETAIL_CONFIDENCE_MARGIN_THRESHOLD", "1.0")
+)
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -2521,6 +2521,84 @@ def _get_obj_value(obj, *names, default=None):
 def _clamp(value, low, high):
     return max(low, min(high, value))
 
+def _normalize_binary_confidence_label(value: str) -> str:
+    s = str(value or "").strip().lower().strip('"').strip("'")
+    if s in {"positive", "negative"}:
+        return s
+
+    m = re.search(r"\b(positive|negative)\b", s)
+    return m.group(1) if m else ""
+
+def _extract_binary_logprob_bundle(response):
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return None, []
+
+    first_candidate = candidates[0]
+    logprobs_result = getattr(first_candidate, "logprobs_result", None)
+    if not logprobs_result:
+        return None, []
+
+    chosen_candidates = getattr(logprobs_result, "chosen_candidates", None) or []
+    top_candidates = getattr(logprobs_result, "top_candidates", None) or []
+
+    chosen_logprob = None
+    for chosen in chosen_candidates:
+        token = _normalize_binary_confidence_label(getattr(chosen, "token", ""))
+        logprob = getattr(chosen, "log_probability", None)
+        if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
+            chosen_logprob = float(logprob)
+            break
+
+    best_by_label = {}
+    if top_candidates:
+        first_step = top_candidates[0]
+        candidate_list = getattr(first_step, "candidates", None) or []
+
+        for cand in candidate_list:
+            token = _normalize_binary_confidence_label(getattr(cand, "token", ""))
+            logprob = getattr(cand, "log_probability", None)
+            if token not in DETAIL_CONFIDENCE_LABELS or logprob is None:
+                continue
+            lp = float(logprob)
+            if token not in best_by_label or lp > best_by_label[token]:
+                best_by_label[token] = lp
+
+    ranked = sorted(
+        [{"label": k, "logprob": v} for k, v in best_by_label.items()],
+        key=lambda x: x["logprob"],
+        reverse=True
+    )
+
+    return chosen_logprob, ranked
+
+def _finalize_binary_confidence(predicted_label: str, chosen_logprob, ranked_candidates: list):
+    probability = None
+    if chosen_logprob is not None:
+        probability = math.exp(float(chosen_logprob))
+
+    top1 = ranked_candidates[0] if len(ranked_candidates) >= 1 else None
+    top2 = ranked_candidates[1] if len(ranked_candidates) >= 2 else None
+
+    margin = None
+    if top1 and top2:
+        margin = float(top1["logprob"]) - float(top2["logprob"])
+
+    final_label = "negative"
+    if (
+        predicted_label == "positive"
+        and probability is not None
+        and probability >= DETAIL_CONFIDENCE_PROB_THRESHOLD
+        and (margin is None or margin >= DETAIL_CONFIDENCE_MARGIN_THRESHOLD)
+    ):
+        final_label = "positive"
+
+    return {
+        "confidence_label": final_label,
+        "confidence_probability": probability,
+        "confidence_margin": margin,
+        "confidence_predicted_label": predicted_label,
+    }
 
 def _normalize_confidence_band(value: str) -> str:
     s = str(value or "").strip().upper()
@@ -2638,24 +2716,19 @@ def _build_detail_confidence_prompt(row: dict) -> str:
 
     return f"""
 ROLE:
-Anda adalah AI reviewer untuk menilai tingkat keyakinan hasil ekstraksi 1 line item.
+Anda adalah AI reviewer untuk menilai 1 line item hasil ekstraksi.
 PDF pada request ini adalah source of truth utama.
 
 TUGAS:
-Lihat row JSON berikut lalu nilai seberapa yakin Anda bahwa row itu SUDAH BENAR secara keseluruhan terhadap isi PDF.
-
-OUTPUT HARUS HANYA SALAH SATU ENUM:
-- 5 = sangat yakin row ini benar secara keseluruhan
-- 4 = yakin, mungkin hanya ada kekurangan kecil
-- 3 = cukup ambigu / sebagian benar tetapi masih ada keraguan berarti
-- 2 = kemungkinan ada salah mapping, salah angka, atau salah pasangan row
-- 1 = besar kemungkinan row ini salah
+Klasifikasikan row ini menjadi:
+- positive = row ini benar / cocok secara keseluruhan terhadap PDF
+- negative = row ini tidak cukup yakin, salah mapping, salah angka, salah pasangan row, atau gagal validasi
 
 ATURAN:
 - Nilai confidence adalah untuk KESELURUHAN row, bukan per-field.
-- missing value boleh tetap dinilai tinggi jika memang value itu tidak ada di dokumen.
-- Jika match_score=false atau match_description berisi error validasi, anggap itu sebagai sinyal kuat untuk menurunkan confidence.
-- Jangan jelaskan alasan. Output hanya satu angka enum: 5 / 4 / 3 / 2 / 1.
+- Missing value boleh tetap positive jika memang value itu tidak ada di dokumen.
+- Jika match_score=false atau match_description berisi error validasi, negative lebih tepat kecuali bukti PDF sangat kuat.
+- Output HARUS hanya salah satu enum ini: positive / negative
 
 ROW JSON:
 {row_json}
@@ -2664,15 +2737,16 @@ ROW JSON:
 
 def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     prompt = _build_detail_confidence_prompt(row)
+
     extra_config = {
-        "response_mime_type": "text/x.enum",
+        "response_mime_type": "application/json",
         "response_schema": {
             "type": "STRING",
-            "enum": DETAIL_CONFIDENCE_ENUM_VALUES,
+            "enum": DETAIL_CONFIDENCE_LABELS,
         },
         "response_logprobs": True,
-        "logprobs": 5,
-        "max_output_tokens": 4,
+        "logprobs": 2,
+        "max_output_tokens": 8,
     }
 
     for attempt in range(1, 4):
@@ -2683,22 +2757,25 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 extra_config=extra_config,
                 return_response=True,
             )
-            band = _normalize_confidence_band(raw_text)
-            if not band:
-                raise Exception(f"enum confidence tidak valid: {raw_text}")
 
-            chosen_logprob = _extract_confidence_logprob_from_response(response)
-            score = _confidence_score_from_band_and_logprob(
-                band,
+            predicted_label = _normalize_binary_confidence_label(raw_text)
+            if not predicted_label:
+                raise Exception(f"binary confidence label tidak valid: {raw_text}")
+
+            chosen_logprob, ranked_candidates = _extract_binary_logprob_bundle(response)
+            final_info = _finalize_binary_confidence(
+                predicted_label,
                 chosen_logprob,
-                row.get("match_score", "null")
+                ranked_candidates,
             )
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_band": band,
-                "confidence_score": score,
-                "confidence_logprob": chosen_logprob,
+                "confidence_label": final_info["confidence_label"],
+                "confidence_probability": final_info["confidence_probability"],
+                "confidence_margin": final_info["confidence_margin"],
+                "confidence_predicted_label": final_info["confidence_predicted_label"],
+                "confidence_source": "logprobs",
             }
 
         except Exception as e:
@@ -2713,9 +2790,11 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
 
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_band": "",
-        "confidence_score": _fallback_confidence_score(row),
-        "confidence_logprob": None,
+        "confidence_label": "negative",
+        "confidence_probability": None,
+        "confidence_margin": None,
+        "confidence_predicted_label": "",
+        "confidence_source": "fallback",
     }
 
 
@@ -2725,7 +2804,11 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         return rows
 
     for row in target_rows:
-        row.pop("confidence_score", None)
+        row.pop("confidence_label", None)
+        row.pop("confidence_probability", None)
+        row.pop("confidence_margin", None)
+        row.pop("confidence_predicted_label", None)
+        row.pop("confidence_source", None)
 
     max_workers = max(1, min(DETAIL_CONFIDENCE_MAX_WORKERS, len(target_rows)))
     scored_by_no = {}
@@ -2749,15 +2832,27 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
 
         row_no = row.get("_detail_row_no")
         if row_no is None:
-            row["confidence_score"] = _fallback_confidence_score(row)
+            row["confidence_label"] = "negative"
+            row["confidence_probability"] = None
+            row["confidence_margin"] = None
+            row["confidence_predicted_label"] = ""
+            row["confidence_source"] = "fallback"
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
-            row["confidence_score"] = _fallback_confidence_score(row)
+            row["confidence_label"] = "negative"
+            row["confidence_probability"] = None
+            row["confidence_margin"] = None
+            row["confidence_predicted_label"] = ""
+            row["confidence_source"] = "fallback"
             continue
 
-        row["confidence_score"] = scored.get("confidence_score", _fallback_confidence_score(row))
+        row["confidence_label"] = scored.get("confidence_label", "negative")
+        row["confidence_probability"] = scored.get("confidence_probability")
+        row["confidence_margin"] = scored.get("confidence_margin")
+        row["confidence_predicted_label"] = scored.get("confidence_predicted_label", "")
+        row["confidence_source"] = scored.get("confidence_source", "fallback")
 
     return rows
 

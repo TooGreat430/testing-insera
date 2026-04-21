@@ -39,7 +39,8 @@ UNNULLABLE_FIELD = """
 DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_score",
     "match_description",
-    "confidence_score",
+    "confidence_label",
+    "confidence_probability",
 
     "inv_invoice_no",
     "inv_invoice_date",
