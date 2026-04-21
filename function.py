@@ -2529,16 +2529,34 @@ def _normalize_binary_confidence_label(value: str) -> str:
     m = re.search(r"\b(positive|negative)\b", s)
     return m.group(1) if m else ""
 
-def _extract_binary_logprob_bundle(response):
+def _extract_binary_label_scores(response):
+    """
+    Ambil top-3 alternative token untuk langkah label pertama,
+    lalu agregasikan ke 2 bucket:
+    - positive_score
+    - negative_score
+
+    Kalau token ketiga bukan positive/negative, dia diabaikan.
+    """
+    positive_score = 0.0
+    negative_score = 0.0
+
     candidates = _get_obj_value(response, "candidates", default=[]) or []
     if not candidates:
-        return None, []
+        return {
+            "positive_score": 0.0,
+            "negative_score": 0.0,
+        }
 
     first_candidate = candidates[0]
     logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
     if not logprobs_result:
-        return None, []
+        return {
+            "positive_score": 0.0,
+            "negative_score": 0.0,
+        }
 
+    # 1) Backfill dari chosen candidate
     chosen_candidates = _get_obj_value(
         logprobs_result,
         "chosen_candidates",
@@ -2546,6 +2564,25 @@ def _extract_binary_logprob_bundle(response):
         default=[]
     ) or []
 
+    for chosen in chosen_candidates:
+        token = _normalize_binary_confidence_label(
+            _get_obj_value(chosen, "token", default="")
+        )
+        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
+        if token not in DETAIL_CONFIDENCE_LABELS or logprob is None:
+            continue
+
+        try:
+            p = math.exp(float(logprob))
+        except Exception:
+            continue
+
+        if token == "positive":
+            positive_score = max(positive_score, p)
+        elif token == "negative":
+            negative_score = max(negative_score, p)
+
+    # 2) Agregasi dari top-3 alternatives pada step pertama
     top_candidates = _get_obj_value(
         logprobs_result,
         "top_candidates",
@@ -2553,25 +2590,11 @@ def _extract_binary_logprob_bundle(response):
         default=[]
     ) or []
 
-    chosen_logprob = None
-    for chosen in chosen_candidates:
-        token = _normalize_binary_confidence_label(
-            _get_obj_value(chosen, "token", default="")
-        )
-        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
-        if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-            try:
-                chosen_logprob = float(logprob)
-                break
-            except Exception:
-                pass
-
-    best_by_label = {}
     if top_candidates:
         first_step = top_candidates[0]
         candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
 
-        for cand in candidate_list:
+        for cand in candidate_list[:3]:
             token = _normalize_binary_confidence_label(
                 _get_obj_value(cand, "token", default="")
             )
@@ -2580,48 +2603,51 @@ def _extract_binary_logprob_bundle(response):
                 continue
 
             try:
-                lp = float(logprob)
+                p = math.exp(float(logprob))
             except Exception:
                 continue
 
-            if token not in best_by_label or lp > best_by_label[token]:
-                best_by_label[token] = lp
-
-    ranked = sorted(
-        [{"label": k, "logprob": v} for k, v in best_by_label.items()],
-        key=lambda x: x["logprob"],
-        reverse=True
-    )
-
-    return chosen_logprob, ranked
-
-def _finalize_binary_confidence(predicted_label: str, chosen_logprob, ranked_candidates: list):
-    probability = None
-    if chosen_logprob is not None:
-        try:
-            probability = math.exp(float(chosen_logprob))
-        except Exception:
-            probability = None
-
-    top1 = ranked_candidates[0] if len(ranked_candidates) >= 1 else None
-    top2 = ranked_candidates[1] if len(ranked_candidates) >= 2 else None
-
-    margin = None
-    if top1 and top2:
-        margin = float(top1["logprob"]) - float(top2["logprob"])
-
-    final_label = "negative"
-    if (
-        predicted_label == "positive"
-        and probability is not None
-        and probability >= DETAIL_CONFIDENCE_PROB_THRESHOLD
-        and (margin is None or margin >= DETAIL_CONFIDENCE_MARGIN_THRESHOLD)
-    ):
-        final_label = "positive"
+            if token == "positive":
+                positive_score += p
+            elif token == "negative":
+                negative_score += p
 
     return {
-        "confidence_label": final_label,
-        "confidence_probability": probability,
+        "positive_score": positive_score,
+        "negative_score": negative_score,
+    }
+
+
+def _finalize_binary_confidence_from_scores(label_scores: dict):
+    """
+    Label akhir tetap 2:
+    - positive
+    - negative
+
+    Tapi penentuannya berdasarkan agregasi score dari 3 alternative token.
+    """
+    positive_score = float(label_scores.get("positive_score", 0.0))
+    negative_score = float(label_scores.get("negative_score", 0.0))
+
+    total = positive_score + negative_score
+    if total <= 0:
+        return {
+            "confidence_label": "negative",
+            "confidence_probability": 0.0,
+        }
+
+    positive_probability = positive_score / total
+    negative_probability = negative_score / total
+
+    if positive_probability >= DETAIL_CONFIDENCE_PROB_THRESHOLD:
+        return {
+            "confidence_label": "positive",
+            "confidence_probability": round(float(positive_probability), 6),
+        }
+
+    return {
+        "confidence_label": "negative",
+        "confidence_probability": round(float(negative_probability), 6),
     }
 
 def _normalize_confidence_band(value: str) -> str:
@@ -2769,7 +2795,7 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
             "enum": DETAIL_CONFIDENCE_LABELS,
         },
         "response_logprobs": True,
-        "logprobs": 2,
+        "logprobs": 3,   # <- sekarang 3 alternative token
         "max_output_tokens": 8,
     }
 
@@ -2786,12 +2812,8 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
             if not predicted_label:
                 raise Exception(f"binary confidence label tidak valid: {raw_text}")
 
-            chosen_logprob, ranked_candidates = _extract_binary_logprob_bundle(response)
-            final_info = _finalize_binary_confidence(
-                predicted_label,
-                chosen_logprob,
-                ranked_candidates,
-            )
+            label_scores = _extract_binary_label_scores(response)
+            final_info = _finalize_binary_confidence_from_scores(label_scores)
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
