@@ -4562,12 +4562,6 @@ def _postprocess_coo_description(rows: list):
             )
 
 def _normalize_description_for_similarity(value):
-    """
-    Normalisasi text untuk compare similarity:
-    - uppercase
-    - buang punctuation/non-alnum jadi spasi
-    - rapikan spasi
-    """
     if value is None:
         return ""
 
@@ -4581,47 +4575,117 @@ def _normalize_description_for_similarity(value):
     return s
 
 
-def _description_similarity(left, right) -> float:
-    """
-    Return similarity 0..1
-    """
-    l = _normalize_description_for_similarity(left)
-    r = _normalize_description_for_similarity(right)
+def _normalize_code_compare_value(value):
+    if value is None:
+        return ""
 
-    if not l or not r:
-        return 0.0
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return ""
 
-    if l == r:
-        return 1.0
+    s = s.upper()
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"[^A-Z0-9\-/]", "", s)
+    return s
 
-    return SequenceMatcher(None, l, r).ratio()
 
+def _extract_bl_description_codes(value):
+    if value is None:
+        return []
+
+    raw = str(value).strip()
+    if raw == "" or raw.lower() == "null":
+        return []
+
+    s = raw.upper()
+    raw_tokens = re.findall(r"\b[A-Z0-9][A-Z0-9\-/]*\b", s)
+
+    codes = []
+    seen = set()
+
+    for token in raw_tokens:
+        normalized = _normalize_code_compare_value(token)
+        if not normalized:
+            continue
+        if len(normalized) < 3:
+            continue
+        if not re.search(r"[A-Z]", normalized):
+            continue
+        if not re.search(r"\d", normalized):
+            continue
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        codes.append(normalized)
+
+    return codes
+
+
+def _text_exists_in_description(needle, haystack) -> bool:
+    left = _normalize_description_for_similarity(needle)
+    right = _normalize_description_for_similarity(haystack)
+
+    if not left or not right:
+        return False
+
+    return left in right
+
+
+def _code_exists_in_value(code, value) -> bool:
+    normalized_code = _normalize_code_compare_value(code)
+    normalized_value = _normalize_code_compare_value(value)
+
+    if not normalized_code or not normalized_value:
+        return False
+
+    return normalized_code in normalized_value
 
 def _postprocess_bl_description(rows: list, threshold: float = 0.4):
     """
-    Rule:
-    - compare bl_description vs inv_description
-    - kalau sangat berbeda (similarity < threshold),
-      maka bl_description, bl_hs_code, bl_mark_number = 'null'
-    - kalau mirip, biarkan
+    Rule baru:
+    - jika bl_description punya code alfanumerik, compare code tsb ke inv_description
+    - jika tidak ada di inv_description, fallback ke inv_spart_item_no / pl_item_no
+    - jika bl_description tidak punya code, compare full bl_description ke inv_description
+    - jika tidak ada yang match, null-kan bl_description dan bl_hs_code
+    - bl_mark_number tetap dibiarkan
+
+    threshold dipertahankan hanya untuk backward compatibility.
     """
     for row in rows:
         if not isinstance(row, dict):
             continue
 
-        inv_desc = row.get("inv_description")
         bl_desc = row.get("bl_description")
-
-        # kalau salah satu kosong, skip
-        if _is_null(inv_desc) or _is_null(bl_desc):
+        if _is_null(bl_desc):
             continue
 
-        sim = _description_similarity(inv_desc, bl_desc)
+        inv_desc = row.get("inv_description")
+        inv_spart_item_no = row.get("inv_spart_item_no")
+        pl_item_no = row.get("pl_item_no")
 
-        if sim < threshold:
+        matched = False
+        extracted_codes = _extract_bl_description_codes(bl_desc)
+
+        if extracted_codes:
+            for code in extracted_codes:
+                if _code_exists_in_value(code, inv_desc):
+                    matched = True
+                    break
+
+                if _code_exists_in_value(code, inv_spart_item_no):
+                    matched = True
+                    break
+
+                if _code_exists_in_value(code, pl_item_no):
+                    matched = True
+                    break
+        else:
+            matched = _text_exists_in_description(bl_desc, inv_desc)
+
+        if not matched:
             row["bl_description"] = "null"
             row["bl_hs_code"] = "null"
-            row["bl_mark_number"] = "null"
 
 
 def _postprocess_item_no_fields(rows: list):
