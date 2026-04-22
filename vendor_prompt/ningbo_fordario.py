@@ -21,11 +21,15 @@ INVOICE (INV):
 
 2. inv_spart_item_no:
    - Ekstrak dari kolom "CODE" karena ini adalah kode item yang paling unik per line item.
-     - Contoh:
-     "FRXZEZYHG05000"
-     "HBRZEHB1120001"
-     "SDPZEZYSP0132001"
+     Contoh:
+     - FRXZEZYHG05000
+     - HBRZEHB1120001
+     - SDPZEZYSP0132001
    - JANGAN AMBIL DARI KOLOM "ITEM NO."
+     Contoh "ITEM NO." YANG JANGAN DI AMBIL:
+     - ZY-HG05
+     - ZY-HB112
+     - ZY-C341
 
 3. inv_description:
    - Ekstrak dari kolom "DESCRIPTION".
@@ -106,15 +110,28 @@ PACKING LIST (PL):
 
 6. pl_package_count:
    - Ekstrak jumlah kemasan dari kolom "CTNS".
-   - Jika item memiliki beberapa sub-row packaging, jumlahkan semua CTNS untuk item tersebut.
-   - Contoh:
-     Untuk item yang sama
-     CTNS 
-      2
-      1
-      1
-     maka pl_package_count = 4
    - JANGAN AMBIL DARI KOLOM "PCS/CTN"
+     Contoh:
+     ________________________________
+     |    PCS/CTN   |     CTNS      |
+     --------------------------------
+     |     1000     |       5       |
+     --------------------------------
+     maka pl_package_count = 5
+
+   - Jika item memiliki beberapa sub-row packaging, jumlahkan semua CTNS untuk item tersebut.
+     Contoh:
+     Untuk item yang sama
+     ___________________________
+     |  DESCRIPTION  |   CTNS  |
+     ---------------------------
+     |               |   2     |
+     |  "DESKRIPSI   |----------
+     |     SEBUAH    |   1     |
+     |     ITEM"     |----------
+     |               |   1     | 
+     ---------------------------
+     maka untuk line item tersebut, pl_package_count = 4
 
    -  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
      - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
@@ -139,11 +156,16 @@ PACKING LIST (PL):
    - Ambil angka numeriknya saja.
    - Contoh:
      Untuk item yang sama
-     T.N.W (KG) 
-       33.00
-       13.52
-       11.22
-     maka pl_nw = 57.74
+     ____________________________
+     |  DESCRIPTION  |T.N.W (KG)|
+     ----------------------------
+     |               |   33.00  |
+     |  "DESKRIPSI   |-----------
+     |     SEBUAH    |   13.52  |
+     |     ITEM"     |-----------
+     |               |   11.22  | 
+     ----------------------------
+     maka untuk line item tersebut, pl_nw = 57.74
 
    -  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
      - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
@@ -169,11 +191,16 @@ PACKING LIST (PL):
    - Ambil angka numeriknya saja.
    - Contoh:
      Untuk item yang sama
-     T.G.W (KG) 
-       34.60
-       14.19
-       11.76
-     maka pl_gw = 60.55
+     ____________________________
+     |  DESCRIPTION  |T.N.W (KG)|
+     ----------------------------
+     |               |   34.60  |
+     |  "DESKRIPSI   |-----------
+     |     SEBUAH    |   14.19  |
+     |     ITEM"     |-----------
+     |               |   11.76  | 
+     ----------------------------
+     maka untuk line item tersebut, pl_gw = 60.55
 
 -  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
      - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
@@ -199,11 +226,16 @@ PACKING LIST (PL):
    - Ambil angka numeriknya saja.
    - Contoh:
      Untuk item yang sama
-     VOL.(CBM)
-       0.09
-       0.04
-       0.04
-     maka pl_volume = 0.17
+     ____________________________
+     |  DESCRIPTION  |T.N.W (KG)|
+     ----------------------------
+     |               |   0.09   |
+     |  "DESKRIPSI   |-----------
+     |     SEBUAH    |   0.04   |
+     |     ITEM"     |-----------
+     |               |   0.04   | 
+     ----------------------------
+     maka untuk line item tersebut, pl_nw = 0.17
 
 -  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
      - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
