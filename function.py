@@ -2899,7 +2899,6 @@ def _extract_binary_logprob_docs_style(response):
         logprobs_result, "top_candidates", "topCandidates", default=[]
     ) or []
 
-    # 1) Rekonstruksi full chosen text dari semua chosen token
     chosen_tokens = []
     chosen_logprob_sum = 0.0
     has_any_logprob = False
@@ -2922,11 +2921,9 @@ def _extract_binary_logprob_docs_style(response):
     chosen_label = _normalize_binary_confidence_label(chosen_text)
     chosen_logprob = chosen_logprob_sum if has_any_logprob else None
 
-    # 2) Alternatives tetap untuk debug
     alternatives = []
-    if top_candidates:
-        first_step = top_candidates[0]
-        candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
+    for step in top_candidates:
+        candidate_list = _get_obj_value(step, "candidates", default=[]) or []
 
         for cand in candidate_list:
             token = _get_obj_value(cand, "token", default="")
@@ -2955,11 +2952,11 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
         "response_mime_type": "application/json",
         "response_schema": {
             "type": "STRING",
-            "enum": ["Positive", "Negative"],
+            "enum": ["positive", "negative"],
         },
         "response_logprobs": True,
         "logprobs": 2,
-        "max_output_tokens": 4,
+        "max_output_tokens": 8,
     }
 
     for attempt in range(1, 4):
@@ -2972,9 +2969,21 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
 
             chosen_label, chosen_logprob, alternatives = _extract_binary_logprob_docs_style(response)
 
-            if not chosen_label:
+            predicted_label = _normalize_binary_confidence_label(
+                _extract_text_from_gemini_response(response)
+            )
+
+            final_label = chosen_label or predicted_label
+
+            if not final_label:
+                for alt in alternatives:
+                    if alt.get("normalized_token") in DETAIL_CONFIDENCE_LABELS:
+                        final_label = alt["normalized_token"]
+                        break
+
+            if not final_label:
                 raise Exception(
-                    f"Gagal membaca chosen label Gemini untuk row_no={row.get('_detail_row_no')}"
+                    f"Gagal membaca chosen/fallback label Gemini untuk row_no={row.get('_detail_row_no')}"
                 )
 
             if chosen_logprob is None:
@@ -2982,9 +2991,17 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                     f"Gagal membaca chosen logprob Gemini untuk row_no={row.get('_detail_row_no')}"
                 )
 
+            print(
+                f"[CONFIDENCE_PARSE] row_no={row.get('_detail_row_no')} "
+                f"chosen_label={chosen_label!r} "
+                f"predicted_label={predicted_label!r} "
+                f"final_label={final_label!r} "
+                f"chosen_logprob={chosen_logprob!r}"
+            )
+
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": chosen_label,
+                "confidence_label": final_label,
                 "confidence_logprob": chosen_logprob,
                 "confidence_alternatives": alternatives,
             }
