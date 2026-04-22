@@ -527,13 +527,10 @@ def _looks_like_invoice_no_candidate(value: str) -> bool:
 
     if not s:
         return False
-
     if len(s) < 4 or len(s) > 80:
         return False
 
-    # wajib campuran huruf + angka
-    if not re.search(r"[A-Z]", s):
-        return False
+    # cukup harus mengandung angka, huruf opsional
     if not re.search(r"\d", s):
         return False
 
@@ -622,38 +619,8 @@ ATURAN PALING PENTING:
 - Ambil HANYA invoice number.
 - Abaikan tanggal invoice walaupun berada dalam sel yang sama.
 - Jika invoice number terpecah ke beberapa baris, gabungkan semua fragmennya tanpa spasi.
-
-CONTOH:
-Isi sel:
-SHXM22-2512000
-393
-DEC. 31, 2025
-
-Output:
-{{
-  "{target_key}": "SHXM22-2512000393"
-}}
-
-JANGAN AMBIL:
-- Certificate No.
-- verification number
-- tanggal
-- alamat
-- nama shipper / consignee / producer
-- description barang
-- HS code
-- quantity
-- gross weight
-- country of origin
-- vessel / voyage / port
-- page number
-
-ATURAN TAMBAHAN:
-- Fokus page pertama terlebih dahulu.
-- Jika continuation sheet tidak menampilkan ulang invoice number,
-  tetap gunakan invoice number yang muncul pada page pertama dokumen yang sama.
-- Hasil harus mengandung huruf dan angka.
-- Hasil boleh mengandung dash (-) atau slash (/).
+- Invoice number boleh numeric-only atau alfanumerik.
+- Invoice number valid tidak harus mengandung huruf.
 - Hasil tidak boleh diawali RC bila itu certificate number.
 
 OUTPUT HANYA JSON:
@@ -661,6 +628,30 @@ OUTPUT HANYA JSON:
   "{target_key}": "string"
 }}
 """.strip()
+
+    # 2) bikin prompt fallback single-page bercabang per doc_type, jangan COO-only
+    if doc_type == "packing":
+        return f"""
+    ROLE:
+    Anda hanya mengekstrak nomor invoice referensi dari dokumen PACKING LIST.
+
+    TUGAS:
+    Ambil SATU nilai {target_key} yang benar-benar merupakan invoice reference pada packing list.
+
+    ATURAN:
+    - Fokus pada HEADER dokumen, terutama area paling atas.
+    - Prioritaskan format seperti:
+    - NO.: <nomor>
+    - NO <nomor>
+    - NUMBER: <nomor>
+    - Invoice number boleh numeric-only atau alfanumerik.
+    - Jangan ambil PO number, TAX ID number, page number, quantity, carton, NW, GW, atau CBM.
+
+    OUTPUT HANYA JSON:
+    {{
+    "{target_key}": "string"
+    }}
+    """.strip()
 
     return f"""
 ROLE:
@@ -673,7 +664,8 @@ ATURAN:
 - Fokus pada area header / judul / metadata dokumen.
 - Jangan ambil PO number, item number, page number, date, quantity, amount, atau reference lain yang bukan invoice number.
 - Jika nilai invoice number terpotong ke beberapa baris, gabungkan menjadi satu nilai utuh.
-- Hasil harus mengandung huruf dan/atau angka yang wajar sebagai invoice reference.
+- Invoice number boleh numeric-only atau alfanumerik.
+- Invoice number valid tidak harus mengandung huruf.
 
 OUTPUT HANYA JSON:
 {{
@@ -725,12 +717,20 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
         return _preprocess_invoice_no_for_grouping(raw)
 
     # pola berbasis label eksplisit
-    explicit_patterns = [
+    explicit_patterns = []
+
+    if doc_type == "packing":
+        explicit_patterns.extend([
+            r"(?m)^\s*NO\.?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})\s*$",
+            r"(?is)\bPACKING LIST\b.{0,120}?\bNO\.?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
+        ])
+
+    explicit_patterns.extend([
         r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bNO\.?\s*INVOICE\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINVOICE NUMBER\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINV\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
-    ]
+    ])
 
     for pattern in explicit_patterns:
         for m in re.finditer(pattern, joined, flags=re.IGNORECASE):
@@ -816,47 +816,53 @@ def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index
         doc_label = _get_doc_label_for_prompt(doc_type)
 
         prompt = f"""
-ROLE:
-Anda hanya mengekstrak nomor invoice referensi dari SATU HALAMAN dokumen {doc_label}.
+        ROLE:
+        Anda hanya mengekstrak nomor invoice referensi dari SATU HALAMAN dokumen {doc_label}.
 
-TUGAS:
-Ambil SATU nilai invoice reference yang valid dari halaman ini.
+        TUGAS:
+        Ambil SATU nilai invoice reference yang valid dari halaman ini.
 
-ATURAN KHUSUS UNTUK COO/RCEP:
-- Prioritaskan kolom "Invoice number(s) and date of invoice(s)".
-- Jika sel tersebut berisi beberapa baris:
-  - gabungkan bagian invoice number yang alfanumerik
-  - abaikan tanggal invoice di bawahnya
-- Jika halaman ini adalah continuation sheet dan invoice number tidak muncul eksplisit, isi "null".
-- Jika dokumen COO memiliki invoice number pada kolom 13 yang setelah normalisasi sama dengan inv_invoice_no,
-  maka dokumen COO tersebut WAJIB dipakai untuk ekstraksi field COO item-level.
-- Nilai invoice number pada COO boleh terpotong ke beberapa baris dan harus digabung.
-- Contoh:
-  SHXM22-2512000
-  393
-  DEC. 31, 2025
-  => coo_invoice_no = "SHXM22-2512000393"
-- Jangan isi semua field COO sebagai null hanya karena invoice number pada COO ditulis split multiline.
+        ATURAN KHUSUS UNTUK COO/RCEP:
+        - Prioritaskan kolom "Invoice number(s) and date of invoice(s)".
+        - Jika sel tersebut berisi beberapa baris:
+        - gabungkan bagian invoice number yang valid
+        - abaikan tanggal invoice di bawahnya
+        - Invoice number boleh numeric-only atau alfanumerik.
+        - Invoice number valid tidak harus mengandung huruf.
+        - Jika halaman ini adalah continuation sheet dan invoice number tidak muncul eksplisit, isi "null".
+        - Jika dokumen COO memiliki invoice number pada kolom 13 yang setelah normalisasi sama dengan inv_invoice_no,
+        maka dokumen COO tersebut WAJIB dipakai untuk ekstraksi field COO item-level.
+        - Nilai invoice number pada COO boleh terpotong ke beberapa baris dan harus digabung.
+        - Contoh:
+        SHXM22-2512000
+        393
+        DEC. 31, 2025
+        => coo_invoice_no = "SHXM22-2512000393"
+        - Contoh:
+        260116001
+        JAN. 16, 2026
+        => coo_invoice_no = "260116001"
+        - Jangan isi semua field COO sebagai null hanya karena invoice number pada COO ditulis split multiline.
 
-JANGAN AMBIL:
-- Certificate No.
-- Form RCEP
-- verification number
-- page number
-- HS code
-- quantity
-- gross weight
-- country of origin
-- PO number
-- date
+        JANGAN AMBIL:
+        - Certificate No.
+        - Form RCEP
+        - verification number
+        - page number
+        - HS code
+        - quantity
+        - gross weight
+        - country of origin
+        - PO number
+        - date
 
-OUTPUT HANYA JSON object valid.
+        OUTPUT HANYA JSON object valid.
 
-OUTPUT SCHEMA:
-{{
-  "{target_key}": "string"
-}}
-"""
+        OUTPUT SCHEMA:
+        {{
+        "{target_key}": "string"
+        }}
+        """
 
         obj = _call_gemini_json_uri(
             file_uri,
