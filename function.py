@@ -2899,45 +2899,52 @@ def _extract_binary_logprob_docs_style(response):
         logprobs_result, "top_candidates", "topCandidates", default=[]
     ) or []
 
-    chosen_label = None
-    chosen_logprob = None
+    # 1) Rekonstruksi full chosen text dari semua chosen token
+    chosen_tokens = []
+    chosen_logprob_sum = 0.0
+    has_any_logprob = False
 
     for chosen in chosen_candidates:
-        token = _normalize_binary_confidence_label(
-            _get_obj_value(chosen, "token", default="")
-        )
+        token = _get_obj_value(chosen, "token", default="")
         logprob = _get_obj_value(chosen, "log_probability", "logProbability")
-        if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-            chosen_label = token
-            chosen_logprob = float(logprob)
-            break
 
+        if token is not None:
+            chosen_tokens.append(str(token))
+
+        if logprob is not None:
+            try:
+                chosen_logprob_sum += float(logprob)
+                has_any_logprob = True
+            except Exception:
+                pass
+
+    chosen_text = "".join(chosen_tokens).strip()
+    chosen_label = _normalize_binary_confidence_label(chosen_text)
+    chosen_logprob = chosen_logprob_sum if has_any_logprob else None
+
+    # 2) Alternatives tetap untuk debug
     alternatives = []
     if top_candidates:
         first_step = top_candidates[0]
         candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
 
         for cand in candidate_list:
-            token = _normalize_binary_confidence_label(
-                _get_obj_value(cand, "token", default="")
-            )
+            token = _get_obj_value(cand, "token", default="")
             logprob = _get_obj_value(cand, "log_probability", "logProbability")
-            if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-                alternatives.append({
-                    "token": token,
-                    "logprob": float(logprob),
-                })
 
-        if chosen_label is None:
-            for cand in candidate_list:
-                token = _normalize_binary_confidence_label(
-                    _get_obj_value(cand, "token", default="")
-                )
-                logprob = _get_obj_value(cand, "log_probability", "logProbability")
-                if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-                    chosen_label = token
-                    chosen_logprob = float(logprob)
-                    break
+            try:
+                lp = float(logprob)
+            except Exception:
+                continue
+
+            token_str = str(token or "")
+            normalized = _normalize_binary_confidence_label(token_str)
+
+            alternatives.append({
+                "token": token_str,
+                "normalized_token": normalized,
+                "logprob": lp,
+            })
 
     return chosen_label, chosen_logprob, alternatives
 
