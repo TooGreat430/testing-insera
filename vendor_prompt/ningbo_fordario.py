@@ -138,6 +138,7 @@ PACKING LIST (PL):
    - Jika item memiliki beberapa sub-row packaging, jumlahkan semua nilai T.N.W.(KG) untuk item tersebut.
    - Ambil angka numeriknya saja.
    - Contoh:
+     Untuk item yang sama
      T.N.W (KG) 
        33.00
        13.52
@@ -167,6 +168,7 @@ PACKING LIST (PL):
    - Jika item memiliki beberapa sub-row packaging, jumlahkan semua nilai T.G.W.(KG) untuk item tersebut.
    - Ambil angka numeriknya saja.
    - Contoh:
+     Untuk item yang sama
      T.G.W (KG) 
        34.60
        14.19
@@ -196,6 +198,7 @@ PACKING LIST (PL):
    - Jangan gunakan volume total dari BL untuk mengisi item-level PL.
    - Ambil angka numeriknya saja.
    - Contoh:
+     Untuk item yang sama
      VOL.(CBM)
        0.09
        0.04
