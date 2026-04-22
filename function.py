@@ -2881,6 +2881,59 @@ ROW JSON:
 {row_json}
 """.strip()
 
+def _extract_binary_confidence_safe(response):
+    """
+    Jalur paling aman:
+    - label dari response.text / content.parts.text
+    - logprob dari avgLogprobs
+    - fallback logprob ke chosen token sum bila avgLogprobs tidak ada
+    """
+    label = _normalize_binary_confidence_label(
+        _extract_text_from_gemini_response(response)
+    )
+
+    candidates = _get_obj_value(response, "candidates", default=[]) or []
+    if not candidates:
+        return label, None
+
+    first_candidate = candidates[0]
+
+    # prioritas 1: avgLogprobs
+    avg_logprobs = _get_obj_value(first_candidate, "avg_logprobs", "avgLogprobs")
+    if avg_logprobs is not None:
+        try:
+            return label, float(avg_logprobs)
+        except Exception:
+            pass
+
+    # prioritas 2: sum chosen token logprobs
+    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
+    if logprobs_result:
+        chosen_candidates = _get_obj_value(
+            logprobs_result,
+            "chosen_candidates",
+            "chosenCandidates",
+            default=[]
+        ) or []
+
+        chosen_logprob_sum = 0.0
+        has_any = False
+
+        for chosen in chosen_candidates:
+            lp = _get_obj_value(chosen, "log_probability", "logProbability")
+            if lp is None:
+                continue
+            try:
+                chosen_logprob_sum += float(lp)
+                has_any = True
+            except Exception:
+                continue
+
+        if has_any:
+            return label, chosen_logprob_sum
+
+    return label, None
+
 def _extract_binary_logprob_docs_style(response):
     candidates = _get_obj_value(response, "candidates", default=[]) or []
     if not candidates:
@@ -2949,14 +3002,14 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     prompt = _build_detail_confidence_prompt(row)
 
     extra_config = {
-        "response_mime_type": "application/json",
+        "response_mime_type": "text/x.enum",
         "response_schema": {
             "type": "STRING",
             "enum": ["positive", "negative"],
         },
         "response_logprobs": True,
         "logprobs": 2,
-        "max_output_tokens": 8,
+        "max_output_tokens": 4,
     }
 
     for attempt in range(1, 4):
@@ -2967,43 +3020,18 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 extra_config=extra_config,
             )
 
-            chosen_label, chosen_logprob, alternatives = _extract_binary_logprob_docs_style(response)
-
-            predicted_label = _normalize_binary_confidence_label(
-                _extract_text_from_gemini_response(response)
-            )
-
-            final_label = chosen_label or predicted_label
-
-            if not final_label:
-                for alt in alternatives:
-                    if alt.get("normalized_token") in DETAIL_CONFIDENCE_LABELS:
-                        final_label = alt["normalized_token"]
-                        break
-
-            if not final_label:
-                raise Exception(
-                    f"Gagal membaca chosen/fallback label Gemini untuk row_no={row.get('_detail_row_no')}"
-                )
-
-            if chosen_logprob is None:
-                raise Exception(
-                    f"Gagal membaca chosen logprob Gemini untuk row_no={row.get('_detail_row_no')}"
-                )
+            final_label, confidence_logprob = _extract_binary_confidence_safe(response)
 
             print(
                 f"[CONFIDENCE_PARSE] row_no={row.get('_detail_row_no')} "
-                f"chosen_label={chosen_label!r} "
-                f"predicted_label={predicted_label!r} "
                 f"final_label={final_label!r} "
-                f"chosen_logprob={chosen_logprob!r}"
+                f"confidence_logprob={confidence_logprob!r}"
             )
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": final_label,
-                "confidence_logprob": chosen_logprob,
-                "confidence_alternatives": alternatives,
+                "confidence_label": final_label if final_label else None,
+                "confidence_logprob": confidence_logprob,
             }
 
         except Exception as e:
@@ -3018,7 +3046,14 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
             if attempt < 3:
                 time.sleep(0.5)
                 continue
-            raise
+            break
+
+    # PENTING: jangan block OCR
+    return {
+        "_detail_row_no": row.get("_detail_row_no"),
+        "confidence_label": None,
+        "confidence_logprob": None,
+    }
 
 def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
     target_rows = [r for r in (rows or []) if isinstance(r, dict)]
@@ -3045,7 +3080,12 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         }
 
         for fut in as_completed(futures):
-            scored = fut.result()
+            try:
+                scored = fut.result()
+            except Exception as e:
+                print(f"[CONFIDENCE_FUTURE_ERROR] error={repr(e)}")
+                continue
+
             row_no = scored.get("_detail_row_no")
             if row_no is None:
                 continue
@@ -3057,11 +3097,15 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
 
         row_no = row.get("_detail_row_no")
         if row_no is None:
-            raise Exception("missing _detail_row_no: confidence tidak bisa dipetakan ke row")
+            row["confidence_label"] = None
+            row["confidence_logprob"] = None
+            continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
-            raise Exception(f"missing scored result for row_no={row_no}")
+            row["confidence_label"] = None
+            row["confidence_logprob"] = None
+            continue
 
         row["confidence_label"] = scored.get("confidence_label")
         row["confidence_logprob"] = scored.get("confidence_logprob")
