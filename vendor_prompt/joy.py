@@ -6,15 +6,15 @@ INVOICE (INV):
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada tingkat baris di invoice ini.
 5. `inv_quantity`: 
     - Ekstrak dari kolom "QTY".
-    - Apabila ada beberapa line item yang tergabung dalam satu QTY (quantity) merged-cell, maka QTY yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - SANGAT PENTING: Apabila ada beberapa line item yang tergabung dalam satu QTY (quantity) merged-cell, maka QTY yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
         Contoh:
         |   ITEM  |  QTY    |
         |   A     |         |
         |   B     |  480    |
         |   C     |         |
         Maka:
-        - Line item A: quantity = 0
-        - Line item B: quantity = 0
+        - Line item A: quantity = 0 dan BUKAN 480
+        - Line item B: quantity = 0 dan BUKAN 480
         - Line item C: quantity = 480
 6. `inv_quantity_unit`: Ekstrak dari kolom "UNIT" (misalnya "SET").
 7. `inv_unit_price`: Ekstrak nilai angka dari kolom "UNIT PRICE".
@@ -27,19 +27,24 @@ INVOICE (INV):
         |   B     |  5760      |
         |   C     |            |
         Maka:
-        - Line item A: amount = 0
-        - Line item B: amount = 0
+        - Line item A: amount = 0 dan BUKAN 5760
+        - Line item B: amount = 0 dan BUKAN 5760
         - Line item C: amount = 5760
 
 PACKING LIST (PL):
+
+INFORMASI PENTING (HANYA BERLAKU UNTUK DOKUMEN PL VENDOR INI):
+Pada DOKUMEN PL vendor ini, akan ada beberapa line item yang diberi highlight warna berbeda. ABAIKAN HIGHLIGHT TERSEBUT dan FOKUS HANYA MEMBACA PER LINE ITEM.
+DILARANG KERAS MENGGABUNGKAN VALUE NUMERIK DARI SATU LINE ITEM KE LINE ITEM LAIN TANPA TERKECUALI!
+
 1. `pl_customer_po_no`: Ekstrak dari kolom "PO NO.".
 2. `pl_item_no`: Ekstrak dari kolom gabungan "CODE" ambil HANYA baris kodenya (misalnya "HUFJY...").
 3. `pl_description`: Ekstrak teks deskripsi dari kolom gabungan "CODE" / "DESCRIPTION".
-4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
+4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY" dan BUKAN "Combined QTY".
 5. `pl_package_unit`: Simpulkan sebagai "CT" berdasarkan header kolom "TOTAL CTNS" atau "QTY/CTN".
-6. `pl_package_count`: Ekstrak dari kolom "TOTAL CTNS".
-7. `pl_nw`: Ekstrak nilai angka dari kolom "TOTAL N.W.".
-8. `pl_gw`: Ekstrak nilai angka dari kolom "TOTAL G.W.".
+6. `pl_package_count`: Ekstrak HANYA dari kolom "TOTAL CTNS".DILARANG KERAS untuk mengambil dari kolom lain manapun.
+7. `pl_nw`: Ekstrak nilai angka dari kolom "TOTAL N.W." dan BUKAN "Combined N.W.".
+8. `pl_gw`: Ekstrak nilai angka dari kolom "TOTAL G.W." dan BUKAN "Combined G.W."
 9. `pl_volume`: Ekstrak nilai angka dari kolom "TOTAL CBM".
 
 BILL OF LADING (BL):
