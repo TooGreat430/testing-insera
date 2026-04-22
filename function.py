@@ -2928,6 +2928,17 @@ def _extract_binary_logprob_docs_style(response):
                     "logprob": float(logprob),
                 })
 
+        if chosen_label is None:
+            for cand in candidate_list:
+                token = _normalize_binary_confidence_label(
+                    _get_obj_value(cand, "token", default="")
+                )
+                logprob = _get_obj_value(cand, "log_probability", "logProbability")
+                if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
+                    chosen_label = token
+                    chosen_logprob = float(logprob)
+                    break
+
     return chosen_label, chosen_logprob, alternatives
 
 def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
@@ -2944,29 +2955,46 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
         "max_output_tokens": 4,
     }
 
-    raw_text, response = _call_gemini_uri(
-        file_uri,
-        prompt,
-        extra_config=extra_config,
-        return_response=True,
-    )
+    for attempt in range(1, 4):
+        try:
+            response = _call_gemini_response_uri(
+                file_uri,
+                prompt,
+                extra_config=extra_config,
+            )
 
-    predicted_label = _normalize_binary_confidence_label(raw_text)
-    chosen_label, chosen_logprob, alternatives = _extract_binary_logprob_docs_style(response)
+            chosen_label, chosen_logprob, alternatives = _extract_binary_logprob_docs_style(response)
 
-    final_label = chosen_label or predicted_label
-    if not final_label:
-        raise Exception(f"Gagal membaca label Gemini untuk row_no={row.get('_detail_row_no')}")
+            if not chosen_label:
+                raise Exception(
+                    f"Gagal membaca chosen label Gemini untuk row_no={row.get('_detail_row_no')}"
+                )
 
-    if chosen_logprob is None:
-        raise Exception(f"Gagal membaca logprob Gemini untuk row_no={row.get('_detail_row_no')}")
+            if chosen_logprob is None:
+                raise Exception(
+                    f"Gagal membaca chosen logprob Gemini untuk row_no={row.get('_detail_row_no')}"
+                )
 
-    return {
-        "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": final_label,
-        "confidence_logprob": chosen_logprob,
-        "confidence_alternatives": alternatives,
-    }
+            return {
+                "_detail_row_no": row.get("_detail_row_no"),
+                "confidence_label": chosen_label,
+                "confidence_logprob": chosen_logprob,
+                "confidence_alternatives": alternatives,
+            }
+
+        except Exception as e:
+            print(
+                f"[CONFIDENCE_ERROR] row_no={row.get('_detail_row_no')} "
+                f"error={repr(e)}"
+            )
+            msg = str(e).lower()
+            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
+                time.sleep((2 ** attempt) + random.random())
+                continue
+            if attempt < 3:
+                time.sleep(0.5)
+                continue
+            raise
 
 def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
     target_rows = [r for r in (rows or []) if isinstance(r, dict)]
@@ -3068,6 +3096,34 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
         return text_output, response
 
     return text_output
+
+def _call_gemini_response_uri(file_uri: str, prompt: str, extra_config: dict = None):
+    parts = [
+        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
+        types.Part.from_text(text=prompt),
+    ]
+
+    config_kwargs = {
+        "temperature": 0,
+        "top_p": 0,
+        "seed": 42,
+        "candidate_count": 1,
+        "max_output_tokens": 65535,
+    }
+    if extra_config:
+        config_kwargs.update(extra_config)
+
+    response = genai_client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[types.Content(role="user", parts=parts)],
+        config=types.GenerateContentConfig(**config_kwargs),
+    )
+
+    if not response:
+        raise Exception("Empty response from Gemini")
+
+    print(f"(Gemini Run ID: {response.response_id})")
+    return response
 
 def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3):
     """
