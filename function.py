@@ -1856,9 +1856,20 @@ def _build_detail_dedup_key(row: dict):
         for field in DETAIL_ROW_DEDUP_COMPARE_FIELDS
     )
 
+def _should_deduplicate_detail_rows(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) == "bafang_motor"
 
-def _deduplicate_detail_rows_before_validation(rows: list):
+def _deduplicate_detail_rows_before_validation(rows: list, vendor_id: str = "default"):
     if not isinstance(rows, list):
+        return rows
+
+    normalized_vendor_id = normalize_vendor_id(vendor_id)
+
+    if not _should_deduplicate_detail_rows(normalized_vendor_id):
+        print(
+            f"[DETAIL_DEDUP][SKIP] vendor_id={vendor_id} "
+            f"normalized_vendor_id={normalized_vendor_id}"
+        )
         return rows
 
     deduped = []
@@ -1879,14 +1890,18 @@ def _deduplicate_detail_rows_before_validation(rows: list):
 
         if key in seen:
             removed += 1
-            print(f"[DETAIL_DEDUP][DROP] row_no={idx} key={key}")
+            print(
+                f"[DETAIL_DEDUP][DROP] vendor_id={normalized_vendor_id} "
+                f"row_no={idx} key={key}"
+            )
             continue
 
         seen.add(key)
         deduped.append(row)
 
     print(
-        f"[DETAIL_DEDUP] before={len(rows)} after={len(deduped)} removed={removed}"
+        f"[DETAIL_DEDUP] vendor_id={normalized_vendor_id} "
+        f"before={len(rows)} after={len(deduped)} removed={removed}"
     )
     return deduped
 
@@ -5700,7 +5715,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
 
         _postprocess_bl_coo_zero_to_null(all_rows)
 
-        all_rows = _deduplicate_detail_rows_before_validation(all_rows)
+        all_rows = _deduplicate_detail_rows_before_validation(all_rows, vendor_id=vendor_id)
 
         _assign_detail_row_numbers(all_rows)
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
