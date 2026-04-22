@@ -45,13 +45,14 @@ from vendor_detection import (
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 DETAIL_CONFIDENCE_MAX_WORKERS = int(os.getenv("DETAIL_CONFIDENCE_MAX_WORKERS", "8"))
-DETAIL_CONFIDENCE_LABELS = ["positive", "negative"]
+DETAIL_CONFIDENCE_LABELS = ["positive", "neutral", "negative"]
 
-DETAIL_CONFIDENCE_PROB_THRESHOLD = float(
-    os.getenv("DETAIL_CONFIDENCE_PROB_THRESHOLD", "0.70")
+DETAIL_CONFIDENCE_NEGATIVE_THRESHOLD = float(
+    os.getenv("DETAIL_CONFIDENCE_NEGATIVE_THRESHOLD", "-0.00625")
 )
-DETAIL_CONFIDENCE_MARGIN_THRESHOLD = float(
-    os.getenv("DETAIL_CONFIDENCE_MARGIN_THRESHOLD", "1.0")
+
+DETAIL_CONFIDENCE_POSITIVE_THRESHOLD = float(
+    os.getenv("DETAIL_CONFIDENCE_POSITIVE_THRESHOLD", "-0.00356")
 )
 
 DETAIL_RECHECK_SCHEMA = {
@@ -2677,6 +2678,39 @@ def _get_obj_value(obj, *names, default=None):
 def _clamp(value, low, high):
     return max(low, min(high, value))
 
+def _derive_confidence_band_from_logprob(confidence_logprob):
+    """
+    Banding awal berbasis distribusi sample internal:
+    - score <= T_LOW   -> negative
+    - T_LOW < score < T_HIGH -> neutral
+    - score >= T_HIGH  -> positive
+
+    Catatan:
+    logprob makin dekat ke 0 = makin yakin.
+    """
+    if confidence_logprob is None:
+        return "negative"
+
+    try:
+        score = float(confidence_logprob)
+    except Exception:
+        return "negative"
+
+    low = float(DETAIL_CONFIDENCE_NEGATIVE_THRESHOLD)
+    high = float(DETAIL_CONFIDENCE_POSITIVE_THRESHOLD)
+
+    # safety kalau threshold salah set
+    if low > high:
+        low, high = high, low
+
+    if score <= low:
+        return "negative"
+
+    if score >= high:
+        return "positive"
+
+    return "neutral"
+
 def _normalize_binary_confidence_label(value: str) -> str:
     s = str(value or "").strip().lower().strip('"').strip("'")
     if s in {"positive", "negative"}:
@@ -3020,17 +3054,21 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 extra_config=extra_config,
             )
 
-            final_label, confidence_logprob = _extract_binary_confidence_safe(response)
+            # score murni dari Gemini
+            _, confidence_logprob = _extract_binary_confidence_safe(response)
+
+            # label banding dari threshold internal
+            confidence_label = _derive_confidence_band_from_logprob(confidence_logprob)
 
             print(
                 f"[CONFIDENCE_PARSE] row_no={row.get('_detail_row_no')} "
-                f"final_label={final_label!r} "
+                f"confidence_label={confidence_label!r} "
                 f"confidence_logprob={confidence_logprob!r}"
             )
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": final_label if final_label else None,
+                "confidence_label": confidence_label,
                 "confidence_logprob": confidence_logprob,
             }
 
@@ -3048,10 +3086,9 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 continue
             break
 
-    # PENTING: jangan block OCR
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": None,
+        "confidence_label": "neutral",
         "confidence_logprob": None,
     }
 
