@@ -56,9 +56,7 @@ BILL OF LADING (BL):
     FRAME RIGID 430
     FRAME RIGID 520 (Ambil yang terdekat)
     null (Karena tidak ada deskripsi yang sama sekali dengan BIKE HANDLE)
-    -Hasil ekstraksi berdasarkan map harus menyertakan angkanya bila ada
-     Misal: FRAME RIGID 610, BUKAN hanya FRAME RIGID
-    -bl_description TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
+     -bl_description sebisa mungkin TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
         Contoh:
