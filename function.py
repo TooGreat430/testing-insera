@@ -2675,8 +2675,9 @@ def _normalize_binary_confidence_label(value: str) -> str:
 
 def _extract_pure_binary_logprob(response):
     """
-    Ambil label Gemini + chosen logprob-nya.
-    Tidak pakai probability/percent.
+    Ambil label + logprob sesuai pola docs/blog:
+    - pilih chosenCandidates dulu
+    - fallback ke topCandidates step pertama kalau chosen tidak terbaca
     """
     candidates = _get_obj_value(response, "candidates", default=[]) or []
     if not candidates:
@@ -2687,6 +2688,7 @@ def _extract_pure_binary_logprob(response):
     if not logprobs_result:
         return None, None
 
+    # prioritas 1: chosenCandidates
     chosen_candidates = _get_obj_value(
         logprobs_result,
         "chosen_candidates",
@@ -2705,6 +2707,30 @@ def _extract_pure_binary_logprob(response):
                 return token, float(logprob)
             except Exception:
                 continue
+
+    # prioritas 2: topCandidates[0]
+    top_candidates = _get_obj_value(
+        logprobs_result,
+        "top_candidates",
+        "topCandidates",
+        default=[]
+    ) or []
+
+    if top_candidates:
+        first_step = top_candidates[0]
+        candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
+
+        for cand in candidate_list:
+            token = _normalize_binary_confidence_label(
+                _get_obj_value(cand, "token", default="")
+            )
+            logprob = _get_obj_value(cand, "log_probability", "logProbability")
+
+            if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
+                try:
+                    return token, float(logprob)
+                except Exception:
+                    continue
 
     return None, None
 
@@ -2843,6 +2869,55 @@ ROW JSON:
 {row_json}
 """.strip()
 
+def _extract_binary_logprob_docs_style(response):
+    candidates = _get_obj_value(response, "candidates", default=[]) or []
+    if not candidates:
+        return None, None, []
+
+    first_candidate = candidates[0]
+    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
+    if not logprobs_result:
+        return None, None, []
+
+    chosen_candidates = _get_obj_value(
+        logprobs_result, "chosen_candidates", "chosenCandidates", default=[]
+    ) or []
+
+    top_candidates = _get_obj_value(
+        logprobs_result, "top_candidates", "topCandidates", default=[]
+    ) or []
+
+    chosen_label = None
+    chosen_logprob = None
+
+    for chosen in chosen_candidates:
+        token = _normalize_binary_confidence_label(
+            _get_obj_value(chosen, "token", default="")
+        )
+        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
+        if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
+            chosen_label = token
+            chosen_logprob = float(logprob)
+            break
+
+    alternatives = []
+    if top_candidates:
+        first_step = top_candidates[0]
+        candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
+
+        for cand in candidate_list:
+            token = _normalize_binary_confidence_label(
+                _get_obj_value(cand, "token", default="")
+            )
+            logprob = _get_obj_value(cand, "log_probability", "logProbability")
+            if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
+                alternatives.append({
+                    "token": token,
+                    "logprob": float(logprob),
+                })
+
+    return chosen_label, chosen_logprob, alternatives
+
 def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
     prompt = _build_detail_confidence_prompt(row)
 
@@ -2850,51 +2925,35 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
         "response_mime_type": "application/json",
         "response_schema": {
             "type": "STRING",
-            "enum": DETAIL_CONFIDENCE_LABELS,
+            "enum": ["Positive", "Negative"],
         },
         "response_logprobs": True,
-        "logprobs": 3,
-        "max_output_tokens": 8,
+        "logprobs": 2,
+        "max_output_tokens": 4,
     }
 
-    for attempt in range(1, 4):
-        try:
-            raw_text, response = _call_gemini_uri(
-                file_uri,
-                prompt,
-                extra_config=extra_config,
-                return_response=True,
-            )
+    raw_text, response = _call_gemini_uri(
+        file_uri,
+        prompt,
+        extra_config=extra_config,
+        return_response=True,
+    )
 
-            predicted_label = _normalize_binary_confidence_label(raw_text)
-            if not predicted_label:
-                raise Exception(f"binary confidence label tidak valid: {raw_text}")
+    predicted_label = _normalize_binary_confidence_label(raw_text)
+    chosen_label, chosen_logprob, alternatives = _extract_binary_logprob_docs_style(response)
 
-            chosen_label, chosen_logprob = _extract_pure_binary_logprob(response)
+    final_label = chosen_label or predicted_label
+    if not final_label:
+        raise Exception(f"Gagal membaca label Gemini untuk row_no={row.get('_detail_row_no')}")
 
-            final_label = chosen_label or predicted_label
-
-            return {
-                "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": final_label,
-                "confidence_logprob": chosen_logprob,
-            }
-
-        except Exception as e:
-            print(f"[CONFIDENCE_ERROR] row_no={row.get('_detail_row_no')} error={e}")
-            msg = str(e).lower()
-            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
-                time.sleep((2 ** attempt) + random.random())
-                continue
-            if attempt < 3:
-                time.sleep(0.5)
-                continue
-            break
+    if chosen_logprob is None:
+        raise Exception(f"Gagal membaca logprob Gemini untuk row_no={row.get('_detail_row_no')}")
 
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": None,
-        "confidence_logprob": None,
+        "confidence_label": final_label,
+        "confidence_logprob": chosen_logprob,
+        "confidence_alternatives": alternatives,
     }
 
 def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
@@ -2934,15 +2993,11 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
 
         row_no = row.get("_detail_row_no")
         if row_no is None:
-            row["confidence_label"] = None
-            row["confidence_logprob"] = None
-            continue
+            raise Exception("missing _detail_row_no: confidence tidak bisa dipetakan ke row")
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
-            row["confidence_label"] = None
-            row["confidence_logprob"] = None
-            continue
+            raise Exception(f"missing scored result for row_no={row_no}")
 
         row["confidence_label"] = scored.get("confidence_label")
         row["confidence_logprob"] = scored.get("confidence_logprob")
