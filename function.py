@@ -2642,19 +2642,25 @@ def _upload_temp_pdf_to_gcs(local_path: str, run_prefix: str, name: str) -> str:
     return f"gs://{BUCKET_NAME}/{blob_path}"
 
 def _extract_text_from_gemini_response(response):
-    if hasattr(response, "text") and response.text:
-        return str(response.text).strip()
+    # 1) shortcut kalau SDK punya .text
+    try:
+        if getattr(response, "text", None):
+            return response.text.strip()
+    except Exception:
+        pass
 
-    candidates = getattr(response, "candidates", None) or []
-    if candidates:
-        content = getattr(candidates[0], "content", None)
-        parts_resp = getattr(content, "parts", None) or []
-        text_output = ""
-        for p in parts_resp:
-            if hasattr(p, "text") and p.text:
-                text_output += p.text
-        if text_output.strip():
-            return text_output.strip()
+    # 2) telusuri candidates -> content -> parts -> text
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        for cand in candidates:
+            content = getattr(cand, "content", None)
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                txt = getattr(part, "text", None)
+                if txt and str(txt).strip():
+                    return str(txt).strip()
+    except Exception:
+        pass
 
     return ""
 
@@ -3037,6 +3043,22 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
         raise Exception("Empty response from Gemini")
 
     print(f"(Gemini Run ID: {response.response_id})")
+
+    # DEBUG RAW RESPONSE
+    try:
+        candidates = getattr(response, "candidates", None)
+        print(f"[GEMINI_DEBUG] candidates_count={0 if not candidates else len(candidates)}")
+
+        if candidates:
+            c0 = candidates[0]
+            print(f"[GEMINI_DEBUG] finish_reason={getattr(c0, 'finish_reason', None)}")
+            print(f"[GEMINI_DEBUG] safety_ratings={getattr(c0, 'safety_ratings', None)}")
+
+            content = getattr(c0, "content", None)
+            parts_obj = getattr(content, "parts", None) if content else None
+            print(f"[GEMINI_DEBUG] parts={parts_obj}")
+    except Exception as dbg_e:
+        print(f"[GEMINI_DEBUG] failed_to_dump_response={repr(dbg_e)}")
 
     text_output = _extract_text_from_gemini_response(response)
     if not text_output:
