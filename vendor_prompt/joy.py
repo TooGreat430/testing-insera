@@ -1,5 +1,11 @@
 JOY_PROMPT = """
 INVOICE (INV):
+
+ATURAN SANGAT PENTING UNTUK DOKUMEN INVOICE VENDOR INI:
+- Apabila ada beberapa line item dengan tipe data numerik yang tergabung dalam satu merged-cell, maka value yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
+- DILARANG KERAS untuk menduplikasi value numerik pada line item yang memiliki merged-cell. HANYA LINE ITEM DENGAN MERGED-CELL PALING ATAS YANG BOLEH MENGAMBIL VALUE NUMERIK, SEDANGKAN LINE ITEM LAIN DALAM GROUP TERSEBUT HARUS 0.
+- DILARANG KERAS untuk menambahkan value numerik pada satu line item ke line item lain TANPA TERKECUALI!
+
 1. `inv_customer_po_no`: Ekstrak dari kolom "PO.NO.".
 2. `inv_spart_item_no`: Ekstrak dari kolom "CODE" (Misal: HUFJY4310000000)
 3. `inv_description`: Ekstrak teks deskripsi spesifikasi barang dari kolom "DESCRIPTION" (pisahkan dari kode barang, ambil teks panjangnya).
