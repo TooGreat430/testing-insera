@@ -1857,7 +1857,12 @@ def _build_detail_dedup_key(row: dict):
     )
 
 def _should_deduplicate_detail_rows(vendor_id: str) -> bool:
-    return normalize_vendor_id(vendor_id) == "bafang_motor"
+    return normalize_vendor_id(vendor_id) in {
+        "bafang_motor",
+        "jht_carbon",
+        "tangsan_jinhengtong",
+        "kunshan_landon",
+    }
 
 def _deduplicate_detail_rows_before_validation(rows: list, vendor_id: str = "default"):
     if not isinstance(rows, list):
