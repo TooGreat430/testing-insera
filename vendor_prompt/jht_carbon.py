@@ -10,6 +10,13 @@ INVOICE (INV):
 8.  `inv_amount`: Ekstrak nilai angka dari kolom "Amount".
 
 PACKING LIST (PL):
+INSTRUKSI PENTING:
+Apabila ada line item pada PL yang TIDAK MEMILIKI pl_customer_po_no, pl_item_no, dan pl_description; maka ABAIKAN LINE ITEM TERSEBUT! 
+JANGAN juga menambahkan value numerik pada pl_quantity, pl_package_count, pl_nw, pl_gw, dan pl_volume ke line item lain.
+
+Contoh: Ada numerik value pada pl_quantity, pl_package_count, pl_nw, pl_gw, dan pl_volume; namun tidak ada pl_customer_po_no, pl_item_no, dan pl_description pada line item tersebut dan hanya ada keterangan 'Spare Parts' pada kolom 'MODEL'.
+Maka line item tersebut diabaikan.
+
 1. `pl_customer_po_no`: Ekstrak dari kolom "PO No.".
 2. `pl_item_no`: Ekstrak dari kolom "Material".
 3. `pl_description`: Ekstrak dari kolom "DESCRIPTION".
