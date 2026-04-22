@@ -28,79 +28,49 @@ Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang 
 9. `pl_volume`: Ekstrak nilai angka dari kolom "CBM" dengan sub-kolom 'total'.
 
 BILL OF LADING (BL):
-1. bl_description dan bl_hs_code:
-   - Field bl_description dan bl_hs_code merupakan SATU PAKET dan WAJIB selalu terisi (TIDAK BOLEH NULL).
-   - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL) saja, TIDAK BOLEH mengambil dari dokumen lain.
+1. `bl_description`: 
+    - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    Contoh:
+    Pada inv_description ada value:
+    FORK RIGID IS-FC02-53MM
+    FRAME RIGID IS-RB06-610
+    FRAME RIGID IS-RB05-520
+    FRAME RIGID IS-RB05-560
+    FRAME RIGID IS-RB06-430
+    FRAME RIGID IS-RB05-720
+    BIKE HANDLE
 
-   =========================
-   LOGIC MAPPING (BERURUTAN)
-   =========================
-   STEP 1 — Mapping berdasarkan inv_description:
-   - Cari apakah inv_description MATCH dengan deskripsi item pada BL.
-   - Jika ditemukan:
-     - bl_description = description item pada BL yang sesuai
-     - bl_hs_code = HS CODE yang terkait dengan bl_description tersebut
+    Pada BL ada deskripsi item:
+    FORK RIGID
+    FRAME RIGID 610
+    FRAME RIGID 520
+    FRAME RIGID 560
+    FRAME RIGID 430
 
-   STEP 2 — Jika TIDAK ditemukan di STEP 1, mapping berdasarkan inv_spart_item_no:
-   - Pada deskripsi BL, identifikasi nomor spart item (biasanya berupa kode unik di akhir deskripsi).
-     Contoh:
-       FORK SUSPENSION GSFM3010APV00034 → spart item = GSFM3010APV00034
-   - Jika inv_spart_item_no MATCH dengan spart item pada BL:
-     - bl_description = description item pada BL yang mengandung spart item tersebut
-     - bl_hs_code = HS CODE yang terkait
+    Maka mappingnya bl_desriptionnya adalah:
+    FORK RIGID
+    FRAME RIGID 610
+    FRAME RIGID 520
+    FRAME RIGID 560
+    FRAME RIGID 430
+    FRAME RIGID 520 (Ambil yang terdekat)
+    null (Karena tidak ada deskripsi yang sama sekali dengan BIKE HANDLE)
+    -bl_description sebisa mungkin TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
 
-   STEP 3 — Jika STEP 1 dan STEP 2 TIDAK ditemukan:
-   - Karena bl_description dan bl_hs_code TIDAK BOLEH NULL,
-   - Maka PILIH SECARA ACAK (RANDOM) satu pasangan data dari item BL:
-     - bl_description = salah satu description item dari BL
-     - bl_hs_code = HS CODE yang sesuai dengan item tersebut
-   - JANGAN MEMBUAT BL DESCRIPTION DAN BL HS CODE BARU YANG TIDAK ADA DI DOKUMEN BILL OF LADING (BL). GUNAKAN RANDOM ITEM YANG ADA SAJA DI DOKUMEN BILL OF LADING (BL).
-     Contoh:
-     DATA DI BL SEPERTI INI:
-     FORK SUSPENSION GSFM3010APV00034  HS CODE: 8714.91
-     FORK SUSPENSION GSFNEXDSV0000261  HS CODE: 8714.91
-     FORK SUSPENSION GSFNEXE25DSV0830  HS CODE: 8714.91
-     FORK SUSPENSION GSFNEXE25PDV0021  HS CODE: 8714.91
-     FORK SUSPENSION GSFNVX30DSV00484  HS CODE: 8714.91
-     
-     JANGAN BUAT DATA BARU SEPERTI = FORK SUSPENSION GSFXCM32DSV00012, YANG TIDAK ADA PADA DOKUMEN BILL OF LADING SEBAGAI HASIL EKSTRAKSI DAN MAPPING.
-   =========================
-   ATURAN PENTING
-   =========================
-   - Tidak boleh mengosongkan field (NO NULL VALUE).
-   - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
-   - Sumber data hanya boleh dari dokumen Bill of Lading (BL) saja.
-   - Tidak boleh membuat atau mengarang data di luar dari dokumen Bill of Lading (BL).
-   - Tidak boleh mengambil HS CODE dari item yang berbeda dengan bl_description.
-   - Prioritas mapping:
-       1. inv_description (utama)
-       2. inv_spart_item_no (fallback)
-       3. random BL item (last resort, WAJIB jika tidak match)
+2. `bl_hs_code`: 
+    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
+        Contoh:
+        FRAME PART A-F3306-1 HS NUMBER: 8714.91
+        FRAME PART A-HG009 HS NUMBER: 8714.91
+        FRAME PART A-HG011 HS NUMBER: 8714.91
+        FRAME PART A-HG045 HS NUMBER: 8714.91
+        FRAME TUBING HS NUMBER: 8714.91
 
-   =========================
-   CONTOH
-   =========================
-   BL:
-     - FRAME PART A-HG009 HS CODE: 8714.91
-     - FORK SUSPENSION GSFM3010APV00034 HS CODE: 8714.91
-
-   Case 1:
-     inv_description = FRAME PART A-HG009
-     → MATCH STEP 1
-     → bl_description = FRAME PART A-HG009
-     → bl_hs_code = 8714.91
-
-   Case 2:
-     inv_spart_item_no = GSFM3010APV00034
-     → MATCH STEP 2
-     → bl_description = FORK SUSPENSION GSFM3010APV00034
-     → bl_hs_code = 8714.91
-
-   Case 3:
-     inv_description & inv_spart_item_no tidak ada di BL
-     → STEP 3 (RANDOM)
-     → bl_description = FRAME PART A-HG009 (contoh random)
-     → bl_hs_code = 8714.91
+        Maka:
+        Pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja.
+        Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
+        bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
+    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
 CERTIFICATE OF ORIGIN (COO):
 1. `coo_mark_number`:
