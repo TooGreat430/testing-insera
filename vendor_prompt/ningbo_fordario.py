@@ -112,7 +112,6 @@ PACKING LIST (PL):
    - Ekstrak jumlah kemasan dari kolom "CTNS".
    - JANGAN AMBIL DARI KOLOM "PCS/CTN"
      Contoh:
-     Untuk Row 1 / line item pertama atau line item no 1, PASTIKAN AMBIL DARI KOLOM "CTNS" BUKAN DARI KOLOM "PCS/CTN". 
      ________________________________
      |    PCS/CTN   |     CTNS      |
      --------------------------------
