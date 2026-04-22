@@ -1862,6 +1862,7 @@ def _should_deduplicate_detail_rows(vendor_id: str) -> bool:
         "jht_carbon",
         "tangsan_jinhengtong",
         "kunshan_landon",
+        "ningbo_fordario"
     }
 
 def _deduplicate_detail_rows_before_validation(rows: list, vendor_id: str = "default"):
