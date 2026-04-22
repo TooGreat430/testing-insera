@@ -12,7 +12,10 @@ INVOICE (INV):
 PACKING LIST (PL):
 INSTRUKSI PENTING:
 Pada vendor ini, value setiap line item sudah bersifat ATOMIC sehingga DILARANG KERAS untuk menambahkan value numerik pada satu line item ke line item lain TANPA TERKECUALI!
-Apabila ada line item pada PL yang TIDAK MEMILIKI pl_customer_po_no, pl_item_no, dan pl_description; maka ABAIKAN LINE ITEM TERSEBUT! 
+Apabila ada line item pada PL yang TIDAK MEMILIKI pl_customer_po_no, pl_item_no, dan pl_description; maka ABAIKAN LINE ITEM TERSEBUT!
+Contoh:
+Line item yang tidak memiliki pl_customer_po_no, pl_item_no (misal hanya ada keterangan "Spare parts"), dan pl_description namun memiliki nilai numerik pada pl_quantity, pl_package_count, pl_nw, pl_gw, atau pl_volume; maka line item tersebut HARUS DIABAIKAN dan TIDAK BOLEH DITAMBAHKAN ke line item lain.
+Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang sangat umum seperti "Spare parts" tanpa informasi detail lainnya. Meskipun memiliki nilai numerik pada beberapa kolom, line item ini TIDAK BOLEH DIGABUNGKAN dengan line item lain MANAPUN karena tidak memiliki informasi yang cukup untuk diidentifikasi secara unik.
 
 1. `pl_customer_po_no`: Ekstrak dari kolom "PO No.".
 2. `pl_item_no`: Ekstrak dari kolom "Material".
