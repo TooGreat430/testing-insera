@@ -30,7 +30,6 @@ Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang 
 BILL OF LADING (BL):
 1. `bl_description`: 
     - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
-    - Apabila ada deskripsi yang mirip namun tidak 100% (misal angkanya berbeda), tetap dimapping dengan mengambil deskripsi yang paling mirip tersebut.
     Contoh:
     Pada inv_description ada value:
     FORK RIGID IS-FC02-53MM
