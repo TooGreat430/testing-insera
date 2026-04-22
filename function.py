@@ -2669,8 +2669,8 @@ def _normalize_binary_confidence_label(value: str) -> str:
 
 def _extract_pure_binary_logprob(response):
     """
-    Ambil label yang benar-benar dipilih Gemini + chosen logprob-nya.
-    Pure dari Gemini response.
+    Ambil label Gemini + chosen logprob-nya.
+    Tidak pakai probability/percent.
     """
     candidates = _get_obj_value(response, "candidates", default=[]) or []
     if not candidates:
@@ -2866,23 +2866,16 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
 
             chosen_label, chosen_logprob = _extract_pure_binary_logprob(response)
 
-            # label tetap dari Gemini
             final_label = chosen_label or predicted_label
-
-            probability = None
-            percent = None
-            if chosen_logprob is not None:
-                probability = math.exp(float(chosen_logprob))
-                percent = probability * 100.0
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
                 "confidence_label": final_label,
-                "confidence_probability": probability,
-                "confidence_percent": percent,
+                "confidence_logprob": chosen_logprob,
             }
 
         except Exception as e:
+            print(f"[CONFIDENCE_ERROR] row_no={row.get('_detail_row_no')} error={e}")
             msg = str(e).lower()
             if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
                 time.sleep((2 ** attempt) + random.random())
@@ -2892,14 +2885,11 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 continue
             break
 
-    # pure mode: tidak inject angka / label hardcoded
     return {
         "_detail_row_no": row.get("_detail_row_no"),
         "confidence_label": None,
-        "confidence_probability": None,
-        "confidence_percent": None,
+        "confidence_logprob": None,
     }
-
 
 def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
     target_rows = [r for r in (rows or []) if isinstance(r, dict)]
@@ -2908,6 +2898,8 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
 
     for row in target_rows:
         row.pop("confidence_label", None)
+        row.pop("confidence_logprob", None)
+
         row.pop("confidence_probability", None)
         row.pop("confidence_percent", None)
         row.pop("confidence_margin", None)
@@ -2937,20 +2929,17 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         row_no = row.get("_detail_row_no")
         if row_no is None:
             row["confidence_label"] = None
-            row["confidence_probability"] = None
-            row["confidence_percent"] = None
+            row["confidence_logprob"] = None
             continue
 
         scored = scored_by_no.get(int(row_no))
         if not scored:
             row["confidence_label"] = None
-            row["confidence_probability"] = None
-            row["confidence_percent"] = None
+            row["confidence_logprob"] = None
             continue
 
         row["confidence_label"] = scored.get("confidence_label")
-        row["confidence_probability"] = scored.get("confidence_probability")
-        row["confidence_percent"] = scored.get("confidence_percent")
+        row["confidence_logprob"] = scored.get("confidence_logprob")
 
     return rows
 
