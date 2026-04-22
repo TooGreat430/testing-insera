@@ -4,8 +4,8 @@ INVOICE (INV):
 
 1. inv_customer_po_no:
    - Ekstrak dari kolom "PO NO.".
-   - Jika PO NO. hanya 1 nomor, ambil angkanya saja.
-     Contoh: "45323034".
+   - Memiliki format numerik 8 digit dan diawali dengan angka 4.
+     Contoh = 45316923, 45323034, 45322720
    - Jika Item memiliki lebih dari 1 PO NO, ambil hanya nomor yang paling atas dan abaikan nomor yang lainnya.
      Contoh:
      PO NO Barang A:
@@ -17,14 +17,15 @@ INVOICE (INV):
      45319886       -> Benar
      (CLM25120196)  -> Salah
    - Jangan ambil "INVOICE NO.".
+   - JANGAN AMBIL DARI KOLOM "NO.", "CODE", "ITEM NO."
 
 2. inv_spart_item_no:
    - Ekstrak dari kolom "CODE" karena ini adalah kode item yang paling unik per line item.
-   - Jangan ambil dari kolom "ITEM NO."
-   - Contoh:
+     - Contoh:
      "FRXZEZYHG05000"
      "HBRZEHB1120001"
      "SDPZEZYSP0132001"
+   - JANGAN AMBIL DARI KOLOM "ITEM NO."
 
 3. inv_description:
    - Ekstrak dari kolom "DESCRIPTION".
@@ -60,8 +61,8 @@ PACKING LIST (PL):
 
 1. pl_customer_po_no:
    - Ekstrak dari kolom "PO NO.".
-   - Jika PO NO. hanya 1 nomor, ambil angkanya saja.
-     Contoh: "45323034".
+   - Memiliki format numerik 8 digit dan diawali dengan angka 4.
+     Contoh = 45316923, 45323034, 45322720
    - Jika Item memiliki lebih dari 1 PO NO, ambil hanya nomor yang paling atas dan abaikan nomor yang lainnya.
      Contoh:
      PO NO Barang A:
@@ -73,14 +74,15 @@ PACKING LIST (PL):
      45319886       -> Benar
      (CLM25120196)  -> Salah
    - Jangan ambil "INVOICE NO.".
+   - JANGAN AMBIL DARI KOLOM "NO.", "CODE", "ITEM NO."
 
 2. pl_item_no:
    - Ekstrak dari kolom "CODE" karena ini adalah kode item yang paling unik per line item.
-   - Jangan ambil dari kolom "ITEM NO."
    - Contoh:
      "FRXZEZYHG05000"
      "HBRZEHB1120001"
      "SDPZEZYSP0132001"
+   - Jangan ambil dari kolom "ITEM NO."
 
 3. pl_description:
    - Ekstrak dari kolom "DESCRIPTION".
@@ -106,17 +108,29 @@ PACKING LIST (PL):
    - Ekstrak jumlah kemasan dari kolom "CTNS".
    - Jika item memiliki beberapa sub-row packaging, jumlahkan semua CTNS untuk item tersebut.
    - Contoh:
-     CTNS = 2, 1, 1
+     Untuk item yang sama
+     CTNS 
+      2
+      1
+      1
      maka pl_package_count = 4
+   - JANGAN AMBIL DARI KOLOM "PCS/CTN"
 
-   - Jika value package count adalah merge untuk beberapa line item, value package count hanya di ekstrak untuk line item teratas dari merge value tersebut, sedangkan sisa value lainnya di isi dengan 0.
+   -  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
+     - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
+     - Semua baris setelahnya dalam merge grup yang sama → diisi 0.
      - Contoh:
-       | Description  |   CTNS        |
-       | Barang 1     |      1        |
-       | Barang 2     |               |
+       ________________________________
+       | Description  |     CTNS      |
+       --------------------------------
+       | Row 1        |               |
+       |---------------      1        |
+       | Row 2        |               |
+       --------------------------------
        maka:
-       - Barang 1, pl_package_count = 1
-       - Barang 2, pl_package_count = 0
+       - Row 1, pl_package_count = 1
+       - Row 2, pl_package_count = 0
+       Jadi untuk kasus merge cell ini 1 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0.
    - Jangan membagi / mengarang package count per item
 
 7. pl_nw:
@@ -124,17 +138,27 @@ PACKING LIST (PL):
    - Jika item memiliki beberapa sub-row packaging, jumlahkan semua nilai T.N.W.(KG) untuk item tersebut.
    - Ambil angka numeriknya saja.
    - Contoh:
-     T.N.W (KG) = 33.00, 13.52, 11.22
+     T.N.W (KG) 
+       33.00
+       13.52
+       11.22
      maka pl_nw = 57.74
 
-   - Jika value net weight adalah merge untuk beberapa line item, value package count hanya di ekstrak untuk line item teratas dari merge value tersebut, sedangkan sisa value lainnya di isi dengan 0.
+   -  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
+     - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
+     - Semua baris setelahnya dalam merge grup yang sama → diisi 0.
      - Contoh:
+       ________________________________
        | Description  |   T.N.W (KG)  |
-       | Barang 1     |      14.00    |
-       | Barang 2     |               |
+       --------------------------------
+       | Row 1        |               |
+       |---------------     14.00     |
+       | Row 2        |               |
+       --------------------------------
        maka:
-       - Barang 1, pl_nw = 14.00
-       - Barang 2, pl_nw = 0
+       - Row 1, pl_nw = 14.00
+       - Row 2, pl_nw = 0
+       Jadi untuk kasus merge cell ini 14.00 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0.
    - Jangan membagi / mengarang net weight per item
 
 
@@ -143,17 +167,27 @@ PACKING LIST (PL):
    - Jika item memiliki beberapa sub-row packaging, jumlahkan semua nilai T.G.W.(KG) untuk item tersebut.
    - Ambil angka numeriknya saja.
    - Contoh:
-     T.G.W (KG) = 34.60, 14.19, 11.76
+     T.G.W (KG) 
+       34.60
+       14.19
+       11.76
      maka pl_gw = 60.55
 
-   - Jika value gross weight adalah merge untuk beberapa line item, value package count hanya di ekstrak untuk line item teratas dari merge value tersebut, sedangkan sisa value lainnya di isi dengan 0.
+-  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
+     - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
+     - Semua baris setelahnya dalam merge grup yang sama → diisi 0.
      - Contoh:
+       ________________________________
        | Description  |   T.G.W (KG)  |
-       | Barang 1     |      14.50    |
-       | Barang 2     |               |
+       --------------------------------
+       | Row 1        |               |
+       |---------------     14.50     |
+       | Row 2        |               |
+       --------------------------------
        maka:
-       - Barang 1, pl_gw = 14.50
-       - Barang 2, pl_gw = 0
+       - Row 1, pl_gw = 14.50
+       - Row 2, pl_gw = 0
+       Jadi untuk kasus merge cell ini 14.50 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0.
    - Jangan membagi / mengarang gross weight per item
 
 9. pl_volume:
@@ -162,17 +196,27 @@ PACKING LIST (PL):
    - Jangan gunakan volume total dari BL untuk mengisi item-level PL.
    - Ambil angka numeriknya saja.
    - Contoh:
-     VOL.(CBM) = 0.09, 0.04, 0.04
+     VOL.(CBM)
+       0.09
+       0.04
+       0.04
      maka pl_volume = 0.17
 
-   - Jika value package count adalah merge untuk beberapa line item, value package count hanya di ekstrak untuk line item teratas dari merge value tersebut, sedangkan sisa value lainnya di isi dengan 0.
+-  Jika terdapat merge cell (1 gabungan nilai untuk beberapa row):
+     - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
+     - Semua baris setelahnya dalam merge grup yang sama → diisi 0.
      - Contoh:
+       ________________________________
        | Description  |   VOL. (CBM)  |
-       | Barang 1     |      0.02     |
-       | Barang 2     |               |
+       --------------------------------
+       | Row 1        |               |
+       |---------------     0.02      |
+       | Row 2        |               |
+       --------------------------------
        maka:
-       - Barang 1, pl_volume = 0.02
-       - Barang 2, pl_volume = 0
+       - Row 1, pl_volume = 
+       - Row 2, pl_volume = 0
+       Jadi untuk kasus merge cell ini 0.02 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0.
    - Jangan membagi / mengarang volume per item
      
 BILL OF LADING (BL):
@@ -240,11 +284,8 @@ CERTIFICATE OF ORIGIN (COO):
      "440PIECES" -> coo_unit = "PIECES"
 
 6. coo_package_count:
-   - Pada vendor ini, package count bersifat shipment-level dan diambil dari frasa pembuka field 8:
-     "THREE HUNDRED AND FOURTEEN (314) CARTONS OF"
-   - Ambil angka numeriknya saja.
-   - Hasil: 314
-   - Jika sistem melakukan ekstraksi per item COO, gunakan nilai shipment-level yang sama karena COO tidak memecah package count per item.
+   - Jika tidak tersedia package count yang bersifat item-level, maka isi dengan "null" saja
+   - JANGAN AMBIL PACKAGE COUNT YANG BERSIFAT SHIPMENT-LEVEL.
 
 7. coo_package_unit:
    - Ekstrak unit kemasan dari frasa pembuka field 8.
