@@ -6742,7 +6742,7 @@ def run_ocr(
 
         _finalize_match_fields(all_rows)
         all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
-        all_rows = _apply_dynamic_negative_cap_per_invoice(all_rows)
+        # all_rows = _apply_dynamic_negative_cap_per_invoice(all_rows) INI KALAU SETUJU NEGATIVE DI CAP 5
         _drop_columns(all_rows, [
             "inv_messrs",
             "inv_messrs_address",
