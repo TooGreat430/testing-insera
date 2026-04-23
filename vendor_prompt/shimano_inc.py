@@ -116,8 +116,34 @@ PACKING LIST (PL):
     - Jika pada suatu line item tidak ditemukan nilai angka Measure yang valid, maka biarkan `pl_volume` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
 
 BILL OF LADING (BL):
+
 1. `bl_description`: 
-    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    - bl_description DILARANG KERAS untuk diisi null.
+    - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka PILIH SALAH SATU ITEM RANDOM YANG SEKIRANYA PALING MIRIP.
+    Contoh:
+    Pada inv_description ada value:
+    DISC BRAKE ASSEMBLED ...
+    MOUNT ADAPTER FOR ROAD DISC BRAKE ...
+    FRONT CHAINWHEEL ... ; 170MM; ...
+    FRONT DERAILLEUR ...
+    REAR DERAILLEUR ... 
+    FRONT CHAINWHEEL ... ; 165MM; ...
+
+    Pada BL ada deskripsi item:
+    FRONT CHAINWHEEL 165MM
+    FRONT CHAINWHEEL 170MM
+    FRONT DERAILLEUR
+    REAR DERAILLEUR
+    DISC BRAKE
+
+    Maka mapping value bl_desriptionnya adalah:
+    DISC BRAKE
+    [PILIH SECARA RANDOM YANG SEKIRANYA PALING MIRIP]
+    FRONT CHAINWHEEL 170MM
+    FRONT DERAILLEUR
+    REAR DERAILLEUR
+    FRONT CHAINWHEEL 165MM
+
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
         Contoh:
@@ -128,8 +154,6 @@ BILL OF LADING (BL):
         FRAME TUBING HS NUMBER: 8714.91
 
         Maka:
-        Pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja.
-        Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
         bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
