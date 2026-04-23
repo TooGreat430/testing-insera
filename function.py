@@ -3860,189 +3860,330 @@ def _copy_po_line_with_allocated_qty(po_line: dict, allocated_qty):
 
     return copied
 
-def _map_po_to_details(po_lines, detail_rows):
-    po_article_exact_index, po_article_signature_index, po_desc_index = _build_po_item_indexes(po_lines)
+def _get_best_po_article_value(po_line: dict):
+    if not isinstance(po_line, dict):
+        return "null"
 
-    remaining_state = {}
-    expanded_rows = []
+    for key in [
+        "vendor_article_no",
+        "po_vendor_article_no",
+        "sap_article_no",
+        "po_sap_article_no",
+    ]:
+        value = po_line.get(key)
+        if not _is_null(value):
+            return str(value).strip()
 
-    for row in detail_rows:
+    return "null"
+
+
+def _get_mapped_po_no_from_result_rows(result_rows: list):
+    for row in result_rows or []:
         if not isinstance(row, dict):
             continue
-
-        inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
-        inv_article_raw = row.get("inv_spart_item_no")
-        pl_article_raw = row.get("pl_item_no")
-        inv_desc_norm = _norm_desc(row.get("inv_description"))
-
-        if not inv_po_norm:
-            row["_po_mapped"] = False
-            expanded_rows.append(row)
+        if row.get("_po_mapped") != True:
             continue
 
-        extracted_qty = _get_extracted_qty_for_po(row)
+        po_data = row.get("_po_data")
+        if isinstance(po_data, dict) and not _is_null(po_data.get("po_no")):
+            return str(po_data.get("po_no")).strip()
 
-        matched_by = None
-        bucket_key = None
-        candidates = []
+    return "null"
 
-        if _norm_key(inv_article_raw):
-            raw_candidates = _lookup_po_candidates_by_item_code(
-                inv_po_norm,
-                inv_article_raw,
-                po_article_exact_index,
-                po_article_signature_index,
-            )
 
-            resolved = _resolve_confusable_candidates(
-                raw_candidates,
-                inv_article_raw,
-                inv_desc_norm,
-                extracted_qty,
-            )
+def _same_invoice_context_for_neighbor_po(current_row: dict, neighbor_row: dict) -> bool:
+    if not isinstance(current_row, dict) or not isinstance(neighbor_row, dict):
+        return False
 
-            if resolved:
-                matched_by = "inv_spart_item_no"
-                candidates = resolved
-                bucket_key = (
-                    inv_po_norm,
-                    "ARTICLE",
-                    _norm_key(resolved[0].get("raw_item_no")),
-                )
+    compare_keys = [
+        "inv_invoice_no",
+        "pl_invoice_no",
+        "coo_invoice_no",
+    ]
 
-        if not candidates and _norm_key(pl_article_raw):
-            raw_candidates = _lookup_po_candidates_by_item_code(
-                inv_po_norm,
-                pl_article_raw,
-                po_article_exact_index,
-                po_article_signature_index,
-            )
+    for key in compare_keys:
+        a = _norm_key(current_row.get(key))
+        b = _norm_key(neighbor_row.get(key))
+        if a and b:
+            return a == b
 
-            resolved = _resolve_confusable_candidates(
-                raw_candidates,
-                pl_article_raw,
-                inv_desc_norm,
-                extracted_qty,
-            )
+    # fallback longgar kalau header invoice_no tidak ada
+    a_date = str(current_row.get("inv_invoice_date", "")).strip()
+    b_date = str(neighbor_row.get("inv_invoice_date", "")).strip()
 
-            if resolved:
-                matched_by = "pl_item_no"
-                candidates = resolved
-                bucket_key = (
-                    inv_po_norm,
-                    "ARTICLE",
-                    _norm_key(resolved[0].get("raw_item_no")),
-                )
+    if a_date and b_date and a_date == b_date:
+        return True
 
-        if not candidates and inv_desc_norm:
-            desc_candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
-            if desc_candidates:
-                matched_by = "description"
-                candidates = _dedup_po_candidate_entries(desc_candidates)
-                bucket_key = (
-                    inv_po_norm,
-                    "DESC",
-                    inv_desc_norm,
-                )
+    return False
 
-        if not candidates:
-            row["_po_mapped"] = False
-            expanded_rows.append(row)
+
+def _build_po_indexes(po_lines):
+    po_article_index = {}
+    po_desc_index = {}
+
+    for idx, line in enumerate(po_lines or []):
+        if not isinstance(line, dict):
             continue
 
-        if bucket_key not in remaining_state:
-            bucket_candidates = []
-            for entry in candidates:
-                qty = _to_float(entry.get("line", {}).get("po_quantity"))
-                bucket_candidates.append({
-                    "idx": entry["idx"],
-                    "line": dict(entry["line"]),
-                    "raw_item_no": entry.get("raw_item_no"),
-                    "matched_field": entry.get("matched_field"),
-                    "remaining_qty": 0.0 if qty is None else qty,
-                })
+        po_no_norm = _norm_po_number(line.get("po_no"))
+        if not po_no_norm:
+            continue
 
-            remaining_state[bucket_key] = bucket_candidates
-
-        bucket_candidates = remaining_state[bucket_key]
-
-        available = [
-            item for item in bucket_candidates
-            if (item.get("remaining_qty") or 0.0) > 1e-9
+        article_values = [
+            line.get("vendor_article_no"),
+            line.get("po_vendor_article_no"),
+            line.get("sap_article_no"),
+            line.get("po_sap_article_no"),
         ]
 
-        if not available:
-            row["_po_mapped"] = False
-            expanded_rows.append(row)
+        for article_value in article_values:
+            a_norm = _norm_key(article_value)
+            if a_norm:
+                po_article_index.setdefault((po_no_norm, a_norm), []).append((idx, line))
+
+        d_norm = _norm_desc(line.get("po_text"))
+        if d_norm:
+            po_desc_index.setdefault((po_no_norm, d_norm), []).append((idx, line))
+
+    return po_article_index, po_desc_index
+
+
+def _map_single_detail_row_to_po(
+    row,
+    po_article_index,
+    po_desc_index,
+    remaining_state,
+):
+    if not isinstance(row, dict):
+        return [row], False
+
+    inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+    inv_article_norm = _norm_key(row.get("inv_spart_item_no"))
+    pl_article_norm = _norm_key(row.get("pl_item_no"))
+    inv_desc_norm = _norm_desc(row.get("inv_description"))
+    extracted_qty = _get_extracted_qty_for_po(row)
+
+    if not inv_po_norm:
+        failed_row = dict(row)
+        failed_row["_po_mapped"] = False
+        return [failed_row], False
+
+    matched_by = None
+    bucket_key = None
+    candidates = []
+
+    if inv_article_norm:
+        candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
+        if candidates:
+            matched_by = "inv_spart_item_no"
+            bucket_key = (inv_po_norm, "ARTICLE", inv_article_norm)
+
+    if not candidates and pl_article_norm:
+        candidates = po_article_index.get((inv_po_norm, pl_article_norm), [])
+        if candidates:
+            matched_by = "pl_item_no"
+            bucket_key = (inv_po_norm, "ARTICLE", pl_article_norm)
+
+    if not candidates and inv_desc_norm:
+        candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
+        if candidates:
+            matched_by = "description"
+            bucket_key = (inv_po_norm, "DESC", inv_desc_norm)
+
+    if not candidates:
+        failed_row = dict(row)
+        failed_row["_po_mapped"] = False
+        return [failed_row], False
+
+    if bucket_key not in remaining_state:
+        bucket_candidates = []
+        for idx, line in candidates:
+            qty = _to_float(line.get("po_quantity"))
+            bucket_candidates.append({
+                "idx": idx,
+                "line": dict(line),
+                "remaining_qty": 0.0 if qty is None else qty,
+            })
+
+        remaining_state[bucket_key] = bucket_candidates
+
+    bucket_candidates = remaining_state[bucket_key]
+
+    available = [
+        item for item in bucket_candidates
+        if (item.get("remaining_qty") or 0.0) > 1e-9
+    ]
+
+    if not available:
+        failed_row = dict(row)
+        failed_row["_po_mapped"] = False
+        return [failed_row], False
+
+    row_matches = []
+
+    if extracted_qty is None:
+        chosen = _pick_closest_remaining_candidate(available, None)
+        if chosen is None:
+            failed_row = dict(row)
+            failed_row["_po_mapped"] = False
+            return [failed_row], False
+
+        alloc_qty = chosen["remaining_qty"]
+        if alloc_qty > 1e-9:
+            chosen["remaining_qty"] = 0.0
+            row_matches.append((chosen["line"], alloc_qty))
+
+    else:
+        remaining_target = extracted_qty
+
+        while remaining_target > 1e-9:
+            available = [
+                item for item in bucket_candidates
+                if (item.get("remaining_qty") or 0.0) > 1e-9
+            ]
+
+            if not available:
+                break
+
+            chosen = _pick_closest_remaining_candidate(available, remaining_target)
+            if chosen is None:
+                break
+
+            chosen_remaining = chosen.get("remaining_qty") or 0.0
+            if chosen_remaining <= 1e-9:
+                break
+
+            alloc_qty = min(remaining_target, chosen_remaining)
+            if alloc_qty <= 1e-9:
+                break
+
+            row_matches.append((chosen["line"], alloc_qty))
+            chosen["remaining_qty"] = max(chosen_remaining - alloc_qty, 0.0)
+            remaining_target = max(remaining_target - alloc_qty, 0.0)
+
+    if not row_matches:
+        failed_row = dict(row)
+        failed_row["_po_mapped"] = False
+        return [failed_row], False
+
+    row_matches = sorted(row_matches, key=lambda x: _po_line_sort_key(x[0]))
+
+    mapped_rows = []
+
+    for matched_line, alloc_qty in row_matches:
+        new_row = dict(row)
+        new_row["_po_mapped"] = True
+        new_row["_po_data"] = _copy_po_line_with_allocated_qty(matched_line, alloc_qty)
+
+        # selalu pakai item no asli dari PO JSON
+        po_article_value = _get_best_po_article_value(matched_line)
+        if not _is_null(po_article_value):
+            new_row["inv_spart_item_no"] = po_article_value
+            new_row["pl_item_no"] = po_article_value
+        else:
+            if matched_by == "inv_spart_item_no" and not _is_null(new_row.get("inv_spart_item_no")):
+                new_row["pl_item_no"] = new_row.get("inv_spart_item_no")
+            elif matched_by == "pl_item_no" and not _is_null(new_row.get("pl_item_no")):
+                new_row["inv_spart_item_no"] = new_row.get("pl_item_no")
+
+        mapped_rows.append(new_row)
+
+    return mapped_rows, True
+
+def _map_po_to_details(po_lines, detail_rows):
+    po_article_index, po_desc_index = _build_po_indexes(po_lines)
+    remaining_state = {}
+
+    # first pass: mapping normal
+    per_input_results = []
+
+    for row in detail_rows or []:
+        mapped_rows, _ = _map_single_detail_row_to_po(
+            row=row,
+            po_article_index=po_article_index,
+            po_desc_index=po_desc_index,
+            remaining_state=remaining_state,
+        )
+        per_input_results.append(mapped_rows)
+
+    # second pass: neighbor fallback
+    # rule:
+    # - hanya untuk row yang gagal
+    # - prioritas line atas dulu, baru bawah
+    # - kalau neighbor berhasil map, copy PO dari neighbor lalu remap ulang
+    for i, original_row in enumerate(detail_rows or []):
+        current_result_rows = per_input_results[i]
+
+        already_mapped = any(
+            isinstance(r, dict) and r.get("_po_mapped") == True
+            for r in current_result_rows
+        )
+        if already_mapped:
             continue
 
-        row_matches = []
+        if not isinstance(original_row, dict):
+            continue
 
-        if extracted_qty is None:
-            chosen = _pick_closest_remaining_candidate(available, None)
-            if chosen is None:
-                row["_po_mapped"] = False
-                expanded_rows.append(row)
+        has_item_no = (
+            not _is_null(original_row.get("inv_spart_item_no")) or
+            not _is_null(original_row.get("pl_item_no"))
+        )
+        if not has_item_no:
+            continue
+
+        for direction, neighbor_idx in [("up", i - 1), ("down", i + 1)]:
+            if neighbor_idx < 0 or neighbor_idx >= len(per_input_results):
                 continue
 
-            alloc_qty = chosen["remaining_qty"]
-            if alloc_qty > 1e-9:
-                chosen["remaining_qty"] = 0.0
-                row_matches.append((chosen, alloc_qty))
+            neighbor_result_rows = per_input_results[neighbor_idx]
+            neighbor_mapped = any(
+                isinstance(r, dict) and r.get("_po_mapped") == True
+                for r in neighbor_result_rows
+            )
+            if not neighbor_mapped:
+                continue
 
-        else:
-            remaining_target = extracted_qty
-
-            while remaining_target > 1e-9:
-                available = [
-                    item for item in bucket_candidates
-                    if (item.get("remaining_qty") or 0.0) > 1e-9
-                ]
-
-                if not available:
+            neighbor_anchor_row = None
+            for r in neighbor_result_rows:
+                if isinstance(r, dict) and r.get("_po_mapped") == True:
+                    neighbor_anchor_row = r
                     break
 
-                chosen = _pick_closest_remaining_candidate(available, remaining_target)
-                if chosen is None:
-                    break
+            if neighbor_anchor_row is None:
+                continue
 
-                chosen_remaining = chosen.get("remaining_qty") or 0.0
-                if chosen_remaining <= 1e-9:
-                    break
+            if not _same_invoice_context_for_neighbor_po(original_row, neighbor_anchor_row):
+                continue
 
-                alloc_qty = min(remaining_target, chosen_remaining)
-                if alloc_qty <= 1e-9:
-                    break
+            inherited_po_no = _get_mapped_po_no_from_result_rows(neighbor_result_rows)
+            if _is_null(inherited_po_no):
+                continue
 
-                row_matches.append((chosen, alloc_qty))
-                chosen["remaining_qty"] = max(chosen_remaining - alloc_qty, 0.0)
-                remaining_target = max(remaining_target - alloc_qty, 0.0)
+            patched_row = dict(original_row)
+            patched_row["inv_customer_po_no"] = inherited_po_no
+            patched_row["pl_customer_po_no"] = inherited_po_no
 
-        if not row_matches:
-            row["_po_mapped"] = False
-            expanded_rows.append(row)
-            continue
-
-        row_matches = sorted(row_matches, key=lambda x: _po_line_sort_key(x[0]["line"]))
-
-        for matched_item, alloc_qty in row_matches:
-            new_row = dict(row)
-            new_row["_po_mapped"] = True
-            new_row["_po_data"] = _copy_po_line_with_allocated_qty(
-                matched_item["line"],
-                alloc_qty
+            remapped_rows, success = _map_single_detail_row_to_po(
+                row=patched_row,
+                po_article_index=po_article_index,
+                po_desc_index=po_desc_index,
+                remaining_state=remaining_state,
             )
 
-            # selalu pakai nilai item_no ASLI dari PO JSON
-            po_raw_item_no = matched_item.get("raw_item_no")
-            if _is_null(po_raw_item_no):
-                po_raw_item_no = _get_primary_po_item_no(matched_item.get("line"))
+            if success:
+                for rr in remapped_rows:
+                    if isinstance(rr, dict):
+                        rr["_po_neighbor_fallback"] = True
+                        rr["_po_neighbor_direction"] = direction
+                        rr["_po_neighbor_inherited_po_no"] = inherited_po_no
 
-            if not _is_null(po_raw_item_no):
-                new_row["inv_spart_item_no"] = po_raw_item_no
-                new_row["pl_item_no"] = po_raw_item_no
+                per_input_results[i] = remapped_rows
+                break
 
-            expanded_rows.append(new_row)
+    # flatten sesuai urutan line item asli
+    expanded_rows = []
+    for result_rows in per_input_results:
+        expanded_rows.extend(result_rows)
 
     return expanded_rows
 
