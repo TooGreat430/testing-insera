@@ -388,6 +388,80 @@ def _sanitize_package_unit(value):
 
     return raw
 
+INVOICE_NO_COMPARE_CANONICAL_MAP = {
+    "0": "0", "O": "0", "Q": "0", "D": "0",
+    "1": "1", "I": "1", "L": "1",
+    "5": "5", "S": "5",
+    "8": "8", "B": "8",
+}
+
+def _norm_invoice_compare_key(value):
+    s = _preprocess_invoice_no_for_grouping(value)
+    if not s:
+        return ""
+
+    return "".join(INVOICE_NO_COMPARE_CANONICAL_MAP.get(ch, ch) for ch in s)
+
+
+def _same_invoice_no(a, b) -> bool:
+    left = _norm_invoice_compare_key(a)
+    right = _norm_invoice_compare_key(b)
+
+    if not left or not right:
+        return False
+
+    return left == right
+
+
+def _pick_consensus_invoice_no(row: dict):
+    inv_no = row.get("inv_invoice_no")
+    pl_no = row.get("pl_invoice_no")
+    coo_no = row.get("coo_invoice_no")
+
+    inv_ok = not _is_null(inv_no)
+    pl_ok = not _is_null(pl_no)
+    coo_ok = not _is_null(coo_no)
+
+    # strongest rule: invoice + coo agree -> use invoice as anchor
+    if inv_ok and coo_ok and _same_invoice_no(inv_no, coo_no):
+        return str(inv_no).strip(), "inv+coo"
+
+    # next: invoice + packing agree -> use invoice as anchor
+    if inv_ok and pl_ok and _same_invoice_no(inv_no, pl_no):
+        return str(inv_no).strip(), "inv+pl"
+
+    # optional conservative fallback:
+    # kalau packing + coo agree, jangan override invoice.
+    # return consensus only for pl/coo sync if invoice kosong.
+    if (not inv_ok) and pl_ok and coo_ok and _same_invoice_no(pl_no, coo_no):
+        return str(pl_no).strip(), "pl+coo"
+
+    return None, None
+
+
+def _postprocess_invoice_no_consensus(rows: list):
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        consensus_value, consensus_source = _pick_consensus_invoice_no(row)
+        if not consensus_value:
+            continue
+
+        # invoice tetap jadi anchor utama
+        if consensus_source in {"inv+coo", "inv+pl"}:
+            row["inv_invoice_no"] = consensus_value
+            row["pl_invoice_no"] = consensus_value
+            row["coo_invoice_no"] = consensus_value
+            continue
+
+        # fallback hanya kalau invoice kosong
+        if consensus_source == "pl+coo":
+            if _is_null(row.get("inv_invoice_no")):
+                row["inv_invoice_no"] = consensus_value
+            row["pl_invoice_no"] = consensus_value
+            row["coo_invoice_no"] = consensus_value
+
 def _postprocess_package_unit_fields(rows: list):
     for row in rows:
         if not isinstance(row, dict):
@@ -6556,6 +6630,7 @@ def run_ocr(
         all_rows = _generate_inv_amount_before_validation(all_rows)
 
         _postprocess_bl_coo_zero_to_null(all_rows)
+        _postprocess_invoice_no_consensus(all_rows)
 
         all_rows = _deduplicate_detail_rows_before_validation(all_rows, vendor_id=vendor_id)
 
