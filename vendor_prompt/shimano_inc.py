@@ -1,13 +1,6 @@
 SHIMANO_INC_PROMPT = """
 INVOICE (INV):
-1. `inv_customer_po_no`: - Ekstrak dari teks "P/O No." yang berada di dalam blok "MARKS NOS" di sebelah kiri (misalnya "45320517").
-                         - Jika inv_customer_po_no tidak ditemukan, gunakan nilai terakhir yang valid sebelumnya (backward lookup). Jangan pernah mengambil nilai dari setelahnya (forward lookup)
-                           Contoh:
-                           P/O No. 45323282         Barang 1
-                                                    Barang 2
-                           P/O No. 45324226         Barang 3
-                           maka untuk Barang 2, inv_customer_po_no = 45323282
-                           
+1. `inv_customer_po_no`: Ekstrak dari teks "P/O No." yang berada di dalam blok "MARKS NOS" di sebelah kiri (misalnya "45320517").
 2. `inv_spart_item_no`: Ekstrak nilai teks setelah kata "PART#" atau S.PART# di dalam blok deskripsi (misalnya "KU60302DLF6RX100" atau "KSMMAR160DDB").
 3. `inv_description`: Ekstrak teks deskripsi barang utama (misalnya "DISC BRAKE ASSEMBLED SET..."). Abaikan teks PART# atau keterangan detail lain di bawahnya.
 4. `inv_gw` & `inv_gw_unit`:
