@@ -36,9 +36,7 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 import pymupdf as fitz
 from vendor_detection import (
-    detect_vendor_from_invoice_pdf,
     load_vendor_prompt_text,
-    resolve_vendor_context,
     normalize_vendor_id,
 )
 
@@ -5576,7 +5574,7 @@ def _postprocess_item_no_fields(rows: list):
 # MAIN RUN OCR
 # ==============================
 
-def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
+def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_vendor_id=None):
     """
     uploaded_docs format:
     {
@@ -5599,6 +5597,10 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
     packing_paths = uploaded_docs.get("packing_paths") or []
     bl_path = uploaded_docs.get("bl_path")
     coo_paths = uploaded_docs.get("coo_paths") or []
+
+    forced_vendor_id = normalize_vendor_id(
+        forced_vendor_id or uploaded_docs.get("forced_vendor_id")
+    )
 
     if not invoice_paths:
         raise Exception("invoice_paths kosong")
@@ -5670,6 +5672,7 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container):
                     with_total_container=with_total_container,
                     persist_output=False,
                     manage_markers=False,
+                    forced_vendor_id=forced_vendor_id,
                 )
 
                 merged_detail_rows.extend(result.get("detail_rows") or [])
@@ -6044,7 +6047,14 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
 
     return rows
 
-def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_output=True, manage_markers=True):
+def run_ocr(
+    invoice_name,
+    uploaded_pdf_paths,
+    with_total_container,
+    persist_output=True,
+    manage_markers=True,
+    forced_vendor_id=None,
+):
 
     # Guard backend supaya COO tidak pernah diproses tanpa Bill of Lading.
     # Kontrak dari UI: jika ada 3 file tetapi with_total_container=False,
@@ -6185,24 +6195,18 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         # =========================
         # VENDOR CONTEXT
         # =========================
-        invoice_pdf_for_vendor = None
-        if normalized_pdf_paths and isinstance(normalized_pdf_paths, list) and normalized_pdf_paths[0]:
-            invoice_pdf_for_vendor = normalized_pdf_paths[0]
+        vendor_id = normalize_vendor_id(forced_vendor_id)
 
-        vendor_id = "default"
-        vendor_prompt_text = ""
+        if vendor_id == "default":
+            raise Exception("Vendor wajib dipilih dari UI. forced_vendor_id kosong atau tidak valid.")
 
-        try:
-            if invoice_pdf_for_vendor:
-                vendor_id = detect_vendor_from_invoice_pdf(invoice_pdf_for_vendor)
-                vendor_prompt_text = load_vendor_prompt_text(vendor_id)
-                print(f"[VENDOR DETECTED] vendor_id={vendor_id}")
-            else:
-                print("[VENDOR DETECTED] invoice path tidak tersedia, pakai default")
-        except Exception as e:
-            print(f"[VENDOR DETECTION FALLBACK] err={e}")
-            vendor_id = "default"
-            vendor_prompt_text = ""
+        vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+        vendor_source = "ui"
+
+        print(
+            f"[VENDOR CONTEXT] vendor_id={vendor_id} "
+            f"vendor_source={vendor_source} forced_vendor_id={forced_vendor_id}"
+        )
 
         # BATCH DETAIL EXTRACTION
         jobs = []
@@ -6293,7 +6297,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _apply_header_to_rows(all_rows, header_obj)
         _postprocess_package_unit_fields(all_rows)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
-        _postprocess_pl_volume(rows, vendor_id=vendor_id)
+        _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
 
         _reset_match_fields(all_rows)
 

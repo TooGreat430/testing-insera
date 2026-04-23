@@ -20,6 +20,10 @@ from openpyxl.styles import Alignment
 import csv
 from PyPDF2 import PdfReader, PdfMerger
 from streamlit_autorefresh import st_autorefresh
+from vendor_detection import (
+    get_vendor_display_name,
+    search_vendor_options,
+)
 
 st.set_page_config(layout="wide")
 
@@ -297,6 +301,33 @@ if menu == "Upload":
     bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"])
     coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
 
+    st.markdown("### Vendor Test")
+
+    vendor_query = st.text_input(
+        "Cari vendor",
+        placeholder="Contoh: JH",
+        help="Ketik sebagian nama vendor. Dropdown akan menampilkan vendor yang paling dekat."
+    )
+
+    vendor_options = search_vendor_options(
+        vendor_query,
+        include_default=False,
+        limit=10
+    )
+
+    selected_vendor_id = None
+    if vendor_options:
+        selected_vendor_id = st.selectbox(
+            "Pilih vendor yang akan di-test",
+            options=vendor_options,
+            format_func=get_vendor_display_name,
+        )
+        st.caption(
+            f"Vendor terpilih: {get_vendor_display_name(selected_vendor_id)} ({selected_vendor_id})"
+        )
+    else:
+        st.warning("Vendor tidak ditemukan. Ketik ulang nama vendor.")
+
     output_name = st.text_input("Output file name (default invoice name)")
 
     if st.button("Extract"):
@@ -304,6 +335,10 @@ if menu == "Upload":
         invoice_files = invoice or []
         packing_files = packing or []
         coo_files = coo or []
+
+        if not selected_vendor_id:
+            st.warning("Vendor wajib dipilih sebelum Extract.")
+            st.stop()
 
         if not invoice_files or not packing_files:
             st.warning("Invoice dan Packing List wajib diupload")
@@ -351,6 +386,7 @@ if menu == "Upload":
                     "packing_paths": packing_pdf_paths,
                     "bl_path": bl_pdf_path,
                     "coo_paths": coo_pdf_paths,
+                    "forced_vendor_id": selected_vendor_id,
                 }
 
                 # marker tidak dibuat di UI lagi.

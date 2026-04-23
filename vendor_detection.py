@@ -1,18 +1,8 @@
-import json
 import os
 import re
+from difflib import SequenceMatcher
 import importlib.util
 from pathlib import Path
-from PyPDF2 import PdfReader
-from google import genai
-
-from config import PROJECT_ID, LOCATION
-
-genai_client = genai.Client(
-    vertexai=True,
-    project=PROJECT_ID,
-    location=LOCATION,
-)
 
 VENDOR_LIST = [
     "jht_carbon",
@@ -39,6 +29,31 @@ VENDOR_LIST = [
     "hl_shenzhen",
 ]
 
+VENDOR_DISPLAY_NAME_MAP = {
+    "jht_carbon": "JHT Carbon",
+    "jht": "JHT",
+    "tangsan_jinhengtong": "Tangsan Jinhengtong",
+    "joy": "Joy",
+    "kunshan_landon": "Kunshan Landon",
+    "shimano_inc": "Shimano Inc",
+    "novatec": "Novatec",
+    "suntour_shenzhen": "Suntour Shenzhen",
+    "suntour_vietnam": "Suntour Vietnam",
+    "bafang_motor": "Bafang Motor",
+    "ningbo_fordario": "Ningbo Fordario",
+    "ningbo_julong": "Ningbo Julong",
+    "jiangsiu_huajiu": "Jiangsiu Huajiu",
+    "fox": "Fox",
+    "haomeng": "Haomeng",
+    "to_ho": "To Ho",
+    "velo_kunshan": "Velo Kunshan",
+    "velo_enterprise": "Velo Enterprise",
+    "shimano_singapore": "Shimano Singapore",
+    "liow_ko": "Liow Ko",
+    "auriga": "Auriga",
+    "hl_shenzhen": "HL Shenzhen",
+}
+
 BASE_DIR = Path(__file__).resolve().parent
 VENDOR_PROMPT_DIR = Path(
     os.getenv("VENDOR_PROMPT_DIR", str(BASE_DIR / "vendor_prompt"))
@@ -52,92 +67,101 @@ def normalize_vendor_id(vendor_id: str) -> str:
     return "default"
 
 
-def _read_first_invoice_text(pdf_path: str, max_pages: int = 2) -> str:
-    reader = PdfReader(pdf_path)
-    texts = []
-
-    for i in range(min(max_pages, len(reader.pages))):
-        try:
-            texts.append(reader.pages[i].extract_text() or "")
-        except Exception:
-            pass
-
-    return "\n".join(texts)
+def get_vendor_display_name(vendor_id: str) -> str:
+    vendor_id = normalize_vendor_id(vendor_id)
+    return VENDOR_DISPLAY_NAME_MAP.get(
+        vendor_id,
+        str(vendor_id).replace("_", " ").strip().title()
+    )
 
 
-def _extract_json_safe(raw: str) -> dict:
-    raw = (raw or "").strip()
-    raw = raw.replace("```json", "").replace("```", "").strip()
-
-    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-    if match:
-        raw = match.group(0)
-
-    obj = json.loads(raw)
-    if not isinstance(obj, dict):
-        raise Exception("Vendor detector output bukan JSON object")
-
-    return obj
+def _normalize_search_text(value: str) -> str:
+    value = str(value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
 
-def detect_vendor_from_invoice_text(invoice_text: str) -> str:
-    prompt = f"""
-ROLE:
-Anda hanya bertugas mendeteksi vendor dari dokumen invoice.
-
-TUGAS:
-Pilih SATU vendor_id yang paling cocok dari daftar berikut.
-Jika benar-benar tidak ada yang cocok, pilih "default".
-
-DAFTAR vendor_id VALID:
-{json.dumps(VENDOR_LIST, ensure_ascii=False)}
-
-ATURAN:
-- Hanya boleh memilih SATU nilai dari daftar vendor_id di atas, atau "default".
-- Jangan membuat nama vendor_id baru.
-- Gunakan konteks nama perusahaan, seller, shipper, manufacturer, exporter, alamat, branding, dan pola dokumen invoice.
-- Fokus pada vendor/supplier utama dokumen invoice.
-- Jika ada beberapa nama perusahaan, pilih yang paling mungkin adalah vendor utama.
-- Jika tidak yakin, pilih "default".
-- Output HANYA JSON object valid.
-
-OUTPUT SCHEMA:
-{{
-  "vendor_id": "string"
-}}
-
-INVOICE TEXT:
-\"\"\"
-{invoice_text[:25000]}
-\"\"\"
-"""
-    last_err = None
-
-    for _ in range(3):
-        try:
-            response = genai_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-
-            raw = getattr(response, "text", "") or ""
-            obj = _extract_json_safe(raw)
-            return normalize_vendor_id(obj.get("vendor_id", "default"))
-
-        except Exception as e:
-            last_err = e
-
-    print(f"[VENDOR DETECTOR ERROR] {last_err}")
-    return "default"
+def _compact_search_text(value: str) -> str:
+    return _normalize_search_text(value).replace(" ", "")
 
 
-def detect_vendor_from_invoice_pdf(pdf_path: str) -> str:
-    invoice_text = _read_first_invoice_text(pdf_path, max_pages=2)
+def _build_vendor_search_candidates(vendor_id: str) -> list:
+    label = get_vendor_display_name(vendor_id)
+    parts = [
+        label,
+        vendor_id,
+        label.replace(" ", ""),
+        vendor_id.replace("_", " "),
+        vendor_id.replace("_", ""),
+    ]
 
-    if not invoice_text.strip():
-        return "default"
+    seen = set()
+    candidates = []
+    for part in parts:
+        normalized = _normalize_search_text(part)
+        compact = _compact_search_text(part)
+        for item in [normalized, compact]:
+            if item and item not in seen:
+                seen.add(item)
+                candidates.append(item)
 
-    return detect_vendor_from_invoice_text(invoice_text)
+    return candidates
+
+
+def _score_vendor_match(query: str, vendor_id: str) -> tuple:
+    normalized_query = _normalize_search_text(query)
+    compact_query = _compact_search_text(query)
+
+    if not normalized_query:
+        return (1, 1.0)
+
+    best_bucket = -1
+    best_ratio = 0.0
+
+    for candidate in _build_vendor_search_candidates(vendor_id):
+        ratio = SequenceMatcher(None, compact_query, candidate).ratio()
+        bucket = 0
+
+        if candidate == compact_query:
+            bucket = 6
+        elif candidate.startswith(compact_query):
+            bucket = 5
+        elif compact_query in candidate:
+            bucket = 4
+        else:
+            candidate_tokens = candidate.split()
+            if any(token.startswith(compact_query) for token in candidate_tokens):
+                bucket = 3
+            elif any(compact_query in token for token in candidate_tokens):
+                bucket = 2
+            elif ratio >= 0.45:
+                bucket = 1
+
+        if bucket > best_bucket or (bucket == best_bucket and ratio > best_ratio):
+            best_bucket = bucket
+            best_ratio = ratio
+
+    return (best_bucket, best_ratio)
+
+
+def search_vendor_options(query: str = "", include_default: bool = False, limit: int = 10) -> list:
+    vendor_ids = list(VENDOR_LIST)
+    if include_default:
+        vendor_ids = ["default"] + vendor_ids
+
+    normalized_query = _normalize_search_text(query)
+    scored = []
+
+    for vendor_id in vendor_ids:
+        bucket, ratio = _score_vendor_match(normalized_query, vendor_id)
+        if normalized_query and bucket < 1:
+            continue
+
+        scored.append((bucket, ratio, get_vendor_display_name(vendor_id), vendor_id))
+
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2].lower()))
+    return [vendor_id for _, _, _, vendor_id in scored[:limit]]
 
 
 def _load_module_from_path(py_path: str):
@@ -156,7 +180,6 @@ def load_vendor_prompt_text(vendor_id: str) -> str:
     vendor_id = normalize_vendor_id(vendor_id)
 
     if vendor_id == "default":
-        print("[VENDOR PROMPT] vendor_id=default -> pakai prompt bawaan")
         return ""
 
     py_path = VENDOR_PROMPT_DIR / f"{vendor_id}.py"
@@ -175,28 +198,3 @@ def load_vendor_prompt_text(vendor_id: str) -> str:
 
     print(f"[VENDOR PROMPT] tidak ada *_PROMPT yang valid untuk vendor_id={vendor_id}")
     return ""
-
-
-def resolve_vendor_context(
-    pdf_path: str = None,
-    forced_vendor_id: str = None,
-) -> dict:
-    forced_vendor_id = normalize_vendor_id(forced_vendor_id)
-
-    if forced_vendor_id != "default":
-        vendor_id = forced_vendor_id
-        vendor_source = "forced"
-    elif pdf_path:
-        vendor_id = detect_vendor_from_invoice_pdf(pdf_path)
-        vendor_source = "detected"
-    else:
-        vendor_id = "default"
-        vendor_source = "default"
-
-    vendor_prompt_text = load_vendor_prompt_text(vendor_id)
-
-    return {
-        "vendor_id": vendor_id,
-        "vendor_prompt_text": vendor_prompt_text,
-        "vendor_source": vendor_source,
-    }
