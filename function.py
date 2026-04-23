@@ -53,6 +53,14 @@ DETAIL_CONFIDENCE_POSITIVE_THRESHOLD = float(
     os.getenv("DETAIL_CONFIDENCE_POSITIVE_THRESHOLD", "-0.0099")
 )
 
+DETAIL_CONFIDENCE_DYNAMIC_NEGATIVE_RATIO = float(
+    os.getenv("DETAIL_CONFIDENCE_DYNAMIC_NEGATIVE_RATIO", "0.4")
+)
+
+DETAIL_CONFIDENCE_MAX_NEGATIVE_PER_INVOICE = int(
+    os.getenv("DETAIL_CONFIDENCE_MAX_NEGATIVE_PER_INVOICE", "5")
+)
+
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
     "inv_quantity": "number",
@@ -2812,6 +2820,91 @@ def _derive_confidence_band_from_logprob(confidence_logprob):
         return "positive"
 
     return "neutral"
+
+def _get_dynamic_negative_cap(total_line_items: int) -> int:
+    """
+    Rule:
+    - minimal 1 negative jika memang ada row negative
+    - maksimal 5 negative per invoice
+    - default ratio 40% dari total line item
+    """
+    if total_line_items <= 0:
+        return 0
+
+    ratio = float(DETAIL_CONFIDENCE_DYNAMIC_NEGATIVE_RATIO)
+    max_cap = int(DETAIL_CONFIDENCE_MAX_NEGATIVE_PER_INVOICE)
+
+    computed = math.ceil(total_line_items * ratio)
+    return max(1, min(max_cap, computed))
+
+
+def _apply_dynamic_negative_cap_per_invoice(rows: list):
+    """
+    Setelah confidence label terbentuk dari threshold,
+    batasi jumlah negative per invoice secara dinamis.
+
+    Keep:
+    - row negative dengan confidence_logprob paling kecil
+      (paling negatif / paling suspicious)
+
+    Demote:
+    - row negative sisanya menjadi neutral
+    """
+    if not isinstance(rows, list) or not rows:
+        return rows
+
+    grouped = {}
+
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+
+        invoice_group = _get_detail_total_group_key(row, idx)
+        grouped.setdefault(invoice_group, []).append(row)
+
+    for invoice_group, group_rows in grouped.items():
+        total_line_items = len(group_rows)
+        max_negative = _get_dynamic_negative_cap(total_line_items)
+
+        negative_candidates = []
+
+        for row in group_rows:
+            if row.get("confidence_label") != "negative":
+                continue
+
+            lp = row.get("confidence_logprob")
+
+            try:
+                score = float(lp)
+            except Exception:
+                # kalau logprob kosong, anggap sangat buruk supaya tetap diprioritaskan review
+                score = float("-inf")
+
+            negative_candidates.append((score, row))
+
+        # paling negatif dulu
+        negative_candidates.sort(key=lambda x: x[0])
+
+        keep_ids = {
+            id(row)
+            for _, row in negative_candidates[:max_negative]
+        }
+
+        demoted = 0
+        for _, row in negative_candidates[max_negative:]:
+            row["confidence_label"] = "neutral"
+            demoted += 1
+
+        print(
+            f"[CONFIDENCE_CAP] invoice_group={invoice_group} "
+            f"total_line_items={total_line_items} "
+            f"max_negative={max_negative} "
+            f"negative_before={len(negative_candidates)} "
+            f"demoted={demoted} "
+            f"negative_after={min(len(negative_candidates), max_negative)}"
+        )
+
+    return rows
 
 def _normalize_binary_confidence_label(value: str) -> str:
     s = str(value or "").strip().lower().strip('"').strip("'")
@@ -6649,6 +6742,7 @@ def run_ocr(
 
         _finalize_match_fields(all_rows)
         all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
+        all_rows = _apply_dynamic_negative_cap_per_invoice(all_rows)
         _drop_columns(all_rows, [
             "inv_messrs",
             "inv_messrs_address",
