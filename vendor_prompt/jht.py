@@ -42,7 +42,7 @@ PACKING LIST (PL):
 
 BILL OF LADING (BL):
 1. `bl_description`: 
-    - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    - Dimapping dengan inv_description berdasarkan kemiripan.
     Contoh:
     Pada inv_description ada value:
     RIM, HLQC-GA63-1
@@ -66,7 +66,7 @@ BILL OF LADING (BL):
     RIM, HLQC-08A
     RIM, HLQC-23Y
     RIM, HLQC-[Manapun]
-    -bl_description sebisa mungkin TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
+    - bl_description TIDAK BOLEH NULL. Jika tidak tersedia pilih secara acak dari deskripsi item BL.
 
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
