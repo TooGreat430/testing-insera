@@ -4542,7 +4542,6 @@ def _postprocess_coo_item_mapping(rows: list):
 
 
 def _postprocess_coo_no_and_seq(rows: list):
-    # COO dianggap ada kalau minimal ada header/doc-level COO
     coo_keys_presence = [
         "coo_form_type",
         "coo_invoice_no",
@@ -4553,7 +4552,6 @@ def _postprocess_coo_no_and_seq(rows: list):
     ]
 
     has_coo = _doc_present(rows, coo_keys_presence)
-
     active_rows = []
 
     for r in rows or []:
@@ -4564,13 +4562,14 @@ def _postprocess_coo_no_and_seq(rows: list):
             r["coo_seq"] = "null"
             continue
 
-        # hanya row yang masih punya item COO meaningful yang boleh ikut seq
+        # isi coo_no dulu
+        if _is_null(r.get("coo_no")) and not _is_null(r.get("inv_invoice_no")):
+            r["coo_no"] = str(r.get("inv_invoice_no")).strip()
+
+        # baru tentukan row ini ikut sequencing atau tidak
         if not _row_has_meaningful_coo_item(r):
             r["coo_seq"] = "null"
             continue
-
-        if _is_null(r.get("coo_no")) and not _is_null(r.get("inv_invoice_no")):
-            r["coo_no"] = str(r.get("inv_invoice_no")).strip()
 
         active_rows.append(r)
 
