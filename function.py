@@ -2731,10 +2731,10 @@ def _derive_confidence_band_from_logprob(confidence_logprob):
     if low > high:
         low, high = high, low
 
-    if score <= low:
+    if score <= low: # -0.00625
         return "negative"
 
-    if score >= high:
+    if score >= high: # -0.0031
         return "positive"
 
     return "neutral"
@@ -3916,6 +3916,38 @@ def _same_invoice_context_for_neighbor_po(current_row: dict, neighbor_row: dict)
 
     return False
 
+ITEM_CODE_COMPARE_CANONICAL_MAP = {
+    "8": "8",
+    "B": "8",
+
+    "0": "0",
+    "O": "0",
+    "Q": "0",
+    "D": "0",
+
+    "1": "1",
+    "I": "1",
+    "L": "1",
+
+    "2": "2",
+    "Z": "2",
+
+    "5": "5",
+    "S": "5",
+
+    "6": "6",
+    "G": "6",
+}
+
+def _norm_item_compare_key(value):
+    s = _norm_key(value)
+    if not s:
+        return ""
+
+    out = []
+    for ch in s:
+        out.append(ITEM_CODE_COMPARE_CANONICAL_MAP.get(ch, ch))
+    return "".join(out)
 
 def _build_po_indexes(po_lines):
     po_article_index = {}
@@ -3937,7 +3969,7 @@ def _build_po_indexes(po_lines):
         ]
 
         for article_value in article_values:
-            a_norm = _norm_key(article_value)
+            a_norm = _norm_item_compare_key(article_value)
             if a_norm:
                 po_article_index.setdefault((po_no_norm, a_norm), []).append((idx, line))
 
@@ -3958,8 +3990,8 @@ def _map_single_detail_row_to_po(
         return [row], False
 
     inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
-    inv_article_norm = _norm_key(row.get("inv_spart_item_no"))
-    pl_article_norm = _norm_key(row.get("pl_item_no"))
+    inv_article_norm = _norm_item_compare_key(row.get("inv_spart_item_no"))
+    pl_article_norm = _norm_item_compare_key(row.get("pl_item_no"))
     inv_desc_norm = _norm_desc(row.get("inv_description"))
     extracted_qty = _get_extracted_qty_for_po(row)
 
