@@ -34,7 +34,7 @@ PACKING LIST (PL):
 6. `pl_package_count`: Ekstrak nilai angka jumlah kemasan spesifik per item dari kolom "PACKING" (misalnya angka "20").
 7. `pl_nw`: Ekstrak nilai angka dari kolom "N.W. KGS" dan BUKAN "N.W./PKGS".
 8. `pl_gw`: Ekstrak nilai angka dari kolom "G.W. KGS" dan BUKAN "G.W./PKGS".
-9. `pl_volume`: Ekstrak nilai angka dari kolom volume "VOL MEAS M".
+9. `pl_volume`: Ekstrak nilai angka dari kolom volume "VOL/PKGS" kemudian KALIKAN dengan data pl_package_count line tersebut.
 
 BILL OF LADING (BL):
 1. `bl_description`: 
