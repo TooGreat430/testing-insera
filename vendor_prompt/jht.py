@@ -34,15 +34,40 @@ PACKING LIST (PL):
 6. `pl_package_count`: Ekstrak nilai angka jumlah kemasan spesifik per item dari kolom "PACKING" (misalnya angka "20").
 7. `pl_nw`: Ekstrak nilai angka dari kolom "N.W. KGS" dan BUKAN "N.W./PKGS".
 8. `pl_gw`: Ekstrak nilai angka dari kolom "G.W. KGS" dan BUKAN "G.W./PKGS".
-9. `pl_volume`: Ekstrak nilai angka dari kolom volume "VOL MEAS M". Ekstrak nilai VOLUME PER SATUAN PACKAGE-NYA, BUKAN TOTAL VOLUME.
+9. `pl_volume`: Ekstrak nilai angka dari kolom volume "VOL/PKGS" yang kemudian di-KALIKAN dengan value pl_package_count line tersebut.
     Contoh:
-    Packing PKGS: 20 CTN
-    Vol/PKGS: 0.01
-    Maka pl_volume adalah 0.01 dan BUKAN 0.2.
+    Packing PKGS: 20
+    VOL/PKGS: 0.05
+    Maka pl_volume untuk line item tersebut adalah 20 * 0.05 = 1.00.
 
 BILL OF LADING (BL):
 1. `bl_description`: 
-    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    Contoh:
+    Pada inv_description ada value:
+    RIM, HLQC-GA63-1
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
+    RIM, HLQC-04
+
+    Pada BL ada deskripsi item:
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
+    BASKET
+    CARRIER
+    FORK END
+
+    Maka mapping value bl_desriptionnya adalah:
+    RIM, HLQC-[Manapun]
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
+    RIM, HLQC-[Manapun]
+    -bl_description sebisa mungkin TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
+
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
         Contoh:
