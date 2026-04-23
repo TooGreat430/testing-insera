@@ -29,7 +29,9 @@ INVOICE (INV):
 3. inv_description:
    - Ekstrak deskripsi item dari kolom "DESCRIPTION OF GOODS"
    - Gabungkan seluruh wrapped lines yang masih merupakan bagian dari deskripsi item.
-   - ABAIKAN / JANGAN SERTAKAN "BICYCLE PARTS", Model No, PO No, quantity, unit price, atau amount.
+   - ABAIKAN / JANGAN SERTAKAN "BICYCLE PARTS", PO No, quantity, unit price, atau amount.
+   - ABAIKAN / JANGAN SERTAKAN "Model No." seperti contoh:
+     FP-HW-20, FP-B902E-2NL, FP-H885E1
    - Contoh hasil:
      PART OF HEAD PART ; FEIMIN ; HW-20 FLAT CAP ; SAND BLAST BLACK ; ALLOY 28.6, BLACK BOLT, W/STAR NUT,W/O LOGO"
 
