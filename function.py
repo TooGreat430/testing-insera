@@ -5625,6 +5625,29 @@ def _postprocess_coo_description(rows: list):
                 row.get("coo_description")
             )
 
+def _get_description_head_segment(value):
+    normalized = _normalize_description_for_similarity(value)
+    if not normalized:
+        return ""
+
+    # ambil bagian awal sebelum separator utama
+    parts = re.split(r"\s*;\s*|\s+W/O\s+|\s+W/\s+|\s+\(\s*OPTION\s*\)\s*", normalized, maxsplit=1)
+    head = parts[0].strip()
+    return head
+
+
+def _is_generic_bl_description_match(bl_desc, inv_desc) -> bool:
+    bl_norm = _normalize_description_for_similarity(bl_desc)
+    inv_head = _get_description_head_segment(inv_desc)
+
+    if not bl_norm or not inv_head:
+        return False
+
+    if inv_head == bl_norm:
+        return True
+
+    return bool(re.match(rf"^{re.escape(bl_norm)}(?:\s|$)", inv_head))
+
 def _normalize_description_for_similarity(value):
     if value is None:
         return ""
@@ -5687,13 +5710,7 @@ def _extract_bl_description_codes(value):
 
 
 def _text_exists_in_description(needle, haystack) -> bool:
-    left = _normalize_description_for_similarity(needle)
-    right = _normalize_description_for_similarity(haystack)
-
-    if not left or not right:
-        return False
-
-    return left in right
+    return _is_generic_bl_description_match(needle, haystack)
 
 
 def _code_exists_in_value(code, value) -> bool:
