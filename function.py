@@ -2096,35 +2096,35 @@ def _sanitize_pl_package_unit(value):
     return raw
 
 # tambahkan dekat area vendor-specific postprocess
-FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS = {
-    "jht",
-}
+# FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS = {
+#     "jht",
+# }
 
-def _should_force_pl_volume_x_package_count(vendor_id: str) -> bool:
-    return normalize_vendor_id(vendor_id) in FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS
+# def _should_force_pl_volume_x_package_count(vendor_id: str) -> bool:
+#     return normalize_vendor_id(vendor_id) in FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS
 
-def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
-    should_multiply = _should_force_pl_volume_x_package_count(vendor_id)
+# def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
+#     should_multiply = _should_force_pl_volume_x_package_count(vendor_id)
 
-    print(
-        f"[PL_VOLUME_POSTPROCESS] vendor_id={vendor_id} "
-        f"should_multiply={should_multiply}"
-    )
+#     print(
+#         f"[PL_VOLUME_POSTPROCESS] vendor_id={vendor_id} "
+#         f"should_multiply={should_multiply}"
+#     )
 
-    if not should_multiply:
-        return
+#     if not should_multiply:
+#         return
 
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+#     for row in rows:
+#         if not isinstance(row, dict):
+#             continue
 
-        pl_volume = _to_float(row.get("pl_volume"))
-        pl_package_count = _to_float(row.get("pl_package_count"))
+#         pl_volume = _to_float(row.get("pl_volume"))
+#         pl_package_count = _to_float(row.get("pl_package_count"))
 
-        if pl_volume is None or pl_package_count is None:
-            continue
+#         if pl_volume is None or pl_package_count is None:
+#             continue
 
-        row["pl_volume"] = pl_volume * pl_package_count
+#         row["pl_volume"] = pl_volume * pl_package_count
 
 FORCE_CT_VENDORS = {
     "haomeng",
@@ -6084,7 +6084,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
     _postprocess_package_unit_fields(rows)
     _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
-    _postprocess_pl_volume(rows, vendor_id=vendor_id)
+    # _postprocess_pl_volume(rows, vendor_id=vendor_id)
 
     _reset_match_fields(rows)
 
@@ -6438,7 +6438,7 @@ def run_ocr(
         _apply_header_to_rows(all_rows, header_obj)
         _postprocess_package_unit_fields(all_rows)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
-        _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
+        # _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
 
         _reset_match_fields(all_rows)
 
