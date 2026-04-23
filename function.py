@@ -2097,7 +2097,37 @@ def _sanitize_pl_package_unit(value):
 
     return raw
 
-# tambahkan dekat area sanitizer pl_package_unit
+# tambahkan dekat area vendor-specific postprocess
+FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS = {
+    "jht",
+}
+
+def _should_force_pl_volume_x_package_count(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS
+
+def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
+    should_multiply = _should_force_pl_volume_x_package_count(vendor_id)
+
+    print(
+        f"[PL_VOLUME_POSTPROCESS] vendor_id={vendor_id} "
+        f"should_multiply={should_multiply}"
+    )
+
+    if not should_multiply:
+        return
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        pl_volume = _to_float(row.get("pl_volume"))
+        pl_package_count = _to_float(row.get("pl_package_count"))
+
+        if pl_volume is None or pl_package_count is None:
+            continue
+
+        row["pl_volume"] = pl_volume * pl_package_count
+
 FORCE_CT_VENDORS = {
     "haomeng",
     "suntour_vietnam",
@@ -3177,22 +3207,6 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
 
     print(f"(Gemini Run ID: {response.response_id})")
 
-    # DEBUG RAW RESPONSE
-    try:
-        candidates = getattr(response, "candidates", None)
-        print(f"[GEMINI_DEBUG] candidates_count={0 if not candidates else len(candidates)}")
-
-        if candidates:
-            c0 = candidates[0]
-            print(f"[GEMINI_DEBUG] finish_reason={getattr(c0, 'finish_reason', None)}")
-            print(f"[GEMINI_DEBUG] safety_ratings={getattr(c0, 'safety_ratings', None)}")
-
-            content = getattr(c0, "content", None)
-            parts_obj = getattr(content, "parts", None) if content else None
-            print(f"[GEMINI_DEBUG] parts={parts_obj}")
-    except Exception as dbg_e:
-        print(f"[GEMINI_DEBUG] failed_to_dump_response={repr(dbg_e)}")
-
     text_output = _extract_text_from_gemini_response(response)
     if not text_output:
         raise Exception("Gemini response tidak mengandung text")
@@ -3508,30 +3522,350 @@ def _po_line_sort_key(po_line: dict):
     except Exception:
         return (1, str(raw or ""))
 
-def _map_po_to_details(po_lines, detail_rows):
-    po_article_index = {}
+PO_ITEM_NO_FIELDS = [
+    "vendor_article_no",
+    "po_vendor_article_no",
+    "sap_article_no",
+    "po_sap_article_no",
+]
+
+ITEM_CODE_CONFUSABLE_MAP = {
+    "0": ["0", "O", "Q", "D"],
+    "O": ["O", "0", "Q", "D"],
+    "Q": ["Q", "0", "O"],
+    "D": ["D", "0", "O"],
+
+    "1": ["1", "I", "L"],
+    "I": ["I", "1", "L"],
+    "L": ["L", "1", "I"],
+
+    "2": ["2", "Z"],
+    "Z": ["Z", "2"],
+
+    "5": ["5", "S"],
+    "S": ["S", "5"],
+
+    "6": ["6", "G"],
+    "G": ["G", "6"],
+
+    "8": ["8", "B"],
+    "B": ["B", "8"],
+}
+
+ITEM_CODE_CONFUSABLE_GROUPS = [
+    ("0", "O", "Q", "D"),
+    ("1", "I", "L"),
+    ("2", "Z"),
+    ("5", "S"),
+    ("6", "G"),
+    ("8", "B"),
+]
+
+ITEM_CODE_CANONICAL_MAP = {}
+for group in ITEM_CODE_CONFUSABLE_GROUPS:
+    canonical = group[0]
+    for ch in group:
+        ITEM_CODE_CANONICAL_MAP[ch] = canonical
+
+MAX_ITEM_CODE_VARIANTS = 128
+
+
+def _norm_item_code_signature(x):
+    s = _norm_key(x)
+    if not s:
+        return ""
+
+    out = []
+    for ch in s:
+        out.append(ITEM_CODE_CANONICAL_MAP.get(ch, ch))
+    return "".join(out)
+
+
+def _generate_confusable_item_code_variants(value, max_variants=MAX_ITEM_CODE_VARIANTS):
+    s = _norm_key(value)
+    if not s:
+        return []
+
+    char_options = []
+    for ch in s:
+        options = ITEM_CODE_CONFUSABLE_MAP.get(ch, [ch])
+
+        dedup = []
+        seen = set()
+        for opt in options:
+            if opt not in seen:
+                seen.add(opt)
+                dedup.append(opt)
+
+        char_options.append(dedup)
+
+    variants = []
+    current = []
+
+    def dfs(idx):
+        if len(variants) >= max_variants:
+            return
+
+        if idx >= len(char_options):
+            variants.append("".join(current))
+            return
+
+        for opt in char_options[idx]:
+            current.append(opt)
+            dfs(idx + 1)
+            current.pop()
+
+            if len(variants) >= max_variants:
+                return
+
+    dfs(0)
+
+    exact = _norm_key(value)
+    ordered = []
+    seen = set()
+
+    if exact:
+        ordered.append(exact)
+        seen.add(exact)
+
+    for v in variants:
+        if not v or v in seen:
+            continue
+        ordered.append(v)
+        seen.add(v)
+
+    return ordered
+
+
+def _item_code_similarity(left, right):
+    l_exact = _norm_key(left)
+    r_exact = _norm_key(right)
+
+    if not l_exact or not r_exact:
+        return 0.0
+
+    if l_exact == r_exact:
+        return 1.0
+
+    l_sig = _norm_item_code_signature(left)
+    r_sig = _norm_item_code_signature(right)
+
+    if l_sig and r_sig and l_sig == r_sig:
+        return 0.98
+
+    return SequenceMatcher(None, l_exact, r_exact).ratio()
+
+
+def _extract_po_item_no_entries(line: dict):
+    entries = []
+    seen_exact = set()
+
+    if not isinstance(line, dict):
+        return entries
+
+    for field in PO_ITEM_NO_FIELDS:
+        raw = line.get(field)
+        exact = _norm_key(raw)
+        if not exact:
+            continue
+        if exact in seen_exact:
+            continue
+
+        seen_exact.add(exact)
+
+        entries.append({
+            "field": field,
+            "raw_item_no": str(raw).strip(),
+            "exact_key": exact,
+            "signature_key": _norm_item_code_signature(raw),
+        })
+
+    return entries
+
+
+def _get_primary_po_item_no(line: dict):
+    for field in PO_ITEM_NO_FIELDS:
+        raw = line.get(field) if isinstance(line, dict) else None
+        if not _is_null(raw):
+            return str(raw).strip()
+    return "null"
+
+
+def _dedup_po_candidate_entries(entries):
+    deduped = []
+    seen = set()
+
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+
+        key = (
+            entry.get("idx"),
+            entry.get("matched_field"),
+            entry.get("raw_item_no"),
+            _norm_po_number(entry.get("line", {}).get("po_no")) if isinstance(entry.get("line"), dict) else "",
+            str(entry.get("line", {}).get("po_line")) if isinstance(entry.get("line"), dict) else "",
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(entry)
+
+    return deduped
+
+
+def _build_po_item_indexes(po_lines):
+    po_article_exact_index = {}
+    po_article_signature_index = {}
     po_desc_index = {}
 
-    for idx, line in enumerate(po_lines):
+    for idx, line in enumerate(po_lines or []):
         po_no_norm = _norm_po_number(line.get("po_no"))
         if not po_no_norm:
             continue
 
-        v_norm = _norm_key(line.get("vendor_article_no") or line.get("po_vendor_article_no"))
-        s_norm = _norm_key(line.get("sap_article_no") or line.get("po_sap_article_no"))
+        for item_entry in _extract_po_item_no_entries(line):
+            entry = {
+                "idx": idx,
+                "line": dict(line),
+                "matched_field": item_entry["field"],
+                "raw_item_no": item_entry["raw_item_no"],
+                "exact_key": item_entry["exact_key"],
+                "signature_key": item_entry["signature_key"],
+            }
+
+            po_article_exact_index.setdefault(
+                (po_no_norm, item_entry["exact_key"]), []
+            ).append(entry)
+
+            if item_entry["signature_key"]:
+                po_article_signature_index.setdefault(
+                    (po_no_norm, item_entry["signature_key"]), []
+                ).append(entry)
+
         d_norm = _norm_desc(line.get("po_text"))
-
-        if v_norm:
-            po_article_index.setdefault((po_no_norm, v_norm), []).append((idx, line))
-        if s_norm:
-            po_article_index.setdefault((po_no_norm, s_norm), []).append((idx, line))
         if d_norm:
-            po_desc_index.setdefault((po_no_norm, d_norm), []).append((idx, line))
+            po_desc_index.setdefault((po_no_norm, d_norm), []).append({
+                "idx": idx,
+                "line": dict(line),
+                "matched_field": "po_text",
+                "raw_item_no": _get_primary_po_item_no(line),
+                "exact_key": _norm_key(_get_primary_po_item_no(line)),
+                "signature_key": _norm_item_code_signature(_get_primary_po_item_no(line)),
+            })
 
-    # simpan sisa per bucket:
-    # (po_no + ARTICLE/DESC + key)
+    return po_article_exact_index, po_article_signature_index, po_desc_index
+
+
+def _lookup_po_candidates_by_item_code(
+    po_no_norm: str,
+    raw_item_code,
+    po_article_exact_index,
+    po_article_signature_index,
+):
+    exact_key = _norm_key(raw_item_code)
+    signature_key = _norm_item_code_signature(raw_item_code)
+
+    candidates = []
+
+    if exact_key:
+        candidates.extend(
+            po_article_exact_index.get((po_no_norm, exact_key), [])
+        )
+
+    for variant in _generate_confusable_item_code_variants(raw_item_code):
+        if not variant or variant == exact_key:
+            continue
+
+        candidates.extend(
+            po_article_exact_index.get((po_no_norm, variant), [])
+        )
+
+    if signature_key:
+        candidates.extend(
+            po_article_signature_index.get((po_no_norm, signature_key), [])
+        )
+
+    return _dedup_po_candidate_entries(candidates)
+
+
+def _group_candidates_by_raw_item_no(candidates):
+    grouped = {}
+    for entry in candidates or []:
+        raw_item_no = entry.get("raw_item_no") or "null"
+        grouped.setdefault(raw_item_no, []).append(entry)
+    return grouped
+
+
+def _resolve_confusable_candidates(candidates, source_item_code, inv_desc_norm, extracted_qty):
+    candidates = _dedup_po_candidate_entries(candidates)
+    if not candidates:
+        return []
+
+    grouped = _group_candidates_by_raw_item_no(candidates)
+
+    if len(grouped) == 1:
+        return candidates
+
+    if inv_desc_norm:
+        desc_hits = [
+            c for c in candidates
+            if _norm_desc(c.get("line", {}).get("po_text")) == inv_desc_norm
+        ]
+        desc_grouped = _group_candidates_by_raw_item_no(desc_hits)
+        if desc_hits and len(desc_grouped) == 1:
+            return desc_hits
+
+    if extracted_qty is not None:
+        qty_hits = []
+        for c in candidates:
+            po_qty = _to_float(c.get("line", {}).get("po_quantity"))
+            if po_qty is None:
+                continue
+            if abs(po_qty - extracted_qty) <= 1e-9:
+                qty_hits.append(c)
+
+        qty_grouped = _group_candidates_by_raw_item_no(qty_hits)
+        if qty_hits and len(qty_grouped) == 1:
+            return qty_hits
+
+    ranked = []
+    for raw_item_no, group in grouped.items():
+        sim = _item_code_similarity(source_item_code, raw_item_no)
+        ranked.append((sim, raw_item_no, group))
+
+    ranked = sorted(ranked, key=lambda x: x[0], reverse=True)
+
+    if ranked:
+        top = ranked[0]
+        second = ranked[1] if len(ranked) > 1 else None
+
+        if top[0] >= 0.92 and (second is None or (top[0] - second[0]) >= 0.03):
+            return top[2]
+
+    return []
+
+
+def _copy_po_line_with_allocated_qty(po_line: dict, allocated_qty):
+    copied = dict(po_line or {})
+
+    if allocated_qty is None:
+        copied["po_quantity"] = po_line.get("po_quantity", "null") if isinstance(po_line, dict) else "null"
+        return copied
+
+    if abs(allocated_qty - round(allocated_qty)) <= 1e-9:
+        copied["po_quantity"] = int(round(allocated_qty))
+    else:
+        copied["po_quantity"] = allocated_qty
+
+    return copied
+
+def _map_po_to_details(po_lines, detail_rows):
+    po_article_exact_index, po_article_signature_index, po_desc_index = _build_po_item_indexes(po_lines)
+
     remaining_state = {}
-
     expanded_rows = []
 
     for row in detail_rows:
@@ -3539,8 +3873,8 @@ def _map_po_to_details(po_lines, detail_rows):
             continue
 
         inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
-        inv_article_norm = _norm_key(row.get("inv_spart_item_no"))
-        pl_article_norm = _norm_key(row.get("pl_item_no"))
+        inv_article_raw = row.get("inv_spart_item_no")
+        pl_article_raw = row.get("pl_item_no")
         inv_desc_norm = _norm_desc(row.get("inv_description"))
 
         if not inv_po_norm:
@@ -3554,38 +3888,79 @@ def _map_po_to_details(po_lines, detail_rows):
         bucket_key = None
         candidates = []
 
-        # prioritas matching tetap sama
-        if inv_article_norm:
-            candidates = po_article_index.get((inv_po_norm, inv_article_norm), [])
-            if candidates:
-                matched_by = "inv_spart_item_no"
-                bucket_key = (inv_po_norm, "ARTICLE", inv_article_norm)
+        if _norm_key(inv_article_raw):
+            raw_candidates = _lookup_po_candidates_by_item_code(
+                inv_po_norm,
+                inv_article_raw,
+                po_article_exact_index,
+                po_article_signature_index,
+            )
 
-        if not candidates and pl_article_norm:
-            candidates = po_article_index.get((inv_po_norm, pl_article_norm), [])
-            if candidates:
+            resolved = _resolve_confusable_candidates(
+                raw_candidates,
+                inv_article_raw,
+                inv_desc_norm,
+                extracted_qty,
+            )
+
+            if resolved:
+                matched_by = "inv_spart_item_no"
+                candidates = resolved
+                bucket_key = (
+                    inv_po_norm,
+                    "ARTICLE",
+                    _norm_key(resolved[0].get("raw_item_no")),
+                )
+
+        if not candidates and _norm_key(pl_article_raw):
+            raw_candidates = _lookup_po_candidates_by_item_code(
+                inv_po_norm,
+                pl_article_raw,
+                po_article_exact_index,
+                po_article_signature_index,
+            )
+
+            resolved = _resolve_confusable_candidates(
+                raw_candidates,
+                pl_article_raw,
+                inv_desc_norm,
+                extracted_qty,
+            )
+
+            if resolved:
                 matched_by = "pl_item_no"
-                bucket_key = (inv_po_norm, "ARTICLE", pl_article_norm)
+                candidates = resolved
+                bucket_key = (
+                    inv_po_norm,
+                    "ARTICLE",
+                    _norm_key(resolved[0].get("raw_item_no")),
+                )
 
         if not candidates and inv_desc_norm:
-            candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
-            if candidates:
+            desc_candidates = po_desc_index.get((inv_po_norm, inv_desc_norm), [])
+            if desc_candidates:
                 matched_by = "description"
-                bucket_key = (inv_po_norm, "DESC", inv_desc_norm)
+                candidates = _dedup_po_candidate_entries(desc_candidates)
+                bucket_key = (
+                    inv_po_norm,
+                    "DESC",
+                    inv_desc_norm,
+                )
 
         if not candidates:
             row["_po_mapped"] = False
             expanded_rows.append(row)
             continue
 
-        # init remaining pool untuk bucket ini sekali saja
         if bucket_key not in remaining_state:
             bucket_candidates = []
-            for idx, line in candidates:
-                qty = _to_float(line.get("po_quantity"))
+            for entry in candidates:
+                qty = _to_float(entry.get("line", {}).get("po_quantity"))
                 bucket_candidates.append({
-                    "idx": idx,
-                    "line": dict(line),
+                    "idx": entry["idx"],
+                    "line": dict(entry["line"]),
+                    "raw_item_no": entry.get("raw_item_no"),
+                    "matched_field": entry.get("matched_field"),
                     "remaining_qty": 0.0 if qty is None else qty,
                 })
 
@@ -3593,7 +3968,6 @@ def _map_po_to_details(po_lines, detail_rows):
 
         bucket_candidates = remaining_state[bucket_key]
 
-        # ambil candidate yang masih punya sisa
         available = [
             item for item in bucket_candidates
             if (item.get("remaining_qty") or 0.0) > 1e-9
@@ -3606,7 +3980,6 @@ def _map_po_to_details(po_lines, detail_rows):
 
         row_matches = []
 
-        # Kalau qty tidak ada, ambil 1 candidate terdekat/default
         if extracted_qty is None:
             chosen = _pick_closest_remaining_candidate(available, None)
             if chosen is None:
@@ -3617,7 +3990,7 @@ def _map_po_to_details(po_lines, detail_rows):
             alloc_qty = chosen["remaining_qty"]
             if alloc_qty > 1e-9:
                 chosen["remaining_qty"] = 0.0
-                row_matches.append((chosen["line"], alloc_qty))
+                row_matches.append((chosen, alloc_qty))
 
         else:
             remaining_target = extracted_qty
@@ -3639,13 +4012,11 @@ def _map_po_to_details(po_lines, detail_rows):
                 if chosen_remaining <= 1e-9:
                     break
 
-                # allocate secukupnya
                 alloc_qty = min(remaining_target, chosen_remaining)
                 if alloc_qty <= 1e-9:
                     break
 
-                row_matches.append((chosen["line"], alloc_qty))
-
+                row_matches.append((chosen, alloc_qty))
                 chosen["remaining_qty"] = max(chosen_remaining - alloc_qty, 0.0)
                 remaining_target = max(remaining_target - alloc_qty, 0.0)
 
@@ -3654,19 +4025,24 @@ def _map_po_to_details(po_lines, detail_rows):
             expanded_rows.append(row)
             continue
 
-        # supaya output rapi seperti contoh, urutkan by po_line
-        row_matches = sorted(row_matches, key=lambda x: _po_line_sort_key(x[0]))
+        row_matches = sorted(row_matches, key=lambda x: _po_line_sort_key(x[0]["line"]))
 
-        for matched_line, alloc_qty in row_matches:
+        for matched_item, alloc_qty in row_matches:
             new_row = dict(row)
             new_row["_po_mapped"] = True
-            new_row["_po_data"] = _copy_po_line_with_allocated_qty(matched_line, alloc_qty)
+            new_row["_po_data"] = _copy_po_line_with_allocated_qty(
+                matched_item["line"],
+                alloc_qty
+            )
 
-            # sinkronkan article no seperti logic lama
-            if matched_by == "inv_spart_item_no" and not _is_null(new_row.get("inv_spart_item_no")):
-                new_row["pl_item_no"] = new_row.get("inv_spart_item_no")
-            elif matched_by == "pl_item_no" and not _is_null(new_row.get("pl_item_no")):
-                new_row["inv_spart_item_no"] = new_row.get("pl_item_no")
+            # selalu pakai nilai item_no ASLI dari PO JSON
+            po_raw_item_no = matched_item.get("raw_item_no")
+            if _is_null(po_raw_item_no):
+                po_raw_item_no = _get_primary_po_item_no(matched_item.get("line"))
+
+            if not _is_null(po_raw_item_no):
+                new_row["inv_spart_item_no"] = po_raw_item_no
+                new_row["pl_item_no"] = po_raw_item_no
 
             expanded_rows.append(new_row)
 
@@ -5564,6 +5940,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
     _postprocess_package_unit_fields(rows)
     _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
+    _postprocess_pl_volume(rows, vendor_id=vendor_id)
 
     _reset_match_fields(rows)
 
@@ -5916,6 +6293,7 @@ def run_ocr(invoice_name, uploaded_pdf_paths, with_total_container, persist_outp
         _apply_header_to_rows(all_rows, header_obj)
         _postprocess_package_unit_fields(all_rows)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
+        _postprocess_pl_volume(rows, vendor_id=vendor_id)
 
         _reset_match_fields(all_rows)
 
