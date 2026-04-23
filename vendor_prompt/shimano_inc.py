@@ -63,6 +63,8 @@ PACKING LIST (PL):
       (       1 C/T)
       Maka:
       pl_package_count untuk line item tersebut adalah 2 P/T + 6 C/T + 1 C/T = 2 + 6 + 1 = 9 (Totalkan dari satuan terbesarnya yaitu PLT, baru kemudian totalkan dengan satuan yang lebih kecil yaitu CTN).
+      Gunakan 2 P/T, JANGAN GUNAKAN 32 C/T karena satuan 2 P/T lebih besar dari 32 C/T.
+
     - Apabila pada 1 line item terdapat beberapa baris dengan nilai jumlah kemasan, maka jumlahkan semua nilai angka tersebut untuk mendapatkan `pl_package_count`.
     - Contoh:
         Line item A:
@@ -72,6 +74,7 @@ PACKING LIST (PL):
         (       30 C/T)
         Maka: pl_package_count untuk line item A adalah 20 + 30 = 50.
     - Jika pada suatu line item tidak ditemukan angka jumlah kemasan yang valid, maka biarkan `pl_package_count` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
+
 7. `pl_nw`: 
     - Ekstrak nilai angka dari kolom "Net Weight" baris atas yang tidak ada simbol "@" (Misal: ada "3.5Kg" dan "@0.5Kg", maka ekstrak yang "3.5").
     - Apabila pada 1 line item terdapat beberapa baris dengan nilai "Net Weight", maka jumlahkan semua nilai angka tersebut untuk mendapatkan `pl_nw`.
@@ -116,21 +119,45 @@ PACKING LIST (PL):
     - Jika pada suatu line item tidak ditemukan nilai angka Measure yang valid, maka biarkan `pl_volume` = 0 (meskipun value lainnya ada) dan line tersebut jangan diskip.
 
 BILL OF LADING (BL):
+
 1. `bl_description`: 
-    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    - bl_description DILARANG KERAS untuk diisi null.
+    - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka PILIH SALAH SATU ITEM RANDOM YANG SEKIRANYA PALING MIRIP.
+    Contoh:
+    Pada inv_description ada value:
+    DISC BRAKE ASSEMBLED ...
+    MOUNT ADAPTER FOR ROAD DISC BRAKE ...
+    FRONT CHAINWHEEL ... ; 170MM; ...
+    FRONT DERAILLEUR ...
+    REAR DERAILLEUR ... 
+    FRONT CHAINWHEEL ... ; 165MM; ...
+
+    Pada BL ada deskripsi item:
+    FRONT CHAINWHEEL 165MM
+    FRONT CHAINWHEEL 170MM
+    FRONT DERAILLEUR
+    REAR DERAILLEUR
+    DISC BRAKE
+
+    Maka mapping value bl_desriptionnya adalah:
+    DISC BRAKE
+    [PILIH SECARA RANDOM YANG SEKIRANYA PALING MIRIP]
+    FRONT CHAINWHEEL 170MM
+    FRONT DERAILLEUR
+    REAR DERAILLEUR
+    FRONT CHAINWHEEL 165MM
+
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
         Contoh:
-        FRAME PART A-F3306-1 HS NUMBER: 8714.91
-        FRAME PART A-HG009 HS NUMBER: 8714.91
-        FRAME PART A-HG011 HS NUMBER: 8714.91
-        FRAME PART A-HG045 HS NUMBER: 8714.91
-        FRAME TUBING HS NUMBER: 8714.91
+        FRONT CHAINWHEEL 165MM HS NUMBER: 8714.96 
+        FRONT CHAINWHEEL 170MM HS NUMBER: 8714.96
+        FRONT DERAILLEUR HS NUMBER: 8714.99
+        REAR DERAILLEUR HS NUMBER: 8714.96
+        DISC BRAKE HS NUMBER: 8714.94
 
         Maka:
-        Pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja.
-        Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
-        bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
+        bl_hs_code untuk DISC BRAKE adalah 8714.94, maka bl_hs_code isi 8714.94.
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
 CERTIFICATE OF ORIGIN (COO):
