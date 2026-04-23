@@ -4540,6 +4540,18 @@ def _postprocess_coo_item_mapping(rows: list):
         if not _coo_item_matches_row(row):
             _nullify_coo_item_fields(row)
 
+def _has_all_required_coo_seq_fields(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+
+    required_fields = [
+        "coo_description",
+        "coo_hs_code",
+        "coo_quantity",
+        "coo_amount",
+    ]
+
+    return all(not _is_null(row.get(k)) for k in required_fields)
 
 def _postprocess_coo_no_and_seq(rows: list):
     coo_keys_presence = [
@@ -4562,12 +4574,26 @@ def _postprocess_coo_no_and_seq(rows: list):
             r["coo_seq"] = "null"
             continue
 
-        # isi coo_no dulu
+        # isi coo_no dulu kalau kosong
         if _is_null(r.get("coo_no")) and not _is_null(r.get("inv_invoice_no")):
             r["coo_no"] = str(r.get("inv_invoice_no")).strip()
 
-        # baru tentukan row ini ikut sequencing atau tidak
-        if not _row_has_meaningful_coo_item(r):
+        desc_missing = _is_null(r.get("coo_description"))
+        hs_missing = _is_null(r.get("coo_hs_code"))
+        qty_missing = _is_null(r.get("coo_quantity"))
+        amount_missing = _is_null(r.get("coo_amount"))
+
+        # RULE 1:
+        # kalau 4 field inti COO item semuanya null,
+        # maka coo_seq = null dan coo_origin_country = null
+        if desc_missing and hs_missing and qty_missing and amount_missing:
+            r["coo_seq"] = "null"
+            r["coo_origin_country"] = "null"
+            continue
+
+        # RULE 2:
+        # numbering hanya untuk row yang punya SEMUA field inti
+        if not _has_all_required_coo_seq_fields(r):
             r["coo_seq"] = "null"
             continue
 
@@ -5918,9 +5944,15 @@ def _drop_internal_detail_fields(rows: list):
         for key in DETAIL_RECHECK_INTERNAL_FIELDS:
             row.pop(key, None)
 
+        for key in list(row.keys()):
+            if str(key).startswith("_po_"):
+                row.pop(key, None)
 DETAIL_RECHECK_INTERNAL_FIELDS = [
     "_detail_row_no",
     "_recheck_fields",
+    "_po_neighbor_fallback",
+    "_po_neighbor_direction",
+    "_po_neighbor_inherited_po_no",
 ]
 
 def _normalize_recheck_field_list(fields):
