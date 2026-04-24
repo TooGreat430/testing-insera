@@ -2,10 +2,10 @@ JHT_PROMPT = """
 INVOICE (INV):
 1. `inv_customer_po_no`: Ekstrak dari teks referensi awalan "PO:" yang berada sebelum/di atas list barang (misalnya "PO:45326462").
 2. `inv_spart_item_no`:
-    - Ekstrak kode barang unik jika tercantum di dalam teks "DESCRIPTION OF GOODS" dan terletak di sebelah paling kiri.
+    - Ekstrak kode barang unik jika tercantum di dalam teks "DESCRIPTION OF GOODS" dan terletak di sebelah paling kanan.
     - Contoh:
     DESCRIPTION OF GOODS:RIM, HLQC-GA63-1,  DOUBLE WALL BLACK  20*1.5 AV  32H W/ SAFETY LINE W/O DECAL,RIMJE20HLQCGA005
-    Maka inv_spart_item_no adalah HLQC-GA63-1 (bukan RIMJE20HLQCGA005).
+    Maka inv_spart_item_no adalah RIMJE20HLQCGA005 (bukan HLQC-GA63-1).
 3. `inv_description`: 
     - Ekstrak deskripsi spesifikasi lengkap barang dari kolom "DESCRIPTION OF GOODS" (Abaikan yang sifatnya code, part number, atau serial number).
     - Contoh:
@@ -22,10 +22,10 @@ INVOICE (INV):
 PACKING LIST (PL):
 1. `pl_customer_po_no`: Ekstrak dari teks referensi awalan "PO:" (misalnya "PO:45326462").
 2. `pl_item_no`: 
-    - Ekstrak kode barang unik jika tercantum di dalam teks "DESCRIPTION OF GOODS" dan terletak di sebelah paling kiri.
+    - Ekstrak kode barang unik jika tercantum di dalam teks "DESCRIPTION OF GOODS" dan terletak di sebelah paling kanan.
     - Contoh:
     DESCRIPTION OF GOODS:RIM, HLQC-GA63-1,  DOUBLE WALL BLACK  20*1.5 AV  32H W/ SAFETY LINE W/O DECAL,RIMJE20HLQCGA005
-    Maka pl_item_no adalah HLQC-GA63-1 (bukan RIMJE20HLQCGA005).
+    Maka pl_item_no adalah RIMJE20HLQCGA005 (bukan HLQC-GA63-1).
 3. `pl_description`:
     - Ekstrak deskripsi spesifikasi lengkap barang dari kolom "DESCRIPTION OF GOODS" (Abaikan yang sifatnya code, part number, atau serial number).
     - Contoh:
@@ -33,14 +33,54 @@ PACKING LIST (PL):
     Maka pl_description adalah DOUBLE WALL BLACK  20*1.5 AV  32H W/ SAFETY LINE W/O DECAL.
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
 5. `pl_package_unit`: Apabila tidak ada kolom unit kemasan yang spesifik dan tidak ada clue package unit seperti: "Carton/CTN/CTN/CT", "Pallet/plt", "Bal/Bale", "PXCT/PK"  dll, maka return null.
-6. `pl_package_count`: Ekstrak nilai angka jumlah kemasan spesifik per item dari kolom "PACKING" (misalnya angka "20").
-7. `pl_nw`: Ekstrak nilai angka dari kolom "N.W. KGS" dan BUKAN "N.W./PKGS".
-8. `pl_gw`: Ekstrak nilai angka dari kolom "G.W. KGS" dan BUKAN "G.W./PKGS".
-9. `pl_volume`: Ekstrak nilai angka dari kolom volume "VOL/PKGS" yang kemudian di-KALIKAN dengan value pl_package_count line tersebut.
-    Contoh:
-    Packing PKGS: 20
-    VOL/PKGS: 0.05
-    Maka pl_volume untuk line item tersebut adalah 20 * 0.05 = 1.00.
+6. `pl_package_count`: 
+    - Ekstrak nilai angka jumlah kemasan spesifik per item dari kolom "PACKING" (misalnya angka "20").
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+        Contoh:
+        |   ITEM  |  PACKING PKGS    |
+        |   A     |                  |
+        |         |        20        |
+        |   B     |                  |
+        Maka:
+        - Line item A: amount = 20
+        - Line item B: amount = 0 dan BUKAN 20
+7. `pl_nw`: 
+    - Ekstrak nilai angka dari kolom "N.W. KGS" dan BUKAN "N.W./PKGS".
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+        Contoh:
+        |   ITEM  |  NW KGS    |
+        |   A     |            |
+        |         |     5      |
+        |   B     |            |
+        Maka:
+        - Line item A: amount = 5
+        - Line item B: amount = 0 dan BUKAN 5
+8. `pl_gw`: 
+    - Ekstrak nilai angka dari kolom "G.W. KGS" dan BUKAN "G.W./PKGS".
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+        Contoh:
+        |   ITEM  |  GW KGS    |
+        |   A     |            |
+        |         |     6      |
+        |   B     |            |
+        Maka:
+        - Line item A: amount = 6
+        - Line item B: amount = 0 dan BUKAN 6
+9. `pl_volume`: 
+    - Ekstrak nilai angka dari kolom volume "VOL/PKGS" yang kemudian di-KALIKAN dengan value pl_package_count line tersebut.
+        Contoh:
+        Packing PKGS: 20
+        VOL/PKGS: 0.05
+        Maka pl_volume untuk line item tersebut adalah 20 * 0.05 = 1.00.
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+        Contoh:
+        |   ITEM  |     PACKING PKGS   |    VOL/KGS  |
+        |   A     |                    |             |
+        |         |         20         |     0.05    |
+        |   B     |                    |             |
+        Maka:
+        - Line item A: amount = 0.05 * 20 = 1.00
+        - Line item B: amount = 0 dan BUKAN 1.00 ataupun 0.05
 
 BILL OF LADING (BL):
 1. `bl_description`: 
