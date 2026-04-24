@@ -161,9 +161,6 @@ BILL OF LADING (BL):
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
 CERTIFICATE OF ORIGIN (COO):
-
-INFORMASI SANGAT PENTING: Apabila kolom coo_customer_po_no ada, ter-mapping, atau BUKAN null; maka SEMUA field COO LAINNYA (coo_mark_number, coo_description, coo_hs_code, coo_package_count, coo_package_unit, coo_gw, coo_quantity, coo_unit, coo_criteria) DILARANG KERAS untuk diisi null.
-
 1. `coo_mark_number`: 
     - Ekstrak dari "7. Marks and numbers on packages".
     - Apabila tidak ada informasi marks and numbers pada kolom 7 atau tertlulis "N/M" (Not Mentioned), maka biarkan null.
@@ -175,5 +172,5 @@ INFORMASI SANGAT PENTING: Apabila kolom coo_customer_po_no ada, ter-mapping, ata
 7. `coo_unit`: Ekstrak unit dari kolom "10. Quantity" (misalnya "PCS") dan bukan nilai numeriknya.
 8. `coo_criteria`: Ekstrak dari kolom "8. Origin conferring criterion" dan hanya ekstrak kode alphabetic-nya tanpa nomor numeriknya (misalnya "RVC40", maka ekstrak "RVC").
 9. `coo_customer_po_no`: Ekstrak teks setelah "PO No:" di dalam kolom "6. Description of goods", biasanya diawali dengan angka 4 (misal: "43018041").
-10.`coo_amount`: Ekstrak nilai angka dari kolom "11. Value (FOB) when RVC is applied". 
+10. 'coo_amount': ekstrak nilai angka dari kolom "11. Value (FOB) when RVC is applied". 
 """
