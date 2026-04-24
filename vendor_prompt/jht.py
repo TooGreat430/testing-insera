@@ -62,10 +62,10 @@ BILL OF LADING (BL):
 
     Maka mapping value bl_desriptionnya adalah:
     [PILIH SECARA RANDOM YANG SEKIRANYA PALING MIRIP]
-    RIM
-    RIM
-    RIM
-    RIM
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
+    RIM, HLQC-08A
+    RIM, HLQC-23Y
     [PILIH SECARA RANDOM YANG SEKIRANYA PALING MIRIP]
 
 2. `bl_hs_code`: 
