@@ -35,7 +35,7 @@ PACKING LIST (PL):
 5. `pl_package_unit`: Apabila tidak ada kolom unit kemasan yang spesifik dan tidak ada clue package unit seperti: "Carton/CTN/CTN/CT", "Pallet/plt", "Bal/Bale", "PXCT/PK"  dll, maka return null.
 6. `pl_package_count`: 
     - Ekstrak nilai angka jumlah kemasan spesifik per item dari kolom "PACKING" (misalnya angka "20").
-    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  PACKING PKGS    |
         |   A     |                  |
@@ -46,7 +46,7 @@ PACKING LIST (PL):
         - Line item B: amount = 0 dan BUKAN 20
 7. `pl_nw`: 
     - Ekstrak nilai angka dari kolom "N.W. KGS" dan BUKAN "N.W./PKGS".
-    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  NW KGS    |
         |   A     |            |
@@ -57,7 +57,7 @@ PACKING LIST (PL):
         - Line item B: amount = 0 dan BUKAN 5
 8. `pl_gw`: 
     - Ekstrak nilai angka dari kolom "G.W. KGS" dan BUKAN "G.W./PKGS".
-    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  GW KGS    |
         |   A     |            |
@@ -72,7 +72,7 @@ PACKING LIST (PL):
         Packing PKGS: 20
         VOL/PKGS: 0.05
         Maka pl_volume untuk line item tersebut adalah 20 * 0.05 = 1.00.
-    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |     PACKING PKGS   |    VOL/KGS  |
         |   A     |                    |             |
