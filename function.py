@@ -6861,7 +6861,7 @@ def run_ocr(
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
         # =========================================
         _apply_header_to_rows(all_rows, header_obj)
-        _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
+        # _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
         _postprocess_package_unit_fields(all_rows)
 
