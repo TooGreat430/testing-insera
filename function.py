@@ -421,6 +421,31 @@ def _same_invoice_no(a, b) -> bool:
     return left == right
 
 
+
+
+def _invoice_no_similarity(a, b) -> float:
+    """
+    Similarity untuk invoice number setelah normalisasi compare key.
+    Dipakai untuk kasus beda tipis karena OCR/extraction:
+    - 123 vs 12Z
+    - ABC001 vs A8C001
+    """
+    left = _norm_invoice_compare_key(a)
+    right = _norm_invoice_compare_key(b)
+
+    if not left or not right:
+        return 0.0
+
+    if left == right:
+        return 1.0
+
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _invoice_no_close_enough(a, b, threshold: float = 0.85) -> bool:
+    return _invoice_no_similarity(a, b) >= threshold
+
+
 def _pick_consensus_invoice_no(row: dict):
     inv_no = row.get("inv_invoice_no")
     pl_no = row.get("pl_invoice_no")
@@ -430,21 +455,135 @@ def _pick_consensus_invoice_no(row: dict):
     pl_ok = not _is_null(pl_no)
     coo_ok = not _is_null(coo_no)
 
-    # strongest rule: invoice + coo agree -> use invoice as anchor
-    if inv_ok and coo_ok and _same_invoice_no(inv_no, coo_no):
-        return str(inv_no).strip(), "inv+coo"
+    # =========================================================
+    # CASE 1:
+    # COO tidak ada / tidak berhasil grouping.
+    # Patokan hanya INV + PL.
+    #
+    # Jika INV dan PL beda sedikit karena OCR/extraction,
+    # tetap pakai PL sebagai source of truth.
+    # =========================================================
+    if inv_ok and pl_ok and not coo_ok:
+        return str(pl_no).strip(), "inv+pl_no_coo_use_pl"
 
-    # next: invoice + packing agree -> use invoice as anchor
-    if inv_ok and pl_ok and _same_invoice_no(inv_no, pl_no):
-        return str(inv_no).strip(), "inv+pl"
+    # Kalau invoice kosong tapi PL ada, tetap pakai PL.
+    if (not inv_ok) and pl_ok and not coo_ok:
+        return str(pl_no).strip(), "pl_only_no_coo"
 
-    # optional conservative fallback:
-    # kalau packing + coo agree, jangan override invoice.
-    # return consensus only for pl/coo sync if invoice kosong.
-    if (not inv_ok) and pl_ok and coo_ok and _same_invoice_no(pl_no, coo_no):
-        return str(pl_no).strip(), "pl+coo"
+    # =========================================================
+    # CASE 2:
+    # Ketiga dokumen ada.
+    # Gunakan majority voting.
+    #
+    # Contoh:
+    # INV: 123, PL: 123, COO: 12Z
+    # => COO ikut INV/PL = 123
+    #
+    # Kalau INV/COO sama, PL ikut INV/COO.
+    # Kalau PL/COO sama, INV ikut PL/COO.
+    # =========================================================
+    if inv_ok and pl_ok and coo_ok:
+        inv_pl_same = _same_invoice_no(inv_no, pl_no)
+        inv_coo_same = _same_invoice_no(inv_no, coo_no)
+        pl_coo_same = _same_invoice_no(pl_no, coo_no)
+
+        if inv_pl_same:
+            return str(pl_no).strip(), "majority_inv+pl"
+
+        if inv_coo_same:
+            return str(inv_no).strip(), "majority_inv+coo"
+
+        if pl_coo_same:
+            return str(pl_no).strip(), "majority_pl+coo"
+
+        # =====================================================
+        # CASE 3:
+        # Ketiganya tidak exact-match, tapi ada 2 yang close.
+        # Pilih pasangan paling mirip.
+        #
+        # Tie breaker:
+        # - prefer PL jika PL termasuk dalam pasangan terbaik
+        # - karena request: kalau INV vs PL beda dikit dan COO tidak ada,
+        #   PL jadi patokan; untuk 3 dokumen pun PL lebih dipercaya
+        #   saat similarity sama-sama kuat.
+        # =====================================================
+        candidates = [
+            ("inv+pl_close", inv_no, pl_no, _invoice_no_similarity(inv_no, pl_no)),
+            ("inv+coo_close", inv_no, coo_no, _invoice_no_similarity(inv_no, coo_no)),
+            ("pl+coo_close", pl_no, coo_no, _invoice_no_similarity(pl_no, coo_no)),
+        ]
+
+        candidates = [x for x in candidates if x[3] >= 0.85]
+
+        if candidates:
+            candidates.sort(
+                key=lambda x: (
+                    x[3],
+                    1 if x[0] in {"inv+pl_close", "pl+coo_close"} else 0
+                ),
+                reverse=True
+            )
+
+            source, left_value, right_value, score = candidates[0]
+
+            if source in {"inv+pl_close", "pl+coo_close"}:
+                return str(pl_no).strip(), source
+
+            return str(inv_no).strip(), source
+
+        # Tidak ada consensus yang aman.
+        return None, None
+
+    # =========================================================
+    # CASE 4:
+    # Partial fallback selain no-COO.
+    # =========================================================
+    if pl_ok and coo_ok:
+        if _same_invoice_no(pl_no, coo_no) or _invoice_no_close_enough(pl_no, coo_no):
+            return str(pl_no).strip(), "pl+coo_partial"
+
+    if inv_ok and coo_ok:
+        if _same_invoice_no(inv_no, coo_no) or _invoice_no_close_enough(inv_no, coo_no):
+            return str(inv_no).strip(), "inv+coo_partial"
+
+    if inv_ok and pl_ok:
+        # Walaupun beda tipis, pakai PL.
+        if _same_invoice_no(inv_no, pl_no) or _invoice_no_close_enough(inv_no, pl_no):
+            return str(pl_no).strip(), "inv+pl_partial_use_pl"
 
     return None, None
+
+
+def _postprocess_invoice_no_consensus(rows: list):
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        consensus_value, consensus_source = _pick_consensus_invoice_no(row)
+        if not consensus_value:
+            continue
+
+        inv_ok = not _is_null(row.get("inv_invoice_no"))
+        pl_ok = not _is_null(row.get("pl_invoice_no"))
+        coo_ok = not _is_null(row.get("coo_invoice_no"))
+
+        # Jangan membuat COO seolah-olah ada kalau memang COO tidak ada.
+        # Jadi coo_invoice_no hanya diisi kalau sebelumnya memang ada value COO.
+        if inv_ok:
+            row["inv_invoice_no"] = consensus_value
+
+        if pl_ok:
+            row["pl_invoice_no"] = consensus_value
+
+        if coo_ok:
+            row["coo_invoice_no"] = consensus_value
+
+        print(
+            f"[INVOICE_NO_CONSENSUS] "
+            f"source={consensus_source} "
+            f"consensus='{consensus_value}' "
+            f"inv_ok={inv_ok} pl_ok={pl_ok} coo_ok={coo_ok}"
+        )
 
 
 def _postprocess_invoice_no_consensus(rows: list):
@@ -2178,35 +2317,77 @@ def _sanitize_pl_package_unit(value):
     return raw
 
 # tambahkan dekat area vendor-specific postprocess
-# FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS = {
-#     "jht",
-# }
+FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS = {
+    "jht",
+}
 
-# def _should_force_pl_volume_x_package_count(vendor_id: str) -> bool:
-#     return normalize_vendor_id(vendor_id) in FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS
 
-# def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
-#     should_multiply = _should_force_pl_volume_x_package_count(vendor_id)
+def _should_force_pl_volume_x_package_count(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS
 
-#     print(
-#         f"[PL_VOLUME_POSTPROCESS] vendor_id={vendor_id} "
-#         f"should_multiply={should_multiply}"
-#     )
+def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
+    should_multiply = _should_force_pl_volume_x_package_count(vendor_id)
 
-#     if not should_multiply:
-#         return
+    print(
+        f"[PL_VOLUME_POSTPROCESS] vendor_id={vendor_id} "
+        f"should_multiply={should_multiply}"
+    )
 
-#     for row in rows:
-#         if not isinstance(row, dict):
-#             continue
+    if not should_multiply:
+        return
 
-#         pl_volume = _to_float(row.get("pl_volume"))
-#         pl_package_count = _to_float(row.get("pl_package_count"))
+    # Guard total-level:
+    # Jika sum(pl_volume) sudah sama dengan pl_total_volume (+/- 1),
+    # berarti pl_volume sudah total dan tidak perlu dikali package_count.
+    total_pl_volume = 0.0
+    has_pl_volume = False
 
-#         if pl_volume is None or pl_package_count is None:
-#             continue
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
 
-#         row["pl_volume"] = pl_volume * pl_package_count
+        pl_volume = _to_float(row.get("pl_volume"))
+        if pl_volume is None:
+            continue
+
+        total_pl_volume += pl_volume
+        has_pl_volume = True
+
+    aggregated_total_fields = _aggregate_total_fields_from_detail_rows(rows or [])
+    pl_total_volume = _to_float(aggregated_total_fields.get("pl_total_volume"))
+
+    if has_pl_volume and pl_total_volume is not None:
+        diff = abs(total_pl_volume - pl_total_volume)
+
+        print(
+            f"[PL_VOLUME_POSTPROCESS][GUARD] "
+            f"sum_pl_volume={total_pl_volume} "
+            f"pl_total_volume={pl_total_volume} "
+            f"diff={diff}"
+        )
+
+        if diff <= 1:
+            print(
+                "[PL_VOLUME_POSTPROCESS][SKIP_MULTIPLY] "
+                "sum(pl_volume) already matches pl_total_volume within +/- 1"
+            )
+            return
+
+    # Jika beda dari pl_total_volume, baru multiply per row:
+    # pl_volume = pl_volume * pl_package_count
+    for idx, row in enumerate(rows or [], start=1):
+        if not isinstance(row, dict):
+            continue
+
+        pl_volume = _to_float(row.get("pl_volume"))
+        pl_package_count = _to_float(row.get("pl_package_count"))
+
+        if pl_volume is None or pl_package_count is None:
+            continue
+
+        old_value = pl_volume
+        new_value = pl_volume * pl_package_count
+        row["pl_volume"] = new_value
 
 FORCE_CT_VENDORS = {
     "haomeng",
@@ -4742,7 +4923,7 @@ def _postprocess_coo_no_and_seq(rows: list):
             continue
 
         # isi coo_no dulu kalau kosong
-        if _is_null(r.get("coo_no")) and not _is_null(r.get("inv_invoice_no")):
+        if _is_null(r.get("coo_no")) and not _is_null(r.get("coo_invoice_no")):
             r["coo_no"] = str(r.get("inv_invoice_no")).strip()
 
         desc_missing = _is_null(r.get("coo_description"))
@@ -6683,9 +6864,9 @@ def run_ocr(
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
         # =========================================
         _apply_header_to_rows(all_rows, header_obj)
-        _postprocess_package_unit_fields(all_rows)
+        _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
-        # _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
+        _postprocess_package_unit_fields(all_rows)
 
         _reset_match_fields(all_rows)
 
