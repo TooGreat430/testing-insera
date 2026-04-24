@@ -4894,9 +4894,6 @@ def _has_all_required_coo_seq_fields(row: dict) -> bool:
 
     required_fields = [
         "coo_description",
-        "coo_hs_code",
-        "coo_quantity",
-        "coo_amount",
     ]
 
     return all(not _is_null(row.get(k)) for k in required_fields)
