@@ -1,11 +1,7 @@
 JHT_PROMPT = """
 INVOICE (INV):
 1. `inv_customer_po_no`: Ekstrak dari teks referensi awalan "PO:" yang berada sebelum/di atas list barang (misalnya "PO:45326462").
-2. `inv_spart_item_no`:
-    - Ekstrak kode barang unik jika tercantum di dalam teks "DESCRIPTION OF GOODS" dan terletak di sebelah paling kanan.
-    - Contoh:
-    DESCRIPTION OF GOODS:RIM, HLQC-GA63-1,  DOUBLE WALL BLACK  20*1.5 AV  32H W/ SAFETY LINE W/O DECAL,RIMJE20HLQCGA005
-    Maka inv_spart_item_no adalah RIMJE20HLQCGA005 (bukan HLQC-GA63-1).
+2. `inv_spart_item_no`: Ekstrak dari kolom ke-dua dari kiri (di sebelah kanan 'Shipping Marks' dan di sebelah kiri 'Description of Goods').
 3. `inv_description`: 
     - Ekstrak deskripsi spesifikasi lengkap barang dari kolom "DESCRIPTION OF GOODS" (Abaikan yang sifatnya code, part number, atau serial number).
     - Contoh:
