@@ -2325,6 +2325,21 @@ FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS = {
 def _should_force_pl_volume_x_package_count(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in FORCE_PL_VOLUME_X_PACKAGE_COUNT_VENDORS
 
+def _pl_volume_total_tolerance(expected_total, ratio=0.25, abs_floor=0.01):
+    """
+    Toleransi compare pl_volume terhadap pl_total_volume.
+    Default:
+    - +/- 25% dari pl_total_volume
+    - minimal 0.01 untuk rounding kecil
+    """
+    expected = _to_float(expected_total)
+
+    if expected is None:
+        return None
+
+    return max(abs(expected) * ratio, abs_floor)
+
+
 def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
     should_multiply = _should_force_pl_volume_x_package_count(vendor_id)
 
@@ -2336,58 +2351,126 @@ def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
     if not should_multiply:
         return
 
-    # Guard total-level:
-    # Jika sum(pl_volume) sudah sama dengan pl_total_volume (+/- 1),
-    # berarti pl_volume sudah total dan tidak perlu dikali package_count.
-    total_pl_volume = 0.0
-    has_pl_volume = False
+    if not isinstance(rows, list) or not rows:
+        return
+
+    aggregated_total_fields = _aggregate_total_fields_from_detail_rows(rows or [])
+    pl_total_volume = _to_float(aggregated_total_fields.get("pl_total_volume"))
+
+    if pl_total_volume is None or pl_total_volume == 0:
+        print(
+            "[PL_VOLUME_POSTPROCESS][SKIP] "
+            f"pl_total_volume unavailable/zero: {pl_total_volume}"
+        )
+        return
+
+    raw_sum = 0.0
+    multiplied_sum = 0.0
+    valid_row_count = 0
 
     for row in rows or []:
         if not isinstance(row, dict):
             continue
 
         pl_volume = _to_float(row.get("pl_volume"))
+        pl_package_count = _to_float(row.get("pl_package_count"))
+
         if pl_volume is None:
             continue
 
-        total_pl_volume += pl_volume
-        has_pl_volume = True
+        raw_sum += pl_volume
 
-    aggregated_total_fields = _aggregate_total_fields_from_detail_rows(rows or [])
-    pl_total_volume = _to_float(aggregated_total_fields.get("pl_total_volume"))
+        if pl_package_count is not None and pl_package_count > 0:
+            multiplied_sum += pl_volume * pl_package_count
+        else:
+            multiplied_sum += pl_volume
 
-    if has_pl_volume and pl_total_volume is not None:
-        diff = abs(total_pl_volume - pl_total_volume)
+        valid_row_count += 1
 
+    if valid_row_count == 0:
+        print("[PL_VOLUME_POSTPROCESS][SKIP] no valid pl_volume rows")
+        return
+
+    tolerance = _pl_volume_total_tolerance(pl_total_volume, ratio=0.25)
+
+    raw_diff = abs(raw_sum - pl_total_volume)
+    multiplied_diff = abs(multiplied_sum - pl_total_volume)
+
+    raw_matches = raw_diff <= tolerance
+    multiplied_matches = multiplied_diff <= tolerance
+
+    print(
+        "[PL_VOLUME_POSTPROCESS][DECISION] "
+        f"raw_sum={raw_sum} "
+        f"multiplied_sum={multiplied_sum} "
+        f"pl_total_volume={pl_total_volume} "
+        f"tolerance={tolerance} "
+        f"raw_diff={raw_diff} "
+        f"multiplied_diff={multiplied_diff} "
+        f"raw_matches={raw_matches} "
+        f"multiplied_matches={multiplied_matches}"
+    )
+
+    # CASE 1:
+    # Gemini sudah kasih pl_volume sebagai total per row.
+    # Jadi jangan multiply.
+    if raw_matches and not multiplied_matches:
         print(
-            f"[PL_VOLUME_POSTPROCESS][GUARD] "
-            f"sum_pl_volume={total_pl_volume} "
-            f"pl_total_volume={pl_total_volume} "
-            f"diff={diff}"
+            "[PL_VOLUME_POSTPROCESS][KEEP_RAW] "
+            "sum(pl_volume) matches pl_total_volume; no multiply needed"
+        )
+        return
+
+    # CASE 2:
+    # Gemini kasih pl_volume sebagai volume per package.
+    # Jadi ubah menjadi total per row.
+    if multiplied_matches and not raw_matches:
+        print(
+            "[PL_VOLUME_POSTPROCESS][APPLY_MULTIPLY] "
+            "sum(pl_volume * pl_package_count) matches pl_total_volume"
         )
 
-        if diff <= 1:
+        for idx, row in enumerate(rows or [], start=1):
+            if not isinstance(row, dict):
+                continue
+
+            pl_volume = _to_float(row.get("pl_volume"))
+            pl_package_count = _to_float(row.get("pl_package_count"))
+
+            if pl_volume is None or pl_package_count is None or pl_package_count <= 0:
+                continue
+
+            old_value = pl_volume
+            new_value = pl_volume * pl_package_count
+            row["pl_volume"] = new_value
+
             print(
-                "[PL_VOLUME_POSTPROCESS][SKIP_MULTIPLY] "
-                "sum(pl_volume) already matches pl_total_volume within +/- 1"
+                "[PL_VOLUME_POSTPROCESS][ROW_MULTIPLY] "
+                f"row_no={idx} "
+                f"old_pl_volume={old_value} "
+                f"pl_package_count={pl_package_count} "
+                f"new_pl_volume={new_value}"
             )
-            return
 
-    # Jika beda dari pl_total_volume, baru multiply per row:
-    # pl_volume = pl_volume * pl_package_count
-    for idx, row in enumerate(rows or [], start=1):
-        if not isinstance(row, dict):
-            continue
+        return
 
-        pl_volume = _to_float(row.get("pl_volume"))
-        pl_package_count = _to_float(row.get("pl_package_count"))
+    # CASE 3:
+    # Dua-duanya match.
+    # Lebih aman keep raw supaya tidak double multiply.
+    if raw_matches and multiplied_matches:
+        print(
+            "[PL_VOLUME_POSTPROCESS][KEEP_RAW_AMBIGUOUS] "
+            "both raw and multiplied match; keep raw to avoid double multiply"
+        )
+        return
 
-        if pl_volume is None or pl_package_count is None:
-            continue
-
-        old_value = pl_volume
-        new_value = pl_volume * pl_package_count
-        row["pl_volume"] = new_value
+    # CASE 4:
+    # Tidak ada yang match.
+    # Jangan ubah diam-diam karena kemungkinan data mixed / OCR salah / total salah.
+    print(
+        "[PL_VOLUME_POSTPROCESS][AMBIGUOUS_SKIP] "
+        "neither raw nor multiplied matches pl_total_volume; keep original values"
+    )
 
 FORCE_CT_VENDORS = {
     "haomeng",
@@ -6509,7 +6592,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
     _postprocess_package_unit_fields(rows)
     _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
-    # _postprocess_pl_volume(rows, vendor_id=vendor_id)
+    _postprocess_pl_volume(rows, vendor_id=vendor_id)
 
     _reset_match_fields(rows)
 
@@ -6861,7 +6944,7 @@ def run_ocr(
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
         # =========================================
         _apply_header_to_rows(all_rows, header_obj)
-        # _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
+        _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
         _postprocess_package_unit_fields(all_rows)
 
