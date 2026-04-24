@@ -172,4 +172,5 @@ CERTIFICATE OF ORIGIN (COO):
 7. `coo_unit`: Ekstrak unit dari kolom "10. Quantity" (misalnya "PCS") dan bukan nilai numeriknya.
 8. `coo_criteria`: Ekstrak dari kolom "8. Origin conferring criterion" dan hanya ekstrak kode alphabetic-nya tanpa nomor numeriknya (misalnya "RVC40", maka ekstrak "RVC").
 9. `coo_customer_po_no`: Ekstrak teks setelah "PO No:" di dalam kolom "6. Description of goods", biasanya diawali dengan angka 4 (misal: "43018041").
+10. 'coo_amount': ekstrak nilai angka dari kolom "11. Value (FOB) when RVC is applied". 
 """
