@@ -83,7 +83,7 @@ DETAIL_RECHECK_NUM_FIELDS = {
 CBM_TO_CUFT = 35.3147
 
 storage_client = storage.Client() 
-genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location=LOCATION, )
+genai_client = genai.Client( vertexai=True, project=PROJECT_ID, location="global", )
 
 # ==============================
 # SANITIZER: pl_package_unit
@@ -3543,7 +3543,7 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
         config_kwargs.update(extra_config)
 
     response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3-flash-preview",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(**config_kwargs),
     )
@@ -3579,7 +3579,7 @@ def _call_gemini_response_uri(file_uri: str, prompt: str, extra_config: dict = N
         config_kwargs.update(extra_config)
 
     response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3-flash-preview",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(**config_kwargs),
     )
