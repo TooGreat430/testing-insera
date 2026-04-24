@@ -3418,7 +3418,7 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
             "enum": ["positive", "negative"],
         },
         "response_logprobs": True,
-        "logprobs": 2,
+        "logprobs": 3,
         "max_output_tokens": 4,
     }
 
