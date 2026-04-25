@@ -53,15 +53,10 @@ DETAIL_CONFIDENCE_POSITIVE_THRESHOLD = float(
     os.getenv("DETAIL_CONFIDENCE_POSITIVE_THRESHOLD", "-0.0099")
 )
 
-DETAIL_AUDIT_TOP_K_PER_INVOICE = int(
-    os.getenv("DETAIL_AUDIT_TOP_K_PER_INVOICE", "5")
+# positive hanya untuk row yang benar-benar aman
+DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD = float(
+    os.getenv("DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD", "-0.001")
 )
-
-# desc = score terbesar dulu = paling dekat ke 0
-# asc  = score terkecil dulu = paling negatif
-DETAIL_AUDIT_SORT_DIRECTION = str(
-    os.getenv("DETAIL_AUDIT_SORT_DIRECTION", "desc")
-).strip().lower()
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -3054,38 +3049,101 @@ def _get_obj_value(obj, *names, default=None):
 def _clamp(value, low, high):
     return max(low, min(high, value))
 
-def _derive_confidence_band_from_logprob(confidence_logprob):
+def _is_nonempty_issue_text(value) -> bool:
+    if value is None:
+        return False
+
+    s = str(value).strip().lower()
+    return s not in {"", "null", "none"}
+
+
+def _row_has_hard_issue(row: dict) -> bool:
     """
-    Banding awal berbasis distribusi sample internal:
-    - score <= T_LOW   -> negative
-    - T_LOW < score < T_HIGH -> neutral
-    - score >= T_HIGH  -> positive
-
-    Catatan:
-    logprob makin dekat ke 0 = makin yakin.
+    Hard issue = bukti keras row bermasalah.
     """
-    if confidence_logprob is None:
-        return "negative"
+    if not isinstance(row, dict):
+        return False
 
-    try:
-        score = float(confidence_logprob)
-    except Exception:
-        return "negative"
+    match_score = str(row.get("match_score", "")).strip().lower()
+    match_description = row.get("match_description")
 
-    low = float(DETAIL_CONFIDENCE_NEGATIVE_THRESHOLD)
-    high = float(DETAIL_CONFIDENCE_POSITIVE_THRESHOLD)
+    if match_score == "false":
+        return True
 
-    # safety kalau threshold salah set
-    if low > high:
-        low, high = high, low
+    if _is_nonempty_issue_text(match_description):
+        return True
 
-    if score <= low: # -0.00625
-        return "negative"
+    return False
 
-    if score >= high: # -0.0031
-        return "positive"
 
-    return "neutral"
+def _has_total_issue(total_data) -> bool:
+    if total_data is None:
+        return False
+
+    if isinstance(total_data, dict):
+        total_data = [total_data]
+
+    if not isinstance(total_data, list) or not total_data:
+        return False
+
+    total_row = total_data[0]
+    if not isinstance(total_row, dict):
+        return False
+
+    match_score = str(total_row.get("match_score", "")).strip().lower()
+    match_description = total_row.get("match_description")
+
+    if match_score == "false":
+        return True
+
+    if _is_nonempty_issue_text(match_description):
+        return True
+
+    return False
+
+
+def _finalize_audit_confidence_labels(rows: list, invoice_has_total_issue: bool = False):
+    """
+    Final rule:
+    1) hard issue row -> negative
+    2) kalau invoice total masih issue -> selain hard issue, jangan ada positive
+    3) positive hanya kalau:
+       - row tidak punya hard issue
+       - invoice total tidak issue
+       - logprob sangat aman
+    4) sisanya -> neutral
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row["confidence_label"] = "neutral"
+
+        if _row_has_hard_issue(row):
+            row["confidence_label"] = "negative"
+            continue
+
+        if invoice_has_total_issue:
+            row["confidence_label"] = "neutral"
+            continue
+
+        lp = row.get("confidence_logprob")
+        try:
+            score = float(lp)
+        except Exception:
+            row["confidence_label"] = "neutral"
+            continue
+
+        if score >= float(DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD):
+            row["confidence_label"] = "positive"
+        else:
+            row["confidence_label"] = "neutral"
+
+    return rows
+
 
 def _get_audit_sort_score(row: dict):
     lp = row.get("confidence_logprob")
@@ -3497,21 +3555,16 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
                 extra_config=extra_config,
             )
 
-            # score murni dari Gemini
             _, confidence_logprob = _extract_binary_confidence_safe(response)
-
-            # label banding dari threshold internal
-            confidence_label = _derive_confidence_band_from_logprob(confidence_logprob)
 
             print(
                 f"[CONFIDENCE_PARSE] row_no={row.get('_detail_row_no')} "
-                f"confidence_label={confidence_label!r} "
                 f"confidence_logprob={confidence_logprob!r}"
             )
 
             return {
                 "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": confidence_label,
+                "confidence_label": None,
                 "confidence_logprob": confidence_logprob,
             }
 
@@ -3531,7 +3584,7 @@ def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
 
     return {
         "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": "neutral",
+        "confidence_label": None,
         "confidence_logprob": None,
     }
 
@@ -6991,7 +7044,6 @@ def run_ocr(
         _finalize_match_fields(all_rows)
 
         all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
-        all_rows = _apply_top_k_audit_candidates_per_invoice(all_rows)
 
         _drop_columns(all_rows, [
             "inv_messrs",
@@ -7008,6 +7060,12 @@ def run_ocr(
         if with_total_container:
             total_data = _build_total_from_detail_and_container(all_rows, container_data)
             total_data = _validate_total_rows(total_data, all_rows)
+
+        invoice_has_total_issue = _has_total_issue(total_data)
+        all_rows = _finalize_audit_confidence_labels(
+            all_rows,
+            invoice_has_total_issue=invoice_has_total_issue
+        )
 
         _rename_final_fields(all_rows)
         _drop_internal_detail_fields(all_rows)
