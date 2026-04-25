@@ -53,13 +53,15 @@ DETAIL_CONFIDENCE_POSITIVE_THRESHOLD = float(
     os.getenv("DETAIL_CONFIDENCE_POSITIVE_THRESHOLD", "-0.0099")
 )
 
-DETAIL_CONFIDENCE_DYNAMIC_NEGATIVE_RATIO = float(
-    os.getenv("DETAIL_CONFIDENCE_DYNAMIC_NEGATIVE_RATIO", "0.4")
+DETAIL_AUDIT_TOP_K_PER_INVOICE = int(
+    os.getenv("DETAIL_AUDIT_TOP_K_PER_INVOICE", "5")
 )
 
-DETAIL_CONFIDENCE_MAX_NEGATIVE_PER_INVOICE = int(
-    os.getenv("DETAIL_CONFIDENCE_MAX_NEGATIVE_PER_INVOICE", "5")
-)
+# desc = score terbesar dulu = paling dekat ke 0
+# asc  = score terkecil dulu = paling negatif
+DETAIL_AUDIT_SORT_DIRECTION = str(
+    os.getenv("DETAIL_AUDIT_SORT_DIRECTION", "desc")
+).strip().lower()
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -3085,37 +3087,35 @@ def _derive_confidence_band_from_logprob(confidence_logprob):
 
     return "neutral"
 
-def _get_dynamic_negative_cap(total_line_items: int) -> int:
+def _get_audit_sort_score(row: dict):
+    lp = row.get("confidence_logprob")
+
+    try:
+        return float(lp)
+    except Exception:
+        # kalau score kosong, anggap prioritas tinggi untuk dicek
+        return float("inf") if DETAIL_AUDIT_SORT_DIRECTION == "desc" else float("-inf")
+
+
+def _apply_top_k_audit_candidates_per_invoice(rows: list):
     """
-    Rule:
-    - minimal 1 negative jika memang ada row negative
-    - maksimal 5 negative per invoice
-    - default ratio 40% dari total line item
-    """
-    if total_line_items <= 0:
-        return 0
+    Pilih top-K row per invoice untuk audit.
 
-    ratio = float(DETAIL_CONFIDENCE_DYNAMIC_NEGATIVE_RATIO)
-    max_cap = int(DETAIL_CONFIDENCE_MAX_NEGATIVE_PER_INVOICE)
+    Default:
+    - sort DESC berdasarkan confidence_logprob
+    - artinya score paling dekat ke 0 diprioritaskan
+    - ini cocok dengan observasi saat ini:
+      row salah justru banyak muncul di score yang tinggi / dekat ke 0
 
-    computed = math.ceil(total_line_items * ratio)
-    return max(1, min(max_cap, computed))
-
-
-def _apply_dynamic_negative_cap_per_invoice(rows: list):
-    """
-    Setelah confidence label terbentuk dari threshold,
-    batasi jumlah negative per invoice secara dinamis.
-
-    Keep:
-    - row negative dengan confidence_logprob paling kecil
-      (paling negatif / paling suspicious)
-
-    Demote:
-    - row negative sisanya menjadi neutral
+    Output tambahan per row:
+    - audit_candidate: "true"/"false"
+    - audit_rank: 1..K untuk kandidat audit
     """
     if not isinstance(rows, list) or not rows:
         return rows
+
+    top_k = max(1, int(DETAIL_AUDIT_TOP_K_PER_INVOICE))
+    reverse_sort = DETAIL_AUDIT_SORT_DIRECTION == "desc"
 
     grouped = {}
 
@@ -3127,45 +3127,29 @@ def _apply_dynamic_negative_cap_per_invoice(rows: list):
         grouped.setdefault(invoice_group, []).append(row)
 
     for invoice_group, group_rows in grouped.items():
-        total_line_items = len(group_rows)
-        max_negative = _get_dynamic_negative_cap(total_line_items)
+        ranked_rows = sorted(
+            group_rows,
+            key=_get_audit_sort_score,
+            reverse=reverse_sort
+        )
 
-        negative_candidates = []
+        keep_ids = {id(r) for r in ranked_rows[:top_k]}
 
-        for row in group_rows:
-            if row.get("confidence_label") != "negative":
-                continue
-
-            lp = row.get("confidence_logprob")
-
-            try:
-                score = float(lp)
-            except Exception:
-                # kalau logprob kosong, anggap sangat buruk supaya tetap diprioritaskan review
-                score = float("-inf")
-
-            negative_candidates.append((score, row))
-
-        # paling negatif dulu
-        negative_candidates.sort(key=lambda x: x[0])
-
-        keep_ids = {
-            id(row)
-            for _, row in negative_candidates[:max_negative]
-        }
-
-        demoted = 0
-        for _, row in negative_candidates[max_negative:]:
-            row["confidence_label"] = "neutral"
-            demoted += 1
+        audit_rank = 1
+        for row in ranked_rows:
+            if id(row) in keep_ids:
+                row["audit_candidate"] = "true"
+                row["audit_rank"] = audit_rank
+                audit_rank += 1
+            else:
+                row["audit_candidate"] = "false"
+                row["audit_rank"] = ""
 
         print(
-            f"[CONFIDENCE_CAP] invoice_group={invoice_group} "
-            f"total_line_items={total_line_items} "
-            f"max_negative={max_negative} "
-            f"negative_before={len(negative_candidates)} "
-            f"demoted={demoted} "
-            f"negative_after={min(len(negative_candidates), max_negative)}"
+            f"[AUDIT_TOPK] invoice_group={invoice_group} "
+            f"total_rows={len(group_rows)} "
+            f"top_k={min(len(group_rows), top_k)} "
+            f"sort_direction={DETAIL_AUDIT_SORT_DIRECTION}"
         )
 
     return rows
@@ -3565,6 +3549,9 @@ def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
         row.pop("confidence_margin", None)
         row.pop("confidence_predicted_label", None)
         row.pop("confidence_source", None)
+
+        row.pop("audit_candidate", None)
+        row.pop("audit_rank", None)
 
     max_workers = max(1, min(DETAIL_CONFIDENCE_MAX_WORKERS, len(target_rows)))
     scored_by_no = {}
@@ -7002,8 +6989,10 @@ def run_ocr(
         _validate_coo_rows(all_rows)
 
         _finalize_match_fields(all_rows)
+
         all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
-        # all_rows = _apply_dynamic_negative_cap_per_invoice(all_rows) INI KALAU SETUJU NEGATIVE DI CAP 5
+        all_rows = _apply_top_k_audit_candidates_per_invoice(all_rows)
+
         _drop_columns(all_rows, [
             "inv_messrs",
             "inv_messrs_address",
@@ -7012,6 +7001,8 @@ def run_ocr(
             "confidence_margin",
             "confidence_predicted_label",
             "confidence_source",
+            "audit_candidate",
+            "audit_rank",
         ])
 
         if with_total_container:
