@@ -42,21 +42,6 @@ from vendor_detection import (
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
-DETAIL_CONFIDENCE_MAX_WORKERS = int(os.getenv("DETAIL_CONFIDENCE_MAX_WORKERS", "8"))
-DETAIL_CONFIDENCE_LABELS = ["positive", "neutral", "negative"]
-
-DETAIL_CONFIDENCE_NEGATIVE_THRESHOLD = float(
-    os.getenv("DETAIL_CONFIDENCE_NEGATIVE_THRESHOLD", "-0.0242")
-)
-
-DETAIL_CONFIDENCE_POSITIVE_THRESHOLD = float(
-    os.getenv("DETAIL_CONFIDENCE_POSITIVE_THRESHOLD", "-0.0099")
-)
-
-# positive hanya untuk row yang benar-benar aman
-DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD = float(
-    os.getenv("DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD", "-0.001")
-)
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -316,6 +301,297 @@ def _aggregate_total_fields_from_detail_rows(detail_rows: list) -> dict:
                 aggregated[field] += value
 
     return aggregated
+
+TOTAL_CONTRIBUTION_EPS = float(
+    os.getenv("TOTAL_CONTRIBUTION_EPS", "0.01")
+)
+
+TOTAL_CONTRIBUTION_STRONG_RATIO = float(
+    os.getenv("TOTAL_CONTRIBUTION_STRONG_RATIO", "0.70")
+)
+
+TOTAL_CONTRIBUTION_TOP2_RATIO = float(
+    os.getenv("TOTAL_CONTRIBUTION_TOP2_RATIO", "0.85")
+)
+
+
+def _group_rows_by_invoice_no(rows: list):
+    grouped = {}
+
+    for idx, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            continue
+
+        group_key = _get_detail_total_group_key(row, idx)
+        grouped.setdefault(group_key, []).append(row)
+
+    return grouped
+
+
+def _get_declared_total_from_group_rows(group_rows: list, declared_field: str):
+    best_value = None
+
+    for row in group_rows:
+        if not isinstance(row, dict):
+            continue
+
+        best_value = _pick_best_total_value(
+            best_value,
+            row.get(declared_field)
+        )
+
+    return _to_float(best_value)
+
+
+def _get_total_contribution_specs():
+    return [
+        {
+            "name": "invoice_total_quantity",
+            "row_field": "inv_quantity",
+            "declared_field": "inv_total_quantity",
+            "label": "Invoice: total_quantity mismatch",
+        },
+        {
+            "name": "invoice_total_amount",
+            "row_field": "inv_amount",
+            "declared_field": "inv_total_amount",
+            "label": "Invoice: total_amount mismatch",
+        },
+        {
+            "name": "packing_total_quantity",
+            "row_field": "pl_quantity",
+            "declared_field": "pl_total_quantity",
+            "label": "PackingList: total_quantity mismatch",
+        },
+        {
+            "name": "packing_total_package",
+            "row_field": "pl_package_count",
+            "declared_field": "pl_total_package",
+            "label": "PackingList: total_package mismatch",
+        },
+        {
+            "name": "packing_total_nw",
+            "row_field": "pl_nw",
+            "declared_field": "pl_total_nw",
+            "label": "PackingList: total_nw mismatch",
+        },
+        {
+            "name": "packing_total_gw",
+            "row_field": "pl_gw",
+            "declared_field": "pl_total_gw",
+            "label": "PackingList: total_gw mismatch",
+        },
+        {
+            "name": "packing_total_volume",
+            "row_field": "pl_volume",
+            "declared_field": "pl_total_volume",
+            "label": "PackingList: total_volume mismatch",
+        },
+    ]
+
+
+def _get_row_total_contribution_ratio(row: dict, spec: dict, gap: float):
+    row_field = spec["row_field"]
+    eps = float(TOTAL_CONTRIBUTION_EPS)
+
+    row_value = _to_float(row.get(row_field))
+    best_ratio = 0.0
+    best_reason = None
+
+    # skenario 1: row dihapus dari sum
+    if row_value is not None and abs(gap) > eps:
+        gap_after_remove = gap - row_value
+        improvement_remove = abs(gap) - abs(gap_after_remove)
+
+        if improvement_remove > 0:
+            ratio_remove = min(1.0, improvement_remove / abs(gap))
+            best_ratio = ratio_remove
+            best_reason = "remove_row_value"
+
+    # skenario 2: khusus inv_amount -> koreksi pakai qty * unit_price
+    if row_field == "inv_amount" and abs(gap) > eps:
+        qty = _to_float(row.get("inv_quantity"))
+        unit_price = _to_float(row.get("inv_unit_price"))
+        amount = _to_float(row.get("inv_amount"))
+
+        if qty is not None and unit_price is not None and amount is not None:
+            recomputed_amount = qty * unit_price
+            delta = recomputed_amount - amount
+            gap_after_recompute = gap + delta
+            improvement_recompute = abs(gap) - abs(gap_after_recompute)
+
+            if improvement_recompute > 0:
+                ratio_recompute = min(1.0, improvement_recompute / abs(gap))
+                if ratio_recompute > best_ratio:
+                    best_ratio = ratio_recompute
+                    best_reason = "recompute_inv_amount"
+
+    return best_ratio, best_reason, row_value
+
+
+def _append_total_contribution_error(
+    row: dict,
+    label: str,
+    invoice_group: str,
+    actual_sum: float,
+    declared_total: float,
+    gap: float,
+    contribution_ratio: float,
+    reason: str,
+    row_value,
+):
+    row_value_text = "null" if row_value is None else row_value
+    _append_err(
+        row,
+        f"{label} for invoice_no={invoice_group} "
+        f"(sum {actual_sum}, doc {declared_total}, gap {gap}); "
+        f"suspected_row_contribution={round(contribution_ratio, 4)} "
+        f"reason={reason} row_value={row_value_text}"
+    )
+
+
+def _safe_row_no_int(row: dict):
+    try:
+        return int(row.get("_detail_row_no"))
+    except Exception:
+        return None
+
+
+def _apply_total_contribution_scoring(rows: list):
+    """
+    Total mismatch attribution PER invoice_no.
+
+    Return:
+    {
+        "total_issue_groups": set(...),
+        "culprit_row_nos": set(...),
+        "culprit_groups": set(...),
+    }
+    """
+    total_issue_groups = set()
+    culprit_row_nos = set()
+    culprit_groups = set()
+
+    grouped_rows = _group_rows_by_invoice_no(rows)
+
+    eps = float(TOTAL_CONTRIBUTION_EPS)
+    strong_ratio = float(TOTAL_CONTRIBUTION_STRONG_RATIO)
+    top2_ratio = float(TOTAL_CONTRIBUTION_TOP2_RATIO)
+
+    for invoice_group, group_rows in grouped_rows.items():
+        for spec in _get_total_contribution_specs():
+            declared_total = _get_declared_total_from_group_rows(
+                group_rows,
+                spec["declared_field"]
+            )
+
+            if declared_total is None:
+                continue
+
+            actual_sum = 0.0
+            has_actual = False
+
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                value = _to_float(row.get(spec["row_field"]))
+                if value is not None:
+                    actual_sum += value
+                    has_actual = True
+
+            if not has_actual:
+                continue
+
+            if spec["declared_field"] == "pl_total_volume":
+                if _volume_values_match_with_conversion(actual_sum, declared_total):
+                    continue
+            else:
+                if abs(actual_sum - declared_total) <= eps:
+                    continue
+
+            gap = actual_sum - declared_total
+            total_issue_groups.add(invoice_group)
+
+            candidates = []
+
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                ratio, reason, row_value = _get_row_total_contribution_ratio(
+                    row,
+                    spec,
+                    gap
+                )
+
+                if ratio <= 0:
+                    continue
+
+                candidates.append({
+                    "ratio": ratio,
+                    "reason": reason,
+                    "row_value": row_value,
+                    "row": row,
+                    "row_no": _safe_row_no_int(row),
+                })
+
+            candidates.sort(key=lambda x: x["ratio"], reverse=True)
+
+            if candidates and candidates[0]["ratio"] >= strong_ratio:
+                top = candidates[0]
+                _append_total_contribution_error(
+                    row=top["row"],
+                    label=spec["label"],
+                    invoice_group=invoice_group,
+                    actual_sum=actual_sum,
+                    declared_total=declared_total,
+                    gap=gap,
+                    contribution_ratio=top["ratio"],
+                    reason=top["reason"],
+                    row_value=top["row_value"],
+                )
+
+                if top["row_no"] is not None:
+                    culprit_row_nos.add(top["row_no"])
+                    culprit_groups.add(invoice_group)
+
+                continue
+
+            if len(candidates) >= 2:
+                combined_top2 = candidates[0]["ratio"] + candidates[1]["ratio"]
+                if combined_top2 >= top2_ratio:
+                    for top in candidates[:2]:
+                        _append_total_contribution_error(
+                            row=top["row"],
+                            label=spec["label"],
+                            invoice_group=invoice_group,
+                            actual_sum=actual_sum,
+                            declared_total=declared_total,
+                            gap=gap,
+                            contribution_ratio=top["ratio"],
+                            reason=top["reason"],
+                            row_value=top["row_value"],
+                        )
+
+                        if top["row_no"] is not None:
+                            culprit_row_nos.add(top["row_no"])
+
+                    culprit_groups.add(invoice_group)
+                    continue
+
+            print(
+                f"[TOTAL_ATTRIBUTION] invoice_no={invoice_group} "
+                f"field={spec['declared_field']} "
+                f"actual_sum={actual_sum} declared_total={declared_total} gap={gap} "
+                f"root_cause=missing_extraction_or_multi_row_issue"
+            )
+
+    return {
+        "total_issue_groups": total_issue_groups,
+        "culprit_row_nos": culprit_row_nos,
+        "culprit_groups": culprit_groups,
+    }
 
 PACKAGE_MULTI_SEPARATORS_REGEX = r"[\/&,;+]|(?:\band\b)"
 
@@ -581,30 +857,6 @@ def _postprocess_invoice_no_consensus(rows: list):
             f"consensus='{consensus_value}' "
             f"inv_ok={inv_ok} pl_ok={pl_ok} coo_ok={coo_ok}"
         )
-
-
-def _postprocess_invoice_no_consensus(rows: list):
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-
-        consensus_value, consensus_source = _pick_consensus_invoice_no(row)
-        if not consensus_value:
-            continue
-
-        # invoice tetap jadi anchor utama
-        if consensus_source in {"inv+coo", "inv+pl"}:
-            row["inv_invoice_no"] = consensus_value
-            row["pl_invoice_no"] = consensus_value
-            row["coo_invoice_no"] = consensus_value
-            continue
-
-        # fallback hanya kalau invoice kosong
-        if consensus_source == "pl+coo":
-            if _is_null(row.get("inv_invoice_no")):
-                row["inv_invoice_no"] = consensus_value
-            row["pl_invoice_no"] = consensus_value
-            row["coo_invoice_no"] = consensus_value
 
 def _postprocess_package_unit_fields(rows: list):
     for row in rows:
@@ -3118,11 +3370,9 @@ def _is_total_issue_message(msg: str) -> bool:
     if not s:
         return False
 
-    # total row object biasanya prefix "Total: ..."
     if s.startswith("total:"):
         return True
 
-    # row-level attribution total biasanya mengandung total_xxx mismatch
     total_keywords = [
         "total_quantity mismatch",
         "total_amount mismatch",
@@ -3169,158 +3419,16 @@ def _row_has_total_issue_only(row: dict) -> bool:
     return all(_is_total_issue_message(msg) for msg in messages)
 
 
-def _safe_row_no_int(row: dict):
-    try:
-        return int(row.get("_detail_row_no"))
-    except Exception:
-        return None
-
-def _apply_total_contribution_scoring(rows: list):
-    """
-    Total mismatch attribution PER invoice_no.
-
-    Return:
-    {
-        "total_issue_groups": set(...),
-        "culprit_row_nos": set(...),
-        "culprit_groups": set(...),
-    }
-    """
-    total_issue_groups = set()
-    culprit_row_nos = set()
-    culprit_groups = set()
-
-    grouped_rows = _group_rows_by_invoice_no(rows)
-
-    eps = float(TOTAL_CONTRIBUTION_EPS)
-    strong_ratio = float(TOTAL_CONTRIBUTION_STRONG_RATIO)
-    top2_ratio = float(TOTAL_CONTRIBUTION_TOP2_RATIO)
-
-    for invoice_group, group_rows in grouped_rows.items():
-        for spec in _get_total_contribution_specs():
-            declared_total = _get_declared_total_from_group_rows(
-                group_rows,
-                spec["declared_field"]
-            )
-
-            if declared_total is None:
-                continue
-
-            actual_sum = 0.0
-            has_actual = False
-
-            for row in group_rows:
-                if not isinstance(row, dict):
-                    continue
-
-                value = _to_float(row.get(spec["row_field"]))
-                if value is not None:
-                    actual_sum += value
-                    has_actual = True
-
-            if not has_actual:
-                continue
-
-            if spec["declared_field"] == "pl_total_volume":
-                if _volume_values_match_with_conversion(actual_sum, declared_total):
-                    continue
-            else:
-                if abs(actual_sum - declared_total) <= eps:
-                    continue
-
-            gap = actual_sum - declared_total
-            total_issue_groups.add(invoice_group)
-
-            candidates = []
-
-            for row in group_rows:
-                if not isinstance(row, dict):
-                    continue
-
-                ratio, reason, row_value = _get_row_total_contribution_ratio(
-                    row,
-                    spec,
-                    gap
-                )
-
-                if ratio <= 0:
-                    continue
-
-                candidates.append({
-                    "ratio": ratio,
-                    "reason": reason,
-                    "row_value": row_value,
-                    "row": row,
-                    "row_no": _safe_row_no_int(row),
-                })
-
-            candidates.sort(key=lambda x: x["ratio"], reverse=True)
-
-            if candidates and candidates[0]["ratio"] >= strong_ratio:
-                top = candidates[0]
-                _append_total_contribution_error(
-                    row=top["row"],
-                    label=spec["label"],
-                    invoice_group=invoice_group,
-                    actual_sum=actual_sum,
-                    declared_total=declared_total,
-                    gap=gap,
-                    contribution_ratio=top["ratio"],
-                    reason=top["reason"],
-                    row_value=top["row_value"],
-                )
-
-                if top["row_no"] is not None:
-                    culprit_row_nos.add(top["row_no"])
-                    culprit_groups.add(invoice_group)
-
-                continue
-
-            if len(candidates) >= 2:
-                combined_top2 = candidates[0]["ratio"] + candidates[1]["ratio"]
-                if combined_top2 >= top2_ratio:
-                    for top in candidates[:2]:
-                        _append_total_contribution_error(
-                            row=top["row"],
-                            label=spec["label"],
-                            invoice_group=invoice_group,
-                            actual_sum=actual_sum,
-                            declared_total=declared_total,
-                            gap=gap,
-                            contribution_ratio=top["ratio"],
-                            reason=top["reason"],
-                            row_value=top["row_value"],
-                        )
-
-                        if top["row_no"] is not None:
-                            culprit_row_nos.add(top["row_no"])
-
-                    culprit_groups.add(invoice_group)
-                    continue
-
-            print(
-                f"[TOTAL_ATTRIBUTION] invoice_no={invoice_group} "
-                f"field={spec['declared_field']} "
-                f"actual_sum={actual_sum} declared_total={declared_total} gap={gap} "
-                f"root_cause=missing_extraction_or_multi_row_issue"
-            )
-
-    return {
-        "total_issue_groups": total_issue_groups,
-        "culprit_row_nos": culprit_row_nos,
-        "culprit_groups": culprit_groups,
-    }
-
 def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     """
-    Final rule sesuai request:
+    Final rule:
 
     1) Jika ada NON-TOTAL issue -> NEGATIVE
     2) Jika issue TOTAL dan culprit berhasil ditemukan:
        - culprit row -> NEGATIVE
        - row lain di invoice yang sama -> POSITIVE
     3) Jika issue TOTAL tapi culprit belum ketemu yakin:
-       - tetap NEUTRAL
+       - NEUTRAL
     4) Jika tidak ada issue apa pun -> POSITIVE
     """
     if not isinstance(rows, list):
@@ -3338,174 +3446,29 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         invoice_group = _get_detail_total_group_key(row, idx)
         row_no = _safe_row_no_int(row)
 
-        # default sekarang = positive
         row["confidence_label"] = "positive"
 
-        # kalau ada NON-TOTAL issue -> langsung negative
         if _row_has_non_total_issue(row):
             row["confidence_label"] = "negative"
             continue
 
-        # kalau invoice punya issue total
         if invoice_group in total_issue_groups:
-            # kalau culprit berhasil ditemukan untuk group ini
             if invoice_group in culprit_groups:
                 if row_no is not None and row_no in culprit_row_nos:
                     row["confidence_label"] = "negative"
                 else:
                     row["confidence_label"] = "positive"
             else:
-                # total issue ada, tapi belum yakin culprit-nya siapa
                 row["confidence_label"] = "neutral"
             continue
 
-        # kalau row hanya punya total issue tapi group tidak terdaftar,
-        # tetap jangan negative-kan tanpa attribution yang jelas
         if _row_has_total_issue_only(row):
             row["confidence_label"] = "neutral"
             continue
 
-        # selain itu aman
         row["confidence_label"] = "positive"
 
     return rows
-
-
-def _get_audit_sort_score(row: dict):
-    lp = row.get("confidence_logprob")
-
-    try:
-        return float(lp)
-    except Exception:
-        # kalau score kosong, anggap prioritas tinggi untuk dicek
-        return float("inf") if DETAIL_AUDIT_SORT_DIRECTION == "desc" else float("-inf")
-
-
-def _apply_top_k_audit_candidates_per_invoice(rows: list):
-    """
-    Pilih top-K row per invoice untuk audit.
-
-    Default:
-    - sort DESC berdasarkan confidence_logprob
-    - artinya score paling dekat ke 0 diprioritaskan
-    - ini cocok dengan observasi saat ini:
-      row salah justru banyak muncul di score yang tinggi / dekat ke 0
-
-    Output tambahan per row:
-    - audit_candidate: "true"/"false"
-    - audit_rank: 1..K untuk kandidat audit
-    """
-    if not isinstance(rows, list) or not rows:
-        return rows
-
-    top_k = max(1, int(DETAIL_AUDIT_TOP_K_PER_INVOICE))
-    reverse_sort = DETAIL_AUDIT_SORT_DIRECTION == "desc"
-
-    grouped = {}
-
-    for idx, row in enumerate(rows):
-        if not isinstance(row, dict):
-            continue
-
-        invoice_group = _get_detail_total_group_key(row, idx)
-        grouped.setdefault(invoice_group, []).append(row)
-
-    for invoice_group, group_rows in grouped.items():
-        ranked_rows = sorted(
-            group_rows,
-            key=_get_audit_sort_score,
-            reverse=reverse_sort
-        )
-
-        keep_ids = {id(r) for r in ranked_rows[:top_k]}
-
-        audit_rank = 1
-        for row in ranked_rows:
-            if id(row) in keep_ids:
-                row["audit_candidate"] = "true"
-                row["audit_rank"] = audit_rank
-                audit_rank += 1
-            else:
-                row["audit_candidate"] = "false"
-                row["audit_rank"] = ""
-
-        print(
-            f"[AUDIT_TOPK] invoice_group={invoice_group} "
-            f"total_rows={len(group_rows)} "
-            f"top_k={min(len(group_rows), top_k)} "
-            f"sort_direction={DETAIL_AUDIT_SORT_DIRECTION}"
-        )
-
-    return rows
-
-def _normalize_binary_confidence_label(value: str) -> str:
-    s = str(value or "").strip().lower().strip('"').strip("'")
-    if s in {"positive", "negative"}:
-        return s
-
-    m = re.search(r"\b(positive|negative)\b", s)
-    return m.group(1) if m else ""
-
-def _extract_pure_binary_logprob(response):
-    """
-    Ambil label + logprob sesuai pola docs/blog:
-    - pilih chosenCandidates dulu
-    - fallback ke topCandidates step pertama kalau chosen tidak terbaca
-    """
-    candidates = _get_obj_value(response, "candidates", default=[]) or []
-    if not candidates:
-        return None, None
-
-    first_candidate = candidates[0]
-    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
-    if not logprobs_result:
-        return None, None
-
-    # prioritas 1: chosenCandidates
-    chosen_candidates = _get_obj_value(
-        logprobs_result,
-        "chosen_candidates",
-        "chosenCandidates",
-        default=[]
-    ) or []
-
-    for chosen in chosen_candidates:
-        token = _normalize_binary_confidence_label(
-            _get_obj_value(chosen, "token", default="")
-        )
-        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
-
-        if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-            try:
-                return token, float(logprob)
-            except Exception:
-                continue
-
-    # prioritas 2: topCandidates[0]
-    top_candidates = _get_obj_value(
-        logprobs_result,
-        "top_candidates",
-        "topCandidates",
-        default=[]
-    ) or []
-
-    if top_candidates:
-        first_step = top_candidates[0]
-        candidate_list = _get_obj_value(first_step, "candidates", default=[]) or []
-
-        for cand in candidate_list:
-            token = _normalize_binary_confidence_label(
-                _get_obj_value(cand, "token", default="")
-            )
-            logprob = _get_obj_value(cand, "log_probability", "logProbability")
-
-            if token in DETAIL_CONFIDENCE_LABELS and logprob is not None:
-                try:
-                    return token, float(logprob)
-                except Exception:
-                    continue
-
-    return None, None
 
 
 def _normalize_confidence_band(value: str) -> str:
@@ -3642,238 +3605,6 @@ ROW JSON:
 {row_json}
 """.strip()
 
-def _extract_binary_confidence_safe(response):
-    """
-    Jalur paling aman:
-    - label dari response.text / content.parts.text
-    - logprob dari avgLogprobs
-    - fallback logprob ke chosen token sum bila avgLogprobs tidak ada
-    """
-    label = _normalize_binary_confidence_label(
-        _extract_text_from_gemini_response(response)
-    )
-
-    candidates = _get_obj_value(response, "candidates", default=[]) or []
-    if not candidates:
-        return label, None
-
-    first_candidate = candidates[0]
-
-    # prioritas 1: avgLogprobs
-    avg_logprobs = _get_obj_value(first_candidate, "avg_logprobs", "avgLogprobs")
-    if avg_logprobs is not None:
-        try:
-            return label, float(avg_logprobs)
-        except Exception:
-            pass
-
-    # prioritas 2: sum chosen token logprobs
-    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
-    if logprobs_result:
-        chosen_candidates = _get_obj_value(
-            logprobs_result,
-            "chosen_candidates",
-            "chosenCandidates",
-            default=[]
-        ) or []
-
-        chosen_logprob_sum = 0.0
-        has_any = False
-
-        for chosen in chosen_candidates:
-            lp = _get_obj_value(chosen, "log_probability", "logProbability")
-            if lp is None:
-                continue
-            try:
-                chosen_logprob_sum += float(lp)
-                has_any = True
-            except Exception:
-                continue
-
-        if has_any:
-            return label, chosen_logprob_sum
-
-    return label, None
-
-def _extract_binary_logprob_docs_style(response):
-    candidates = _get_obj_value(response, "candidates", default=[]) or []
-    if not candidates:
-        return None, None, []
-
-    first_candidate = candidates[0]
-    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
-    if not logprobs_result:
-        return None, None, []
-
-    chosen_candidates = _get_obj_value(
-        logprobs_result, "chosen_candidates", "chosenCandidates", default=[]
-    ) or []
-
-    top_candidates = _get_obj_value(
-        logprobs_result, "top_candidates", "topCandidates", default=[]
-    ) or []
-
-    chosen_tokens = []
-    chosen_logprob_sum = 0.0
-    has_any_logprob = False
-
-    for chosen in chosen_candidates:
-        token = _get_obj_value(chosen, "token", default="")
-        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
-
-        if token is not None:
-            chosen_tokens.append(str(token))
-
-        if logprob is not None:
-            try:
-                chosen_logprob_sum += float(logprob)
-                has_any_logprob = True
-            except Exception:
-                pass
-
-    chosen_text = "".join(chosen_tokens).strip()
-    chosen_label = _normalize_binary_confidence_label(chosen_text)
-    chosen_logprob = chosen_logprob_sum if has_any_logprob else None
-
-    alternatives = []
-    for step in top_candidates:
-        candidate_list = _get_obj_value(step, "candidates", default=[]) or []
-
-        for cand in candidate_list:
-            token = _get_obj_value(cand, "token", default="")
-            logprob = _get_obj_value(cand, "log_probability", "logProbability")
-
-            try:
-                lp = float(logprob)
-            except Exception:
-                continue
-
-            token_str = str(token or "")
-            normalized = _normalize_binary_confidence_label(token_str)
-
-            alternatives.append({
-                "token": token_str,
-                "normalized_token": normalized,
-                "logprob": lp,
-            })
-
-    return chosen_label, chosen_logprob, alternatives
-
-def _score_single_detail_row_with_logprobs(file_uri: str, row: dict):
-    prompt = _build_detail_confidence_prompt(row)
-
-    extra_config = {
-        "response_mime_type": "text/x.enum",
-        "response_schema": {
-            "type": "STRING",
-            "enum": ["positive", "negative"],
-        },
-        "response_logprobs": True,
-        "logprobs": 3,
-        "max_output_tokens": 4,
-    }
-
-    for attempt in range(1, 4):
-        try:
-            response = _call_gemini_response_uri(
-                file_uri,
-                prompt,
-                extra_config=extra_config,
-            )
-
-            _, confidence_logprob = _extract_binary_confidence_safe(response)
-
-            print(
-                f"[CONFIDENCE_PARSE] row_no={row.get('_detail_row_no')} "
-                f"confidence_logprob={confidence_logprob!r}"
-            )
-
-            return {
-                "_detail_row_no": row.get("_detail_row_no"),
-                "confidence_label": None,
-                "confidence_logprob": confidence_logprob,
-            }
-
-        except Exception as e:
-            print(
-                f"[CONFIDENCE_ERROR] row_no={row.get('_detail_row_no')} "
-                f"error={repr(e)}"
-            )
-            msg = str(e).lower()
-            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
-                time.sleep((2 ** attempt) + random.random())
-                continue
-            if attempt < 3:
-                time.sleep(0.5)
-                continue
-            break
-
-    return {
-        "_detail_row_no": row.get("_detail_row_no"),
-        "confidence_label": None,
-        "confidence_logprob": None,
-    }
-
-def _score_detail_rows_with_logprobs(file_uri: str, rows: list):
-    target_rows = [r for r in (rows or []) if isinstance(r, dict)]
-    if not target_rows:
-        return rows
-
-    for row in target_rows:
-        row.pop("confidence_label", None)
-        row.pop("confidence_logprob", None)
-
-        row.pop("confidence_probability", None)
-        row.pop("confidence_percent", None)
-        row.pop("confidence_margin", None)
-        row.pop("confidence_predicted_label", None)
-        row.pop("confidence_source", None)
-
-        row.pop("audit_candidate", None)
-        row.pop("audit_rank", None)
-
-    max_workers = max(1, min(DETAIL_CONFIDENCE_MAX_WORKERS, len(target_rows)))
-    scored_by_no = {}
-
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {
-            ex.submit(_score_single_detail_row_with_logprobs, file_uri, row): row
-            for row in target_rows
-        }
-
-        for fut in as_completed(futures):
-            try:
-                scored = fut.result()
-            except Exception as e:
-                print(f"[CONFIDENCE_FUTURE_ERROR] error={repr(e)}")
-                continue
-
-            row_no = scored.get("_detail_row_no")
-            if row_no is None:
-                continue
-            scored_by_no[int(row_no)] = scored
-
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-
-        row_no = row.get("_detail_row_no")
-        if row_no is None:
-            row["confidence_label"] = None
-            row["confidence_logprob"] = None
-            continue
-
-        scored = scored_by_no.get(int(row_no))
-        if not scored:
-            row["confidence_label"] = None
-            row["confidence_logprob"] = None
-            continue
-
-        row["confidence_label"] = scored.get("confidence_label")
-        row["confidence_logprob"] = scored.get("confidence_logprob")
-
-    return rows
-
 
 def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, return_response: bool = False):
     parts = [
@@ -3902,7 +3633,6 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
 
     print(f"(Gemini Run ID: {response.response_id})")
 
-    # DEBUG RAW RESPONSE
     try:
         candidates = getattr(response, "candidates", None)
         print(f"[GEMINI_DEBUG] candidates_count={0 if not candidates else len(candidates)}")
@@ -3959,7 +3689,7 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
     """
     Wrapper: panggil Gemini -> pastikan output JSON valid.
     - expect_array=True  : kalau Gemini balikin dict, kita bungkus jadi [dict]
-    - retries: retry jika output bukan JSON / quota
+    - retries: retry jika output bukan JSON / quota / text kosong
     """
     p = prompt
     for attempt in range(1, retries + 1):
@@ -3975,7 +3705,10 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
         except Exception as e:
             msg = str(e).lower()
 
-            # retry kalau output bukan JSON
+            if "gemini response tidak mengandung text" in msg:
+                time.sleep(0.8 * attempt)
+                continue
+
             if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
                 p = prompt + """
                 PENTING:
@@ -3984,10 +3717,9 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
                 - Jika OBJECT: WAJIB mulai '{' dan akhir '}'
                 - Jika data tidak ditemukan: isi "null" / 0 sesuai skema
                 """
-                time.sleep(0.5)
+                time.sleep(0.5 * attempt)
                 continue
 
-            # retry quota
             if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
                 time.sleep((2 ** attempt) + random.random())
                 continue
