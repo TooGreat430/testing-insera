@@ -3902,6 +3902,22 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
 
     print(f"(Gemini Run ID: {response.response_id})")
 
+    # DEBUG RAW RESPONSE
+    try:
+        candidates = getattr(response, "candidates", None)
+        print(f"[GEMINI_DEBUG] candidates_count={0 if not candidates else len(candidates)}")
+
+        if candidates:
+            c0 = candidates[0]
+            print(f"[GEMINI_DEBUG] finish_reason={getattr(c0, 'finish_reason', None)}")
+            print(f"[GEMINI_DEBUG] safety_ratings={getattr(c0, 'safety_ratings', None)}")
+
+            content = getattr(c0, "content", None)
+            parts_obj = getattr(content, "parts", None) if content else None
+            print(f"[GEMINI_DEBUG] parts={parts_obj}")
+    except Exception as dbg_e:
+        print(f"[GEMINI_DEBUG] failed_to_dump_response={repr(dbg_e)}")
+
     text_output = _extract_text_from_gemini_response(response)
     if not text_output:
         raise Exception("Gemini response tidak mengandung text")
