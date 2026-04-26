@@ -58,18 +58,6 @@ DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD = float(
     os.getenv("DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD", "-0.001")
 )
 
-TOTAL_CONTRIBUTION_STRONG_RATIO = float(
-    os.getenv("TOTAL_CONTRIBUTION_STRONG_RATIO", "0.70")
-)
-
-TOTAL_CONTRIBUTION_TOP2_RATIO = float(
-    os.getenv("TOTAL_CONTRIBUTION_TOP2_RATIO", "0.85")
-)
-
-TOTAL_CONTRIBUTION_EPS = float(
-    os.getenv("TOTAL_CONTRIBUTION_EPS", "0.01")
-)
-
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
     "inv_quantity": "number",
@@ -328,255 +316,6 @@ def _aggregate_total_fields_from_detail_rows(detail_rows: list) -> dict:
                 aggregated[field] += value
 
     return aggregated
-
-def _group_rows_by_invoice_no(rows: list):
-    grouped = {}
-
-    for idx, row in enumerate(rows or []):
-        if not isinstance(row, dict):
-            continue
-
-        group_key = _get_detail_total_group_key(row, idx)
-        grouped.setdefault(group_key, []).append(row)
-
-    return grouped
-
-
-def _get_declared_total_from_group_rows(group_rows: list, declared_field: str):
-    best_value = None
-
-    for row in group_rows:
-        if not isinstance(row, dict):
-            continue
-
-        best_value = _pick_best_total_value(
-            best_value,
-            row.get(declared_field)
-        )
-
-    return _to_float(best_value)
-
-
-def _get_total_contribution_specs():
-    return [
-        {
-            "name": "invoice_total_quantity",
-            "row_field": "inv_quantity",
-            "declared_field": "inv_total_quantity",
-            "label": "Invoice: total_quantity mismatch",
-        },
-        {
-            "name": "invoice_total_amount",
-            "row_field": "inv_amount",
-            "declared_field": "inv_total_amount",
-            "label": "Invoice: total_amount mismatch",
-        },
-        {
-            "name": "packing_total_quantity",
-            "row_field": "pl_quantity",
-            "declared_field": "pl_total_quantity",
-            "label": "PackingList: total_quantity mismatch",
-        },
-        {
-            "name": "packing_total_package",
-            "row_field": "pl_package_count",
-            "declared_field": "pl_total_package",
-            "label": "PackingList: total_package mismatch",
-        },
-        {
-            "name": "packing_total_nw",
-            "row_field": "pl_nw",
-            "declared_field": "pl_total_nw",
-            "label": "PackingList: total_nw mismatch",
-        },
-        {
-            "name": "packing_total_gw",
-            "row_field": "pl_gw",
-            "declared_field": "pl_total_gw",
-            "label": "PackingList: total_gw mismatch",
-        },
-        {
-            "name": "packing_total_volume",
-            "row_field": "pl_volume",
-            "declared_field": "pl_total_volume",
-            "label": "PackingList: total_volume mismatch",
-        },
-    ]
-
-
-def _get_row_total_contribution_ratio(row: dict, spec: dict, gap: float):
-    row_field = spec["row_field"]
-    eps = float(TOTAL_CONTRIBUTION_EPS)
-
-    row_value = _to_float(row.get(row_field))
-    best_ratio = 0.0
-    best_reason = None
-
-    # skenario 1: row dihapus dari sum
-    if row_value is not None and abs(gap) > eps:
-        gap_after_remove = gap - row_value
-        improvement_remove = abs(gap) - abs(gap_after_remove)
-
-        if improvement_remove > 0:
-            ratio_remove = min(1.0, improvement_remove / abs(gap))
-            best_ratio = ratio_remove
-            best_reason = "remove_row_value"
-
-    # skenario 2: khusus inv_amount -> koreksi pakai qty * unit_price
-    if row_field == "inv_amount" and abs(gap) > eps:
-        qty = _to_float(row.get("inv_quantity"))
-        unit_price = _to_float(row.get("inv_unit_price"))
-        amount = _to_float(row.get("inv_amount"))
-
-        if qty is not None and unit_price is not None and amount is not None:
-            recomputed_amount = qty * unit_price
-            delta = recomputed_amount - amount
-            gap_after_recompute = gap + delta
-            improvement_recompute = abs(gap) - abs(gap_after_recompute)
-
-            if improvement_recompute > 0:
-                ratio_recompute = min(1.0, improvement_recompute / abs(gap))
-                if ratio_recompute > best_ratio:
-                    best_ratio = ratio_recompute
-                    best_reason = "recompute_inv_amount"
-
-    return best_ratio, best_reason, row_value
-
-
-def _append_total_contribution_error(
-    row: dict,
-    label: str,
-    invoice_group: str,
-    actual_sum: float,
-    declared_total: float,
-    gap: float,
-    contribution_ratio: float,
-    reason: str,
-    row_value,
-):
-    row_value_text = "null" if row_value is None else row_value
-    _append_err(
-        row,
-        f"{label} for invoice_no={invoice_group} "
-        f"(sum {actual_sum}, doc {declared_total}, gap {gap}); "
-        f"suspected_row_contribution={round(contribution_ratio, 4)} "
-        f"reason={reason} row_value={row_value_text}"
-    )
-
-
-def _apply_total_contribution_scoring(rows: list):
-    """
-    Total mismatch attribution PER invoice_no.
-
-    Return:
-    - set group_key invoice yang punya total issue
-    """
-    total_issue_groups = set()
-    grouped_rows = _group_rows_by_invoice_no(rows)
-
-    eps = float(TOTAL_CONTRIBUTION_EPS)
-    strong_ratio = float(TOTAL_CONTRIBUTION_STRONG_RATIO)
-    top2_ratio = float(TOTAL_CONTRIBUTION_TOP2_RATIO)
-
-    for invoice_group, group_rows in grouped_rows.items():
-        for spec in _get_total_contribution_specs():
-            declared_total = _get_declared_total_from_group_rows(
-                group_rows,
-                spec["declared_field"]
-            )
-
-            if declared_total is None:
-                continue
-
-            actual_sum = 0.0
-            has_actual = False
-
-            for row in group_rows:
-                if not isinstance(row, dict):
-                    continue
-
-                value = _to_float(row.get(spec["row_field"]))
-                if value is not None:
-                    actual_sum += value
-                    has_actual = True
-
-            if not has_actual:
-                continue
-
-            if spec["declared_field"] == "pl_total_volume":
-                if _volume_values_match_with_conversion(actual_sum, declared_total):
-                    continue
-            else:
-                if abs(actual_sum - declared_total) <= eps:
-                    continue
-
-            gap = actual_sum - declared_total
-            total_issue_groups.add(invoice_group)
-
-            candidates = []
-
-            for row in group_rows:
-                if not isinstance(row, dict):
-                    continue
-
-                ratio, reason, row_value = _get_row_total_contribution_ratio(
-                    row,
-                    spec,
-                    gap
-                )
-
-                if ratio <= 0:
-                    continue
-
-                candidates.append({
-                    "ratio": ratio,
-                    "reason": reason,
-                    "row_value": row_value,
-                    "row": row,
-                })
-
-            candidates.sort(key=lambda x: x["ratio"], reverse=True)
-
-            if candidates and candidates[0]["ratio"] >= strong_ratio:
-                top = candidates[0]
-                _append_total_contribution_error(
-                    row=top["row"],
-                    label=spec["label"],
-                    invoice_group=invoice_group,
-                    actual_sum=actual_sum,
-                    declared_total=declared_total,
-                    gap=gap,
-                    contribution_ratio=top["ratio"],
-                    reason=top["reason"],
-                    row_value=top["row_value"],
-                )
-                continue
-
-            if len(candidates) >= 2:
-                combined_top2 = candidates[0]["ratio"] + candidates[1]["ratio"]
-                if combined_top2 >= top2_ratio:
-                    for top in candidates[:2]:
-                        _append_total_contribution_error(
-                            row=top["row"],
-                            label=spec["label"],
-                            invoice_group=invoice_group,
-                            actual_sum=actual_sum,
-                            declared_total=declared_total,
-                            gap=gap,
-                            contribution_ratio=top["ratio"],
-                            reason=top["reason"],
-                            row_value=top["row_value"],
-                        )
-                    continue
-
-            print(
-                f"[TOTAL_ATTRIBUTION] invoice_no={invoice_group} "
-                f"field={spec['declared_field']} "
-                f"actual_sum={actual_sum} declared_total={declared_total} gap={gap} "
-                f"root_cause=missing_extraction_or_multi_row_issue"
-            )
-
-    return total_issue_groups
 
 PACKAGE_MULTI_SEPARATORS_REGEX = r"[\/&,;+]|(?:\band\b)"
 
@@ -3362,51 +3101,272 @@ def _has_total_issue(total_data) -> bool:
 
     return False
 
+def _split_match_description_messages(value):
+    if value is None:
+        return []
 
-def _finalize_audit_confidence_labels(rows: list, total_issue_groups=None):
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return []
+
+    return [part.strip() for part in re.split(r"\s*;\s*", s) if part and part.strip()]
+
+
+def _is_total_issue_message(msg: str) -> bool:
+    s = str(msg or "").strip().lower()
+
+    if not s:
+        return False
+
+    # total row object biasanya prefix "Total: ..."
+    if s.startswith("total:"):
+        return True
+
+    # row-level attribution total biasanya mengandung total_xxx mismatch
+    total_keywords = [
+        "total_quantity mismatch",
+        "total_amount mismatch",
+        "total_nw mismatch",
+        "total_gw mismatch",
+        "total_volume mismatch",
+        "total_package mismatch",
+    ]
+
+    return any(keyword in s for keyword in total_keywords)
+
+
+def _row_has_non_total_issue(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+
+    match_score = str(row.get("match_score", "")).strip().lower()
+    match_description = row.get("match_description")
+
+    if match_score != "false":
+        return False
+
+    messages = _split_match_description_messages(match_description)
+    if not messages:
+        return True
+
+    return any(not _is_total_issue_message(msg) for msg in messages)
+
+
+def _row_has_total_issue_only(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+
+    match_score = str(row.get("match_score", "")).strip().lower()
+    match_description = row.get("match_description")
+
+    if match_score != "false":
+        return False
+
+    messages = _split_match_description_messages(match_description)
+    if not messages:
+        return False
+
+    return all(_is_total_issue_message(msg) for msg in messages)
+
+
+def _safe_row_no_int(row: dict):
+    try:
+        return int(row.get("_detail_row_no"))
+    except Exception:
+        return None
+
+def _apply_total_contribution_scoring(rows: list):
     """
-    Final rule:
-    1) hard issue row -> negative
-    2) kalau invoice group punya total issue -> selain hard issue, jangan ada positive
-    3) positive hanya kalau:
-       - row tidak punya hard issue
-       - invoice group tidak punya total issue
-       - logprob sangat aman
-    4) sisanya -> neutral
+    Total mismatch attribution PER invoice_no.
+
+    Return:
+    {
+        "total_issue_groups": set(...),
+        "culprit_row_nos": set(...),
+        "culprit_groups": set(...),
+    }
+    """
+    total_issue_groups = set()
+    culprit_row_nos = set()
+    culprit_groups = set()
+
+    grouped_rows = _group_rows_by_invoice_no(rows)
+
+    eps = float(TOTAL_CONTRIBUTION_EPS)
+    strong_ratio = float(TOTAL_CONTRIBUTION_STRONG_RATIO)
+    top2_ratio = float(TOTAL_CONTRIBUTION_TOP2_RATIO)
+
+    for invoice_group, group_rows in grouped_rows.items():
+        for spec in _get_total_contribution_specs():
+            declared_total = _get_declared_total_from_group_rows(
+                group_rows,
+                spec["declared_field"]
+            )
+
+            if declared_total is None:
+                continue
+
+            actual_sum = 0.0
+            has_actual = False
+
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                value = _to_float(row.get(spec["row_field"]))
+                if value is not None:
+                    actual_sum += value
+                    has_actual = True
+
+            if not has_actual:
+                continue
+
+            if spec["declared_field"] == "pl_total_volume":
+                if _volume_values_match_with_conversion(actual_sum, declared_total):
+                    continue
+            else:
+                if abs(actual_sum - declared_total) <= eps:
+                    continue
+
+            gap = actual_sum - declared_total
+            total_issue_groups.add(invoice_group)
+
+            candidates = []
+
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                ratio, reason, row_value = _get_row_total_contribution_ratio(
+                    row,
+                    spec,
+                    gap
+                )
+
+                if ratio <= 0:
+                    continue
+
+                candidates.append({
+                    "ratio": ratio,
+                    "reason": reason,
+                    "row_value": row_value,
+                    "row": row,
+                    "row_no": _safe_row_no_int(row),
+                })
+
+            candidates.sort(key=lambda x: x["ratio"], reverse=True)
+
+            if candidates and candidates[0]["ratio"] >= strong_ratio:
+                top = candidates[0]
+                _append_total_contribution_error(
+                    row=top["row"],
+                    label=spec["label"],
+                    invoice_group=invoice_group,
+                    actual_sum=actual_sum,
+                    declared_total=declared_total,
+                    gap=gap,
+                    contribution_ratio=top["ratio"],
+                    reason=top["reason"],
+                    row_value=top["row_value"],
+                )
+
+                if top["row_no"] is not None:
+                    culprit_row_nos.add(top["row_no"])
+                    culprit_groups.add(invoice_group)
+
+                continue
+
+            if len(candidates) >= 2:
+                combined_top2 = candidates[0]["ratio"] + candidates[1]["ratio"]
+                if combined_top2 >= top2_ratio:
+                    for top in candidates[:2]:
+                        _append_total_contribution_error(
+                            row=top["row"],
+                            label=spec["label"],
+                            invoice_group=invoice_group,
+                            actual_sum=actual_sum,
+                            declared_total=declared_total,
+                            gap=gap,
+                            contribution_ratio=top["ratio"],
+                            reason=top["reason"],
+                            row_value=top["row_value"],
+                        )
+
+                        if top["row_no"] is not None:
+                            culprit_row_nos.add(top["row_no"])
+
+                    culprit_groups.add(invoice_group)
+                    continue
+
+            print(
+                f"[TOTAL_ATTRIBUTION] invoice_no={invoice_group} "
+                f"field={spec['declared_field']} "
+                f"actual_sum={actual_sum} declared_total={declared_total} gap={gap} "
+                f"root_cause=missing_extraction_or_multi_row_issue"
+            )
+
+    return {
+        "total_issue_groups": total_issue_groups,
+        "culprit_row_nos": culprit_row_nos,
+        "culprit_groups": culprit_groups,
+    }
+
+def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
+    """
+    Final rule sesuai request:
+
+    1) Jika ada NON-TOTAL issue -> NEGATIVE
+    2) Jika issue TOTAL dan culprit berhasil ditemukan:
+       - culprit row -> NEGATIVE
+       - row lain di invoice yang sama -> POSITIVE
+    3) Jika issue TOTAL tapi culprit belum ketemu yakin:
+       - tetap NEUTRAL
+    4) Jika tidak ada issue apa pun -> POSITIVE
     """
     if not isinstance(rows, list):
         return rows
 
-    total_issue_groups = set(total_issue_groups or [])
+    total_attribution = total_attribution or {}
+    total_issue_groups = set(total_attribution.get("total_issue_groups", []))
+    culprit_row_nos = set(total_attribution.get("culprit_row_nos", []))
+    culprit_groups = set(total_attribution.get("culprit_groups", []))
 
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
         invoice_group = _get_detail_total_group_key(row, idx)
-        invoice_has_total_issue = invoice_group in total_issue_groups
+        row_no = _safe_row_no_int(row)
 
-        row["confidence_label"] = "neutral"
+        # default sekarang = positive
+        row["confidence_label"] = "positive"
 
-        if _row_has_hard_issue(row):
+        # kalau ada NON-TOTAL issue -> langsung negative
+        if _row_has_non_total_issue(row):
             row["confidence_label"] = "negative"
             continue
 
-        if invoice_has_total_issue:
+        # kalau invoice punya issue total
+        if invoice_group in total_issue_groups:
+            # kalau culprit berhasil ditemukan untuk group ini
+            if invoice_group in culprit_groups:
+                if row_no is not None and row_no in culprit_row_nos:
+                    row["confidence_label"] = "negative"
+                else:
+                    row["confidence_label"] = "positive"
+            else:
+                # total issue ada, tapi belum yakin culprit-nya siapa
+                row["confidence_label"] = "neutral"
+            continue
+
+        # kalau row hanya punya total issue tapi group tidak terdaftar,
+        # tetap jangan negative-kan tanpa attribution yang jelas
+        if _row_has_total_issue_only(row):
             row["confidence_label"] = "neutral"
             continue
 
-        lp = row.get("confidence_logprob")
-        try:
-            score = float(lp)
-        except Exception:
-            row["confidence_label"] = "neutral"
-            continue
-
-        if score >= float(DETAIL_CONFIDENCE_STRICT_POSITIVE_THRESHOLD):
-            row["confidence_label"] = "positive"
-        else:
-            row["confidence_label"] = "neutral"
+        # selain itu aman
+        row["confidence_label"] = "positive"
 
     return rows
 
@@ -5550,35 +5510,35 @@ def _validate_invoice_rows(rows: list):
             if abs(expected - amt) > 0.01:
                 _append_err(r, f"Invoice: inv_amount != inv_quantity*inv_unit_price (exp {expected}, got {amt})")
 
-    # # validasi total (pakai declared total di dokumen yang diekstrak Gemini)
-    # declared_qty = _to_float(_first_non_null_nonzero(rows, "inv_total_quantity"))
-    # declared_amt = _to_float(_first_non_null_nonzero(rows, "inv_total_amount"))
+    # validasi total (pakai declared total di dokumen yang diekstrak Gemini)
+    declared_qty = _to_float(_first_non_null_nonzero(rows, "inv_total_quantity"))
+    declared_amt = _to_float(_first_non_null_nonzero(rows, "inv_total_amount"))
 
-    # sum_qty = 0.0
-    # sum_amt = 0.0
-    # qty_ok = False
-    # amt_ok = False
+    sum_qty = 0.0
+    sum_amt = 0.0
+    qty_ok = False
+    amt_ok = False
 
-    # for r in rows:
-    #     if not isinstance(r, dict):
-    #         continue
-    #     q = _to_float(r.get("inv_quantity"))
-    #     a = _to_float(r.get("inv_amount"))
-    #     if q is not None:
-    #         sum_qty += q
-    #         qty_ok = True
-    #     if a is not None:
-    #         sum_amt += a
-    #         amt_ok = True
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        q = _to_float(r.get("inv_quantity"))
+        a = _to_float(r.get("inv_amount"))
+        if q is not None:
+            sum_qty += q
+            qty_ok = True
+        if a is not None:
+            sum_amt += a
+            amt_ok = True
 
-    # # apply ke semua row (biar match_score konsisten per row)
-    # for r in rows:
-    #     if not isinstance(r, dict):
-    #         continue
-    #     if declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01:
-    #         _append_err(r, f"Invoice: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-    #     if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
-    #         _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
+    # apply ke semua row (biar match_score konsisten per row)
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if declared_qty is not None and qty_ok and abs(sum_qty - declared_qty) > 0.01:
+            _append_err(r, f"Invoice: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
+        if declared_amt is not None and amt_ok and abs(sum_amt - declared_amt) > 0.01:
+            _append_err(r, f"Invoice: total_amount mismatch (sum {sum_amt}, doc {declared_amt})")
 
 def _normalize_pt_insera_sena_name(value):
     if value is None:
@@ -5674,35 +5634,35 @@ def _validate_packing_rows(rows: list):
             )
 
     # totals PL
-    # declared_qty = _to_float(_first_non_null_nonzero(rows, "pl_total_quantity"))
-    # declared_nw  = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
-    # declared_gw  = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
-    # declared_vol = _to_float(_first_non_null_nonzero(rows, "pl_total_volume"))
-    # declared_pkg = _to_float(_first_non_null_nonzero(rows, "pl_total_package"))
+    declared_qty = _to_float(_first_non_null_nonzero(rows, "pl_total_quantity"))
+    declared_nw  = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
+    declared_gw  = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
+    declared_vol = _to_float(_first_non_null_nonzero(rows, "pl_total_volume"))
+    declared_pkg = _to_float(_first_non_null_nonzero(rows, "pl_total_package"))
 
-    # sum_qty = sum(_to_float(r.get("pl_quantity")) or 0.0 for r in rows if isinstance(r, dict))
-    # sum_nw  = sum(_to_float(r.get("pl_nw")) or 0.0 for r in rows if isinstance(r, dict))
-    # sum_gw  = sum(_to_float(r.get("pl_gw")) or 0.0 for r in rows if isinstance(r, dict))
-    # sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
-    # sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_qty = sum(_to_float(r.get("pl_quantity")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_nw  = sum(_to_float(r.get("pl_nw")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_gw  = sum(_to_float(r.get("pl_gw")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
 
-    # for r in rows:
-    #     if not isinstance(r, dict):
-    #         continue
-    #     if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
-    #         _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-    #     if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
-    #         _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
-    #     if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
-    #         _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
-    #     if declared_vol is not None and not _volume_values_match_with_conversion(sum_vol, declared_vol):
-    #         _append_err(
-    #             r,
-    #             f"PackingList: total_volume mismatch "
-    #             f"(sum {sum_vol}, doc {declared_vol})"
-    #         )
-    #     if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
-    #         _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
+            _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
+        if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
+            _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
+        if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
+            _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
+        if declared_vol is not None and not _volume_values_match_with_conversion(sum_vol, declared_vol):
+            _append_err(
+                r,
+                f"PackingList: total_volume mismatch "
+                f"(sum {sum_vol}, doc {declared_vol})"
+            )
+        if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
+            _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
 
 
 
@@ -7307,17 +7267,16 @@ def run_ocr(
         _validate_bl_rows(all_rows)
         _validate_coo_rows(all_rows)
 
-        total_issue_groups = _apply_total_contribution_scoring(all_rows)
+        total_attribution = _apply_total_contribution_scoring(all_rows)
 
         _finalize_match_fields(all_rows)
-
-        all_rows = _score_detail_rows_with_logprobs(detail_input_uri, all_rows)
 
         _drop_columns(all_rows, [
             "inv_messrs",
             "inv_messrs_address",
             "inv_gw",
             "inv_gw_unit",
+            "confidence_logprob",
             "confidence_margin",
             "confidence_predicted_label",
             "confidence_source",
@@ -7331,7 +7290,7 @@ def run_ocr(
 
         all_rows = _finalize_audit_confidence_labels(
             all_rows,
-            total_issue_groups=total_issue_groups
+            total_attribution=total_attribution
         )
 
         _rename_final_fields(all_rows)
