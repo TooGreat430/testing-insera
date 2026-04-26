@@ -456,6 +456,149 @@ def _safe_row_no_int(row: dict):
     except Exception:
         return None
 
+def _apply_selected_total_culprits(
+    selected_candidates: list,
+    spec: dict,
+    invoice_group: str,
+    actual_sum: float,
+    declared_total: float,
+    gap: float,
+    culprit_row_nos: set,
+    culprit_groups: set,
+):
+    added_any = False
+
+    for cand in selected_candidates or []:
+        _append_total_contribution_error(
+            row=cand["row"],
+            label=spec["label"],
+            invoice_group=invoice_group,
+            actual_sum=actual_sum,
+            declared_total=declared_total,
+            gap=gap,
+            contribution_ratio=float(cand.get("ratio", 0.0) or 0.0),
+            reason=str(cand.get("reason") or "total_culprit"),
+            row_value=cand.get("row_value"),
+        )
+
+        row_no = cand.get("row_no")
+        if row_no is not None:
+            culprit_row_nos.add(row_no)
+            added_any = True
+
+    if added_any:
+        culprit_groups.add(invoice_group)
+
+    return added_any
+
+
+def _select_greedy_multi_row_candidates(candidates: list, gap: float, eps: float, max_rows: int = 5):
+    """
+    Cocok untuk kasus duplicate / merge-cell / total berlebih yang culprit-nya > 2 row.
+    Hanya pakai candidate remove_row_value.
+    """
+    remove_candidates = [
+        c for c in (candidates or [])
+        if c.get("reason") == "remove_row_value" and _to_float(c.get("row_value")) is not None
+    ]
+
+    if len(remove_candidates) < 2:
+        return []
+
+    selected = []
+    remaining_gap = gap
+
+    for cand in remove_candidates:
+        if len(selected) >= max_rows:
+            break
+
+        row_value = _to_float(cand.get("row_value"))
+        if row_value is None:
+            continue
+
+        new_gap = remaining_gap - row_value
+
+        # hanya ambil kalau removal row membuat gap lebih kecil
+        if abs(new_gap) < abs(remaining_gap):
+            selected.append(cand)
+            remaining_gap = new_gap
+
+        if abs(remaining_gap) <= eps:
+            break
+
+    if len(selected) < 2:
+        return []
+
+    original_abs_gap = max(abs(gap), eps)
+    improvement_ratio = (abs(gap) - abs(remaining_gap)) / original_abs_gap
+
+    # jangan terlalu agresif
+    if improvement_ratio < 0.50:
+        return []
+
+    return selected
+
+
+def _pick_most_influential_fallback(group_rows: list, spec: dict, gap: float):
+    """
+    Fallback untuk:
+    - salah ekstrak tapi tidak ketemu exact culprit
+    - missing extraction suspected
+    - under-total / over-total yang tidak bisa dijelaskan oleh rule utama
+    """
+    best = None
+
+    def _consider(candidate: dict):
+        nonlocal best
+        if not candidate:
+            return
+        if best is None or float(candidate["impact"]) > float(best["impact"]):
+            best = candidate
+
+    for row in group_rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        row_no = _safe_row_no_int(row)
+        row_value = _to_float(row.get(spec["row_field"]))
+
+        # fallback umum: row dengan magnitude paling besar
+        if row_value is not None:
+            _consider({
+                "ratio": 0.0,
+                "reason": "forced_absmax_fallback",
+                "row_value": row_value,
+                "row": row,
+                "row_no": row_no,
+                "impact": abs(row_value),
+            })
+
+        # fallback khusus inv_amount: delta dari qty * unit_price
+        if spec["row_field"] == "inv_amount":
+            qty = _to_float(row.get("inv_quantity"))
+            unit_price = _to_float(row.get("inv_unit_price"))
+            amount = _to_float(row.get("inv_amount"))
+
+            if qty is not None and unit_price is not None and amount is not None:
+                recomputed_amount = qty * unit_price
+                delta = abs(recomputed_amount - amount)
+
+                if delta > 0:
+                    _consider({
+                        "ratio": 0.0,
+                        "reason": "forced_recompute_delta_fallback",
+                        "row_value": amount,
+                        "row": row,
+                        "row_no": row_no,
+                        "impact": delta,
+                    })
+
+    if best is None:
+        return None
+
+    best.pop("impact", None)
+    return best
+
 
 def _apply_total_contribution_scoring(rows: list):
     """
@@ -538,53 +681,130 @@ def _apply_total_contribution_scoring(rows: list):
 
             candidates.sort(key=lambda x: x["ratio"], reverse=True)
 
+            # =========================================================
+            # PRIORITAS 1:
+            # Kalau gap > 0, utamakan greedy multi-row dulu
+            # untuk handle duplicate / merge-cell / total berlebih
+            # =========================================================
+            if gap > 0:
+                greedy_selected = _select_greedy_multi_row_candidates(
+                    candidates=candidates,
+                    gap=gap,
+                    eps=eps,
+                    max_rows=min(5, max(2, len(group_rows)))
+                )
+                if greedy_selected:
+                    greedy_selected = [
+                        {
+                            **cand,
+                            "reason": f"{cand.get('reason', 'remove_row_value')}_greedy_multi"
+                        }
+                        for cand in greedy_selected
+                    ]
+
+                    _apply_selected_total_culprits(
+                        greedy_selected,
+                        spec,
+                        invoice_group,
+                        actual_sum,
+                        declared_total,
+                        gap,
+                        culprit_row_nos,
+                        culprit_groups,
+                    )
+                    continue
+
+            # CASE 2: strong single culprit
             if candidates and candidates[0]["ratio"] >= strong_ratio:
                 top = candidates[0]
-                _append_total_contribution_error(
-                    row=top["row"],
-                    label=spec["label"],
-                    invoice_group=invoice_group,
-                    actual_sum=actual_sum,
-                    declared_total=declared_total,
-                    gap=gap,
-                    contribution_ratio=top["ratio"],
-                    reason=top["reason"],
-                    row_value=top["row_value"],
+                _apply_selected_total_culprits(
+                    [top],
+                    spec,
+                    invoice_group,
+                    actual_sum,
+                    declared_total,
+                    gap,
+                    culprit_row_nos,
+                    culprit_groups,
                 )
-
-                if top["row_no"] is not None:
-                    culprit_row_nos.add(top["row_no"])
-                    culprit_groups.add(invoice_group)
-
                 continue
 
+            # CASE 3: strong top-2 culprit
             if len(candidates) >= 2:
                 combined_top2 = candidates[0]["ratio"] + candidates[1]["ratio"]
                 if combined_top2 >= top2_ratio:
-                    for top in candidates[:2]:
-                        _append_total_contribution_error(
-                            row=top["row"],
-                            label=spec["label"],
-                            invoice_group=invoice_group,
-                            actual_sum=actual_sum,
-                            declared_total=declared_total,
-                            gap=gap,
-                            contribution_ratio=top["ratio"],
-                            reason=top["reason"],
-                            row_value=top["row_value"],
-                        )
-
-                        if top["row_no"] is not None:
-                            culprit_row_nos.add(top["row_no"])
-
-                    culprit_groups.add(invoice_group)
+                    _apply_selected_total_culprits(
+                        candidates[:2],
+                        spec,
+                        invoice_group,
+                        actual_sum,
+                        declared_total,
+                        gap,
+                        culprit_row_nos,
+                        culprit_groups,
+                    )
                     continue
+
+            # CASE 4: fallback wajib -> minimal 1 kandidat paling kuat
+            if candidates:
+                top = dict(candidates[0])
+                forced_reason = top.get("reason") or "forced_top1_candidate"
+                top["reason"] = f"{forced_reason}_fallback_min1"
+
+                _apply_selected_total_culprits(
+                    [top],
+                    spec,
+                    invoice_group,
+                    actual_sum,
+                    declared_total,
+                    gap,
+                    culprit_row_nos,
+                    culprit_groups,
+                )
+
+                print(
+                    f"[TOTAL_ATTRIBUTION][FORCED_TOP1] invoice_no={invoice_group} "
+                    f"field={spec['declared_field']} "
+                    f"row_no={top['row_no']} ratio={top['ratio']} gap={gap}"
+                )
+                continue
+
+            # CASE 5: no candidate dari rule utama -> pakai most influential anchor
+            fallback = _pick_most_influential_fallback(
+                group_rows=group_rows,
+                spec=spec,
+                gap=gap,
+            )
+            if fallback:
+                fallback["reason"] = (
+                    f"{fallback.get('reason', 'forced_absmax_fallback')}"
+                    f"_missing_or_under_anchor"
+                )
+
+                _apply_selected_total_culprits(
+                    [fallback],
+                    spec,
+                    invoice_group,
+                    actual_sum,
+                    declared_total,
+                    gap,
+                    culprit_row_nos,
+                    culprit_groups,
+                )
+
+                print(
+                    f"[TOTAL_ATTRIBUTION][ANCHOR_FALLBACK] invoice_no={invoice_group} "
+                    f"field={spec['declared_field']} "
+                    f"row_no={fallback['row_no']} gap={gap} "
+                    f"reason={fallback['reason']}"
+                )
+                continue
 
             print(
                 f"[TOTAL_ATTRIBUTION] invoice_no={invoice_group} "
                 f"field={spec['declared_field']} "
                 f"actual_sum={actual_sum} declared_total={declared_total} gap={gap} "
-                f"root_cause=missing_extraction_or_multi_row_issue"
+                f"root_cause=no_candidate_found"
             )
 
     return {
