@@ -3948,43 +3948,232 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
 
     raise Exception("Gemini gagal menghasilkan JSON setelah retry")
 
-def _run_one_detail_batch(file_uri_detail: str, run_prefix: str, batch_no: int, prompt: str):
-    p = prompt
-    for attempt in range(1, 4):
+def _build_detail_batch_contract_prompt(
+    batch_no: int,
+    expected_indices: list,
+    first_index: int,
+    last_index: int,
+) -> str:
+    return f"""
+
+KONTRAK OUTPUT DETAIL BATCH — WAJIB DIIKUTI:
+- Ini adalah batch_no={batch_no}.
+- Range line item batch ini adalah {first_index} sampai {last_index}.
+- Output HARUS berupa JSON ARRAY valid.
+- Output HARUS berisi tepat {len(expected_indices)} object.
+- WAJIB ada satu object untuk setiap _expected_index berikut:
+  {expected_indices}
+- Setiap object WAJIB memiliki field "_expected_index" bertipe number.
+- Nilai "_expected_index" WAJIB sama dengan nomor line item yang diekstrak.
+- Jangan skip line item.
+- Jangan gabungkan beberapa line item menjadi satu object.
+- Jangan membuat summary.
+- Jangan menghapus row walaupun sebagian field kosong.
+- Jika suatu field tidak ditemukan di dokumen:
+  - field string isi "null"
+  - field number isi 0
+"""
+
+
+def _get_row_expected_index(row: dict):
+    if not isinstance(row, dict):
+        return None
+
+    candidate_keys = [
+        "_expected_index",
+        "expected_index",
+        "line_item_index",
+        "index",
+        "row_index",
+    ]
+
+    for key in candidate_keys:
+        try:
+            value = row.get(key)
+            if value is None:
+                continue
+            return int(value)
+        except Exception:
+            continue
+
+    return None
+
+
+def _validate_detail_batch_rows(
+    json_array,
+    batch_no: int,
+    expected_indices: list,
+):
+    if isinstance(json_array, dict):
+        raise Exception(
+            f"Batch {batch_no} returned dict, expected JSON array "
+            f"with {len(expected_indices)} rows"
+        )
+
+    if not isinstance(json_array, list):
+        raise Exception("Batch result bukan array")
+
+    expected_set = set(int(x) for x in expected_indices)
+
+    got_indices = []
+    missing_index_field_rows = []
+
+    for pos, row in enumerate(json_array, start=1):
+        idx = _get_row_expected_index(row)
+
+        if idx is None:
+            missing_index_field_rows.append(pos)
+            continue
+
+        got_indices.append(idx)
+
+    got_set = set(got_indices)
+
+    missing = sorted(expected_set - got_set)
+    extra = sorted(got_set - expected_set)
+    duplicate = sorted({
+        idx for idx in got_indices
+        if got_indices.count(idx) > 1
+    })
+
+    errors = []
+
+    if len(json_array) != len(expected_indices):
+        errors.append(
+            f"expected_count={len(expected_indices)} actual_count={len(json_array)}"
+        )
+
+    if missing_index_field_rows:
+        errors.append(
+            f"rows_missing_expected_index={missing_index_field_rows}"
+        )
+
+    if missing:
+        errors.append(f"missing_indices={missing}")
+
+    if extra:
+        errors.append(f"extra_indices={extra}")
+
+    if duplicate:
+        errors.append(f"duplicate_indices={duplicate}")
+
+    if errors:
+        raise Exception(
+            f"DETAIL_BATCH_COUNT_MISMATCH batch_no={batch_no}; "
+            + "; ".join(errors)
+        )
+
+    for row in json_array:
+        row["_expected_index"] = int(_get_row_expected_index(row))
+
+    json_array.sort(key=lambda r: int(r.get("_expected_index")))
+
+    return json_array
+
+def _run_one_detail_batch(
+    file_uri_detail: str,
+    run_prefix: str,
+    batch_no: int,
+    prompt: str,
+    first_index: int,
+    last_index: int,
+    expected_indices: list,
+):
+    base_contract = _build_detail_batch_contract_prompt(
+        batch_no=batch_no,
+        expected_indices=expected_indices,
+        first_index=first_index,
+        last_index=last_index,
+    )
+
+    p = prompt + base_contract
+    last_error = None
+
+    for attempt in range(1, 5):
         try:
             raw = _call_gemini_uri(file_uri_detail, p)
             json_array = _parse_json_safe(raw)
 
-            if isinstance(json_array, dict):
-                json_array = [json_array]
-            if not isinstance(json_array, list):
-                raise Exception("Batch result bukan array")
+            json_array = _validate_detail_batch_rows(
+                json_array=json_array,
+                batch_no=batch_no,
+                expected_indices=expected_indices,
+            )
 
             _save_batch_tmp(run_prefix, batch_no, json_array)
+
+            print(
+                f"[DETAIL_BATCH_OK] "
+                f"batch_no={batch_no} "
+                f"expected={len(expected_indices)} "
+                f"actual={len(json_array)} "
+                f"indices={[r.get('_expected_index') for r in json_array]}"
+            )
+
             return (batch_no, json_array)
 
         except Exception as e:
+            last_error = e
             msg = str(e).lower()
 
-            # ✅ retry kalau output bukan JSON
-            if ("bukan json valid" in msg) or ("not json" in msg) or ("not valid json" in msg):
-                p = prompt + """
-                PENTING SEKALI:
-                - Output WAJIB dimulai dengan '[' dan diakhiri dengan ']'
-                - Output HANYA JSON ARRAY (tanpa teks lain)
-                - Jika data tidak ditemukan, isi string "null" / angka 0 sesuai skema
-                """
-                time.sleep(0.5)
+            is_json_error = (
+                "bukan json valid" in msg
+                or "not json" in msg
+                or "not valid json" in msg
+                or "batch result bukan array" in msg
+                or "returned dict" in msg
+            )
+
+            is_count_error = "detail_batch_count_mismatch" in msg
+
+            is_quota_error = (
+                "429" in msg
+                or "resource_exhausted" in msg
+                or "rate" in msg
+                or "quota" in msg
+            )
+
+            print(
+                f"[DETAIL_BATCH_RETRY] "
+                f"batch_no={batch_no} "
+                f"attempt={attempt} "
+                f"error={e}"
+            )
+
+            if is_quota_error:
+                time.sleep((2 ** attempt) + random.random())
                 continue
 
-            # retry quota
-            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
-                time.sleep((2 ** attempt) + random.random())
+            if is_json_error or is_count_error:
+                p = prompt + base_contract + f"""
+
+OUTPUT SEBELUMNYA SALAH DAN HARUS DIULANG.
+
+ERROR:
+{str(e)}
+
+PERBAIKI:
+- Output HARUS JSON ARRAY valid.
+- Output HARUS tepat {len(expected_indices)} object.
+- Setiap object WAJIB punya "_expected_index".
+- _expected_index yang wajib ada:
+  {expected_indices}
+- Jangan return object tunggal.
+- Jangan skip row.
+- Jangan merge row.
+- Jangan summary.
+"""
+                time.sleep(0.8 * attempt)
                 continue
 
             raise
 
-    raise Exception(f"Batch {batch_no} gagal setelah retry")
+    raise Exception(
+        f"Batch {batch_no} gagal menghasilkan row lengkap setelah retry. "
+        f"range={first_index}-{last_index}, "
+        f"expected_count={len(expected_indices)}, "
+        f"last_error={last_error}"
+    )
 
 # ==============================
 # SAVE BATCH TMP
@@ -7099,7 +7288,18 @@ def run_ocr(
         while first_index <= total_row:
             last_index = min(first_index + BATCH_SIZE - 1, total_row)
 
-            index_slice = index_items[first_index-1:last_index]  # 1-based -> 0-based
+            index_slice = index_items[first_index - 1:last_index]  # 1-based -> 0-based
+            expected_indices = list(range(first_index, last_index + 1))
+
+            if len(index_slice) != len(expected_indices):
+                raise Exception(
+                    f"Index slice mismatch. "
+                    f"batch_no={batch_no}, "
+                    f"first_index={first_index}, "
+                    f"last_index={last_index}, "
+                    f"index_slice_len={len(index_slice)}, "
+                    f"expected_len={len(expected_indices)}"
+                )
 
             prompt = build_detail_prompt_from_index(
                 total_row=total_row,
@@ -7110,34 +7310,97 @@ def run_ocr(
                 vendor_prompt_text=vendor_prompt_text
             )
 
-            jobs.append((batch_no, prompt))
+            jobs.append({
+                "batch_no": batch_no,
+                "prompt": prompt,
+                "first_index": first_index,
+                "last_index": last_index,
+                "expected_indices": expected_indices,
+            })
+
             first_index = last_index + 1
             batch_no += 1
 
-        # default 2 worker (aman untuk 2 CPU & mengurangi risiko 429)
         MAX_WORKERS = max(1, len(jobs))
 
         results = {}
-        print(f"OCR Batching | total_jobs={len(jobs)} | max_workers={MAX_WORKERS}")
+
+        print(
+            f"OCR Batching | total_jobs={len(jobs)} "
+            f"| max_workers={MAX_WORKERS} "
+            f"| total_row={total_row} "
+            f"| batch_size={BATCH_SIZE}"
+        )
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = [
-                ex.submit(_run_one_detail_batch, detail_input_uri, run_prefix, bn, prm)
-                for (bn, prm) in jobs
+                ex.submit(
+                    _run_one_detail_batch,
+                    detail_input_uri,
+                    run_prefix,
+                    job["batch_no"],
+                    job["prompt"],
+                    job["first_index"],
+                    job["last_index"],
+                    job["expected_indices"],
+                )
+                for job in jobs
             ]
 
             for f in as_completed(futures):
                 bn, arr = f.result()
                 results[bn] = arr
-                print(f"[BATCH DONE] batch_no={bn} rows={len(arr)}")
 
-        # gabungkan hasil batch sesuai urutan batch_no (tanpa download ulang dari GCS)
+                expected_count = len(next(
+                    job["expected_indices"]
+                    for job in jobs
+                    if job["batch_no"] == bn
+                ))
+
+                print(
+                    f"[BATCH DONE] "
+                    f"batch_no={bn} "
+                    f"expected={expected_count} "
+                    f"actual={len(arr)}"
+                )
+
+        missing_batches = sorted({
+            job["batch_no"] for job in jobs
+        } - set(results.keys()))
+
+        if missing_batches:
+            raise Exception(f"Missing detail batch results: {missing_batches}")
+
         all_rows = []
         for bn in sorted(results.keys()):
             all_rows.extend(results[bn])
 
         if not all_rows:
             raise Exception("Tidak ada data detail hasil Gemini")
+
+        actual_detail_count = len(all_rows)
+
+        print(
+            f"[DETAIL_COUNT_AFTER_BATCH] "
+            f"expected={total_row} actual={actual_detail_count}"
+        )
+
+        if actual_detail_count != total_row:
+            got_indices = sorted([
+                int(r.get("_expected_index"))
+                for r in all_rows
+                if isinstance(r, dict) and r.get("_expected_index") is not None
+            ])
+
+            expected_indices_all = list(range(1, total_row + 1))
+            missing_indices = sorted(set(expected_indices_all) - set(got_indices))
+            extra_indices = sorted(set(got_indices) - set(expected_indices_all))
+
+            raise Exception(
+                f"Detail row count mismatch after batch. "
+                f"expected={total_row}, actual={actual_detail_count}, "
+                f"missing_indices={missing_indices}, extra_indices={extra_indices}"
+            )
 
         # =========================================
         # PRECHECK PYTHON
@@ -7158,6 +7421,17 @@ def run_ocr(
 
         if repaired_rows:
             all_rows = _apply_detail_line_recheck_result(all_rows, repaired_rows)
+
+        print(
+            f"[DETAIL_COUNT_AFTER_RECHECK] "
+            f"expected={total_row} actual={len(all_rows)}"
+        )
+
+        if len(all_rows) != total_row:
+            raise Exception(
+                f"Detail row count changed after recheck. "
+                f"expected={total_row}, actual={len(all_rows)}"
+            )
 
         # =========================
         # OPTIONAL: total/container
@@ -7263,6 +7537,10 @@ def run_ocr(
 
         _rename_final_fields(all_rows)
         _drop_internal_detail_fields(all_rows)
+
+        for row in all_rows:
+            if isinstance(row, dict):
+                row.pop("_expected_index", None)
 
         # =========================
         # FINAL RESULT OBJECT
