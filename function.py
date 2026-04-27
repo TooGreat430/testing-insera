@@ -7739,7 +7739,7 @@ def run_ocr(
         _postprocess_null_fields_for_vendor(
             rows=all_rows,
             current_vendor_id=vendor_id,
-            target_vendor_ids="shimano",
+            target_vendor_ids="shimano_singapore",
             columns=["inv_quantity", "pl_quantity"],
         )
 
