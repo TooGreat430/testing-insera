@@ -398,18 +398,68 @@ def _get_row_total_contribution_ratio(row: dict, spec: dict, gap: float):
     best_ratio = 0.0
     best_reason = None
 
-    # skenario 1: row dihapus dari sum
-    if row_value is not None and abs(gap) > eps:
-        gap_after_remove = gap - row_value
-        improvement_remove = abs(gap) - abs(gap_after_remove)
+    if row_value is None or abs(gap) <= eps:
+        return best_ratio, best_reason, row_value
 
-        if improvement_remove > 0:
-            ratio_remove = min(1.0, improvement_remove / abs(gap))
-            best_ratio = ratio_remove
-            best_reason = "remove_row_value"
+    # =========================================================
+    # SKENARIO 1:
+    # row dihapus dari sum
+    # Cocok untuk duplicate / merge-cell / over-total
+    # =========================================================
+    gap_after_remove = gap - row_value
+    improvement_remove = abs(gap) - abs(gap_after_remove)
 
-    # skenario 2: khusus inv_amount -> koreksi pakai qty * unit_price
-    if row_field == "inv_amount" and abs(gap) > eps:
+    if improvement_remove > 0:
+        ratio_remove = min(1.0, improvement_remove / abs(gap))
+        best_ratio = ratio_remove
+        best_reason = "remove_row_value"
+
+    # =========================================================
+    # SKENARIO 2:
+    # row dikoreksi sebesar gap
+    # Cocok untuk salah ekstrak row-level:
+    # contoh 1266.789 -> 1264.45 karena gap = 2.339
+    # corrected_value = row_value - gap
+    # =========================================================
+    corrected_value = row_value - gap
+
+    plausible_adjust = True
+
+    # tidak boleh jadi negatif
+    if corrected_value < -eps:
+        plausible_adjust = False
+
+    # gap tidak boleh terlalu besar dibanding nilai row
+    # supaya tidak terlalu agresif
+    correction_share = abs(gap) / max(abs(row_value), eps)
+    if correction_share > 0.35:
+        plausible_adjust = False
+
+    # sanity check untuk NW/GW
+    if plausible_adjust and row_field == "pl_gw":
+        nw = _to_float(row.get("pl_nw"))
+        if nw is not None and corrected_value + eps < nw:
+            plausible_adjust = False
+
+    if plausible_adjust and row_field == "pl_nw":
+        gw = _to_float(row.get("pl_gw"))
+        if gw is not None and corrected_value - eps > gw:
+            plausible_adjust = False
+
+    if plausible_adjust:
+        # makin kecil porsi koreksinya terhadap row_value,
+        # makin kuat kandidatnya
+        ratio_adjust = 1.0 - min(1.0, correction_share)
+
+        if ratio_adjust > best_ratio:
+            best_ratio = ratio_adjust
+            best_reason = "adjust_row_by_gap"
+
+    # =========================================================
+    # SKENARIO 3:
+    # khusus inv_amount -> koreksi pakai qty * unit_price
+    # =========================================================
+    if row_field == "inv_amount":
         qty = _to_float(row.get("inv_quantity"))
         unit_price = _to_float(row.get("inv_unit_price"))
         amount = _to_float(row.get("inv_amount"))
@@ -599,6 +649,68 @@ def _pick_most_influential_fallback(group_rows: list, spec: dict, gap: float):
     best.pop("impact", None)
     return best
 
+def _select_strong_row_correction_candidates(
+    candidates: list,
+    max_rows: int = 5,
+    min_ratio: float = 0.85,
+    relative_window: float = 0.03,
+):
+    """
+    Prioritas untuk kasus salah ekstrak row-level:
+    contoh:
+    - hasil ekstrak 1266.789
+    - seharusnya 1264.45
+    - gap total = 2.339
+    => row ini lebih masuk akal dikoreksi sebesar gap,
+       bukan dihapus seluruh nilainya.
+
+    Ambil 1..N candidate correction terkuat yang skornya masih dekat
+    dengan top candidate.
+    """
+    correction_reasons = {
+        "adjust_row_by_gap",
+        "recompute_inv_amount",
+    }
+
+    correction_candidates = [
+        c for c in (candidates or [])
+        if c.get("reason") in correction_reasons
+    ]
+
+    if not correction_candidates:
+        return []
+
+    correction_candidates.sort(
+        key=lambda x: float(x.get("ratio", 0.0) or 0.0),
+        reverse=True
+    )
+
+    top_ratio = float(correction_candidates[0].get("ratio", 0.0) or 0.0)
+    if top_ratio < min_ratio:
+        return []
+
+    selected = []
+    seen_row_nos = set()
+
+    for cand in correction_candidates:
+        ratio = float(cand.get("ratio", 0.0) or 0.0)
+        row_no = cand.get("row_no")
+
+        if row_no is not None and row_no in seen_row_nos:
+            continue
+
+        if (top_ratio - ratio) > relative_window:
+            break
+
+        selected.append(cand)
+
+        if row_no is not None:
+            seen_row_nos.add(row_no)
+
+        if len(selected) >= max_rows:
+            break
+
+    return selected
 
 def _apply_total_contribution_scoring(rows: list):
     """
@@ -680,6 +792,38 @@ def _apply_total_contribution_scoring(rows: list):
                 })
 
             candidates.sort(key=lambda x: x["ratio"], reverse=True)
+
+            # =========================================================
+            # PRIORITAS 0:
+            # salah ekstrak row-level (partial correction by gap)
+            # diprioritaskan sebelum greedy duplicate removal
+            # =========================================================
+            correction_selected = _select_strong_row_correction_candidates(
+                candidates=candidates,
+                max_rows=min(5, max(1, len(group_rows))),
+                min_ratio=max(0.85, strong_ratio),
+                relative_window=0.03,
+            )
+            if correction_selected:
+                correction_selected = [
+                    {
+                        **cand,
+                        "reason": f"{cand.get('reason', 'adjust_row_by_gap')}_priority"
+                    }
+                    for cand in correction_selected
+                ]
+
+                _apply_selected_total_culprits(
+                    correction_selected,
+                    spec,
+                    invoice_group,
+                    actual_sum,
+                    declared_total,
+                    gap,
+                    culprit_row_nos,
+                    culprit_groups,
+                )
+                continue
 
             # =========================================================
             # PRIORITAS 1:
