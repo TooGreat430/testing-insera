@@ -161,43 +161,10 @@ BILL OF LADING (BL):
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
 CERTIFICATE OF ORIGIN (COO):
-
-=================
-LOGIC MAPPING COO
-=================
-
-COO dimapping ke invoice line item berdasarkan kombinasi dari key berikut:
-- inv_customer_po_no  == coo_customer_po_no
-- inv_spart_item_no == Part# pada COO
-Jika kedua kondisi di atas terpenuhi (customer po no pada invoice sama dengan customer po no pada coo, dan spart item no pada invoice sama dengan PART# pada COO),
-maka line item coo tersebut dimapping dengan line item invoice.
-
-Contoh:
-
-Invoice:
-DESKRIPSI
-DISC BRAKE ASSEMBLED SET/J-KIT DIRECT; CUES; 
-BL-U6030(L); BR-U6030(F); FOR 160MM
-ROTOR; RESIN PAD(W/O FIN); 1000MM HOSE(SM-BH59 BLACK); BULK
-DISC BRAKE KIT
-inv_customer_po_no = 45320517
-inv_spart_item_no = KU60302DLF6RX100
-
-COO:
-PO No:45320517 /SEQ# 001
-PART# KU60302DLF6RX100
-DISC BRAKE KIT U6030L U6030D L
-N L0 B LF RX00 L
-maka, coo_customer_po_no = 45320517
-      Part no = KU60302DLF6RX100
-
-Karena inv_customer_po_no = coo_customer_po_no = 45320517 dan inv_spart_item_no = coo part no = KU60302DLF6RX100
-Maka line item COO dimapping dengan line item invoice.
-
 1. `coo_mark_number`: 
     - Ekstrak dari "7. Marks and numbers on packages".
     - Apabila tidak ada informasi marks and numbers pada kolom 7 atau tertlulis "N/M" (Not Mentioned), maka biarkan null.
-2. `coo_description`: Ekstrak deskripsi teks dari kolom "6. Description of goods" (ambil murni deskripsi barangnya saja, misal "DISC BRAKE KIT U6030L U6030D L N L0 B LF RX00 L", abaikan teks "Invoice No", "PO No", dan "PART#").
+2. `coo_description`: Ekstrak deskripsi teks dari kolom "6. Description of goods" (ambil murni deskripsi barangnya saja, misal "SMALL PARTS SMMA-R 160 D/D", abaikan teks "Invoice No", "PO No", dan "PART#").
 3. `coo_hs_code`: Ekstrak dari kolom "7. HS Code".
 4. `coo_package_count`: Biarkan null.
 5. `coo_package_unit`: Biarkan null.
