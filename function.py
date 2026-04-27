@@ -7775,6 +7775,10 @@ def run_ocr(
         _rename_final_fields(all_rows)
         _drop_internal_detail_fields(all_rows)
 
+        _drop_columns(all_rows, [
+            "confidence_logprob",
+        ])
+
         for row in all_rows:
             if isinstance(row, dict):
                 row.pop("_expected_index", None)
