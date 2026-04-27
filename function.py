@@ -3024,23 +3024,22 @@ def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
         f"multiplied_matches={multiplied_matches}"
     )
 
-    # CASE 1:
-    # Gemini sudah kasih pl_volume sebagai total per row.
-    # Jadi jangan multiply.
-    if raw_matches and not multiplied_matches:
+    # =========================================================
+    # Pilih kandidat yang PALING DEKAT ke pl_total_volume.
+    #
+    # - raw_sum         = sum(pl_volume)
+    # - multiplied_sum  = sum(pl_volume * pl_package_count)
+    #
+    # Jika multiplied lebih dekat, override pl_volume per row
+    # menjadi pl_volume * pl_package_count.
+    # Jika raw lebih dekat atau sama dekat, keep raw untuk avoid
+    # double multiply.
+    # =========================================================
+    if multiplied_diff < raw_diff:
         print(
-            "[PL_VOLUME_POSTPROCESS][KEEP_RAW] "
-            "sum(pl_volume) matches pl_total_volume; no multiply needed"
-        )
-        return
-
-    # CASE 2:
-    # Gemini kasih pl_volume sebagai volume per package.
-    # Jadi ubah menjadi total per row.
-    if multiplied_matches and not raw_matches:
-        print(
-            "[PL_VOLUME_POSTPROCESS][APPLY_MULTIPLY] "
-            "sum(pl_volume * pl_package_count) matches pl_total_volume"
+            "[PL_VOLUME_POSTPROCESS][APPLY_MULTIPLY_CLOSEST] "
+            "sum(pl_volume * pl_package_count) is closer to pl_total_volume; "
+            "override valid row pl_volume values"
         )
 
         for idx, row in enumerate(rows or [], start=1):
@@ -3058,7 +3057,7 @@ def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
             row["pl_volume"] = new_value
 
             print(
-                "[PL_VOLUME_POSTPROCESS][ROW_MULTIPLY] "
+                "[PL_VOLUME_POSTPROCESS][ROW_MULTIPLY_CLOSEST] "
                 f"row_no={idx} "
                 f"old_pl_volume={old_value} "
                 f"pl_package_count={pl_package_count} "
@@ -3067,23 +3066,11 @@ def _postprocess_pl_volume(rows: list, vendor_id: str = "default"):
 
         return
 
-    # CASE 3:
-    # Dua-duanya match.
-    # Lebih aman keep raw supaya tidak double multiply.
-    if raw_matches and multiplied_matches:
-        print(
-            "[PL_VOLUME_POSTPROCESS][KEEP_RAW_AMBIGUOUS] "
-            "both raw and multiplied match; keep raw to avoid double multiply"
-        )
-        return
-
-    # CASE 4:
-    # Tidak ada yang match.
-    # Jangan ubah diam-diam karena kemungkinan data mixed / OCR salah / total salah.
     print(
-        "[PL_VOLUME_POSTPROCESS][AMBIGUOUS_SKIP] "
-        "neither raw nor multiplied matches pl_total_volume; keep original values"
+        "[PL_VOLUME_POSTPROCESS][KEEP_RAW_CLOSEST] "
+        "sum(pl_volume) is closer or equal to pl_total_volume; keep raw values"
     )
+    return
 
 FORCE_CT_VENDORS = {
     "haomeng",
