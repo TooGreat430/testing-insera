@@ -5369,6 +5369,98 @@ def _to_decimal_or_zero(value) -> Decimal:
     except (InvalidOperation, ValueError):
         return Decimal("0")
 
+# ==============================
+# GENERIC VENDOR FIELD NULLIFIER
+# ==============================
+
+def _as_list(value):
+    if value is None:
+        return []
+
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+
+    return [value]
+
+
+def _postprocess_null_fields_for_vendor(
+    rows: list,
+    current_vendor_id: str,
+    target_vendor_ids,
+    columns,
+    null_value="null",
+    create_missing_fields: bool = False,
+):
+    """
+    Generic postprocess:
+    Null-kan kolom tertentu hanya untuk vendor tertentu.
+
+    Args:
+        rows:
+            list row detail.
+        current_vendor_id:
+            vendor_id aktif dari flow, contoh: vendor_id.
+        target_vendor_ids:
+            vendor yang kena rule. Bisa string atau list.
+            Contoh: "shimano" atau ["shimano", "bafang_motor"].
+        columns:
+            kolom yang mau di-null. Bisa string atau list.
+            Contoh: "pl_volume_unit" atau ["inv_quantity", "pl_quantity"].
+        null_value:
+            default pakai string "null" karena codebase existing pakai format itu.
+        create_missing_fields:
+            False = hanya null-kan field jika field sudah ada di row.
+            True = tambahkan field walaupun belum ada.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    normalized_current_vendor_id = normalize_vendor_id(current_vendor_id)
+
+    normalized_target_vendor_ids = {
+        normalize_vendor_id(v)
+        for v in _as_list(target_vendor_ids)
+        if v is not None
+    }
+
+    columns = [
+        str(col).strip()
+        for col in _as_list(columns)
+        if col is not None and str(col).strip()
+    ]
+
+    if not normalized_target_vendor_ids or not columns:
+        return rows
+
+    if normalized_current_vendor_id not in normalized_target_vendor_ids:
+        print(
+            f"[VENDOR_NULL_FIELDS][SKIP] "
+            f"current_vendor_id={normalized_current_vendor_id} "
+            f"target_vendor_ids={sorted(normalized_target_vendor_ids)} "
+            f"columns={columns}"
+        )
+        return rows
+
+    updated_count = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for column in columns:
+            if create_missing_fields or column in row:
+                row[column] = null_value
+                updated_count += 1
+
+    print(
+        f"[VENDOR_NULL_FIELDS][APPLIED] "
+        f"current_vendor_id={normalized_current_vendor_id} "
+        f"target_vendor_ids={sorted(normalized_target_vendor_ids)} "
+        f"columns={columns} "
+        f"updated_count={updated_count}"
+    )
+
+    return rows
 
 def _generate_inv_amount_before_validation(rows: list):
     """
@@ -7643,6 +7735,20 @@ def run_ocr(
         total_attribution = _apply_total_contribution_scoring(all_rows)
 
         _finalize_match_fields(all_rows)
+
+        _postprocess_null_fields_for_vendor(
+            rows=all_rows,
+            current_vendor_id=vendor_id,
+            target_vendor_ids="shimano",
+            columns=["inv_quantity", "pl_quantity"],
+        )
+
+        _postprocess_null_fields_for_vendor(
+            rows=all_rows,
+            current_vendor_id=vendor_id,
+            target_vendor_ids="bafang_motor",
+            columns=["pl_volume_unit"],
+        )
 
         _drop_columns(all_rows, [
             "inv_messrs",
