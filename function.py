@@ -7722,20 +7722,7 @@ def run_ocr(
         _assign_detail_row_numbers(all_rows)
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
         _postprocess_coo_no_and_seq(all_rows)
-
-        all_rows = _validate_po(all_rows)
-
-        _validate_invoice_rows(all_rows)
-        _validate_packing_rows(all_rows)
-        _validate_invoice_vs_packing_extra(all_rows)
-
-        _validate_bl_rows(all_rows)
-        _validate_coo_rows(all_rows)
-
-        total_attribution = _apply_total_contribution_scoring(all_rows)
-
-        _finalize_match_fields(all_rows)
-
+        
         _postprocess_null_fields_for_vendor(
             rows=all_rows,
             current_vendor_id=vendor_id,
@@ -7749,6 +7736,19 @@ def run_ocr(
             target_vendor_ids="bafang_motor",
             columns=["pl_volume_unit"],
         )
+
+        all_rows = _validate_po(all_rows)
+
+        _validate_invoice_rows(all_rows)
+        _validate_packing_rows(all_rows)
+        _validate_invoice_vs_packing_extra(all_rows)
+
+        _validate_bl_rows(all_rows)
+        _validate_coo_rows(all_rows)
+
+        total_attribution = _apply_total_contribution_scoring(all_rows)
+
+        _finalize_match_fields(all_rows)
 
         _drop_columns(all_rows, [
             "inv_messrs",
