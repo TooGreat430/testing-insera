@@ -7915,7 +7915,7 @@ def _build_detail_line_recheck_schema():
     return schema
 
 
-ddef _build_detail_line_recheck_prompt(rows_payload: list) -> str:
+def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
     schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
 
