@@ -4140,26 +4140,24 @@ def _get_row_expected_index(row: dict):
     if not isinstance(row, dict):
         return None
 
-    try:
-        value = row.get("_expected_index")
-        if value is None:
-            return None
-        return int(value)
-    except Exception:
-        return None
+    candidate_keys = [
+        "_expected_index",
+        "expected_index",
+        "line_item_index",
+        "index",
+        "row_index",
+    ]
 
-def _force_expected_index_by_position(json_array: list, expected_indices: list):
-    if not isinstance(json_array, list):
-        return json_array
+    for key in candidate_keys:
+        try:
+            value = row.get(key)
+            if value is None:
+                continue
+            return int(value)
+        except Exception:
+            continue
 
-    if len(json_array) != len(expected_indices):
-        return json_array
-
-    for row, expected_index in zip(json_array, expected_indices):
-        if isinstance(row, dict):
-            row["_expected_index"] = int(expected_index)
-
-    return json_array
+    return None
 
 def _validate_detail_batch_rows(
     json_array,
@@ -4175,9 +4173,6 @@ def _validate_detail_batch_rows(
     if not isinstance(json_array, list):
         raise Exception("Batch result bukan array")
 
-    # PATCH: Python yang menentukan _expected_index
-    json_array = _force_expected_index_by_position(json_array, expected_indices)
-
     expected_set = set(int(x) for x in expected_indices)
 
     got_indices = []
@@ -4192,7 +4187,52 @@ def _validate_detail_batch_rows(
 
         got_indices.append(idx)
 
-    ...
+    got_set = set(got_indices)
+
+    missing = sorted(expected_set - got_set)
+    extra = sorted(got_set - expected_set)
+
+    duplicate = sorted({
+        idx
+        for idx in got_indices
+        if got_indices.count(idx) > 1
+    })
+
+    errors = []
+
+    if len(json_array) != len(expected_indices):
+        errors.append(
+            f"expected_count={len(expected_indices)} actual_count={len(json_array)}"
+        )
+
+    if missing_index_field_rows:
+        errors.append(
+            f"rows_missing_expected_index={missing_index_field_rows}"
+        )
+
+    if missing:
+        errors.append(f"missing_indices={missing}")
+
+    if extra:
+        errors.append(f"extra_indices={extra}")
+
+    if duplicate:
+        errors.append(f"duplicate_indices={duplicate}")
+
+    if errors:
+        raise Exception(
+            f"DETAIL_BATCH_COUNT_MISMATCH batch_no={batch_no}; "
+            + "; ".join(errors)
+        )
+
+    for row in json_array:
+        row["_expected_index"] = int(_get_row_expected_index(row))
+
+    json_array.sort(key=lambda r: int(r.get("_expected_index")))
+
+    return json_array
+
+    
 
 def _run_one_detail_batch(
     file_uri_detail: str,
