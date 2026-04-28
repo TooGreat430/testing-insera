@@ -8835,6 +8835,341 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
 
     return rows
 
+# =========================================================
+# TWO-PASS OPTIONAL DOC MERGE
+# PASS 1: INV + PL sebagai base
+# PASS 2: FULL docs hanya untuk ambil BL/COO fields
+# =========================================================
+
+OPTIONAL_DETAIL_FIELDS = {
+    "bl_description",
+    "bl_hs_code",
+
+    "coo_seq",
+    "coo_mark_number",
+    "coo_description",
+    "coo_hs_code",
+    "coo_quantity",
+    "coo_unit",
+    "coo_package_count",
+    "coo_package_unit",
+    "coo_gw",
+    "coo_amount",
+    "coo_criteria",
+    "coo_customer_po_no",
+}
+
+OPTIONAL_HEADER_PREFIXES = ("bl_", "coo_")
+
+BASE_ANCHOR_FIELDS_FOR_OPTIONAL = [
+    "_expected_index",
+    "_detail_row_no",
+
+    "inv_invoice_no",
+    "inv_invoice_date",
+    "inv_customer_po_no",
+    "inv_vendor_article_no",
+    "inv_seq",
+    "inv_description",
+    "inv_quantity",
+    "inv_quantity_unit",
+    "inv_amount",
+
+    "pl_invoice_no",
+    "pl_invoice_date",
+    "pl_customer_po_no",
+    "pl_vendor_article_no",
+    "pl_description",
+    "pl_quantity",
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+]
+
+
+def _optional_safe_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _optional_row_key(row: dict):
+    if not isinstance(row, dict):
+        return None
+
+    # _expected_index paling stabil karena berasal dari index item batch.
+    for key in ["_expected_index", "_detail_row_no", "idx"]:
+        value = _optional_safe_int(row.get(key))
+        if value is not None:
+            return value
+
+    return None
+
+
+def _is_meaningful_optional_value(value):
+    if value is None:
+        return False
+
+    if isinstance(value, str):
+        s = value.strip()
+        if s == "":
+            return False
+        if s.lower() == "null":
+            return False
+
+    return True
+
+
+def _compact_base_rows_for_optional_anchor(base_rows: list, first_index=None, last_index=None):
+    compacted = []
+
+    for row in base_rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        idx = _optional_row_key(row)
+        if idx is None:
+            continue
+
+        if first_index is not None and idx < int(first_index):
+            continue
+
+        if last_index is not None and idx > int(last_index):
+            continue
+
+        item = {}
+
+        for key in BASE_ANCHOR_FIELDS_FOR_OPTIONAL:
+            if key in row:
+                item[key] = row.get(key)
+
+        if "_expected_index" not in item:
+            item["_expected_index"] = idx
+
+        compacted.append(item)
+
+    compacted.sort(key=lambda x: int(x.get("_expected_index", 0) or 0))
+    return compacted
+
+
+def _append_base_anchor_to_existing_prompt(existing_prompt: str, base_anchor_rows: list) -> str:
+    """
+    Tetap pakai prompt vendor/detail existing.
+    Ini hanya menambahkan base_rows sebagai anchor supaya PASS 2 bisa mapping BL/COO
+    ke row INV+PL yang sudah jadi.
+    """
+    base_anchor_json = json.dumps(base_anchor_rows, ensure_ascii=False)
+
+    return f"""
+{existing_prompt}
+
+==============================
+BASE_ROWS HASIL FINAL INV + PL
+==============================
+
+Gunakan BASE_ROWS berikut sebagai anchor row yang sudah final dari Invoice + Packing List.
+
+BASE_ROWS:
+{base_anchor_json}
+
+ATURAN KHUSUS UNTUK PASS OPTIONAL:
+- Prompt vendor dan schema di atas tetap berlaku.
+- Jangan membuat row baru.
+- Jangan menghapus row.
+- Jangan mengubah urutan row.
+- Output harus tetap untuk _expected_index dalam batch ini.
+- Gunakan BASE_ROWS sebagai master row.
+- Field inv_* dan pl_* boleh tetap diekstrak pada output, tetapi nanti sistem hanya akan memakai field bl_* dan coo_* dari PASS OPTIONAL.
+- Fokus tambahan pada mapping field bl_* dan coo_* ke _expected_index yang paling cocok.
+""".strip()
+
+
+def _build_optional_jobs_from_base_rows(jobs: list, base_rows: list) -> list:
+    optional_jobs = []
+
+    for job in jobs or []:
+        first_index = int(job["first_index"])
+        last_index = int(job["last_index"])
+
+        base_anchor_rows = _compact_base_rows_for_optional_anchor(
+            base_rows=base_rows,
+            first_index=first_index,
+            last_index=last_index,
+        )
+
+        optional_prompt = _append_base_anchor_to_existing_prompt(
+            existing_prompt=job["prompt"],
+            base_anchor_rows=base_anchor_rows,
+        )
+
+        optional_jobs.append({
+            **job,
+            "prompt": optional_prompt,
+        })
+
+    return optional_jobs
+
+
+def _merge_optional_header_into_base_header(base_header_obj: dict, optional_header_obj: dict) -> dict:
+    """
+    Header INV/PL dari PASS 1 tetap master.
+    Header BL/COO dari full docs boleh masuk.
+    """
+    merged = dict(base_header_obj or {})
+
+    if not isinstance(optional_header_obj, dict):
+        return merged
+
+    for key, value in optional_header_obj.items():
+        if str(key).startswith(OPTIONAL_HEADER_PREFIXES):
+            merged[key] = value
+
+    return merged
+
+
+def _merge_optional_rows_into_base_rows(base_rows: list, optional_rows: list) -> list:
+    """
+    Merge PASS 2 ke PASS 1.
+    Hanya field OPTIONAL_DETAIL_FIELDS yang boleh masuk.
+    inv_* dan pl_* dari optional_rows tidak akan pernah overwrite base_rows.
+    """
+    base_by_key = {}
+
+    for row in base_rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        key = _optional_row_key(row)
+        if key is not None:
+            base_by_key[key] = row
+
+    merged_count = 0
+
+    for opt in optional_rows or []:
+        if not isinstance(opt, dict):
+            continue
+
+        key = _optional_row_key(opt)
+        if key is None:
+            continue
+
+        base = base_by_key.get(key)
+        if not base:
+            continue
+
+        for field in OPTIONAL_DETAIL_FIELDS:
+            if field not in opt:
+                continue
+
+            value = opt.get(field)
+
+            # Jangan timpa value existing dengan null/kosong dari optional pass.
+            if not _is_meaningful_optional_value(value):
+                continue
+
+            base[field] = value
+            merged_count += 1
+
+    print(
+        f"[OPTIONAL_MERGE] "
+        f"optional_rows={len(optional_rows or [])} "
+        f"merged_fields={merged_count}"
+    )
+
+    return base_rows
+
+
+def _run_detail_jobs(input_uri: str, run_prefix: str, jobs: list, total_row: int, label: str):
+    """
+    Wrapper batch detail supaya PASS 1 dan PASS 2 bisa reuse logic yang sama.
+    """
+    if not jobs:
+        raise Exception(f"[{label}] jobs kosong")
+
+    max_workers = max(1, len(jobs))
+    results = {}
+
+    print(
+        f"[{label}] OCR Batching | total_jobs={len(jobs)} "
+        f"| max_workers={max_workers} "
+        f"| total_row={total_row} "
+        f"| batch_size={BATCH_SIZE}"
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [
+            ex.submit(
+                _run_one_detail_batch,
+                input_uri,
+                run_prefix,
+                job["batch_no"],
+                job["prompt"],
+                job["first_index"],
+                job["last_index"],
+                job["expected_indices"],
+            )
+            for job in jobs
+        ]
+
+        for f in as_completed(futures):
+            bn, arr = f.result()
+            results[bn] = arr
+
+            expected_count = len(next(
+                job["expected_indices"]
+                for job in jobs
+                if job["batch_no"] == bn
+            ))
+
+            print(
+                f"[{label}][BATCH DONE] "
+                f"batch_no={bn} "
+                f"expected={expected_count} "
+                f"actual={len(arr)}"
+            )
+
+    missing_batches = sorted({
+        job["batch_no"] for job in jobs
+    } - set(results.keys()))
+
+    if missing_batches:
+        raise Exception(f"[{label}] Missing detail batch results: {missing_batches}")
+
+    rows = []
+    for bn in sorted(results.keys()):
+        rows.extend(results[bn])
+
+    if not rows:
+        raise Exception(f"[{label}] Tidak ada data detail hasil Gemini")
+
+    actual_detail_count = len(rows)
+
+    print(
+        f"[{label}][DETAIL_COUNT_AFTER_BATCH] "
+        f"expected={total_row} actual={actual_detail_count}"
+    )
+
+    if actual_detail_count != total_row:
+        got_indices = sorted([
+            int(r.get("_expected_index"))
+            for r in rows
+            if isinstance(r, dict) and r.get("_expected_index") is not None
+        ])
+
+        expected_indices_all = list(range(1, total_row + 1))
+        missing_indices = sorted(set(expected_indices_all) - set(got_indices))
+        extra_indices = sorted(set(got_indices) - set(expected_indices_all))
+
+        raise Exception(
+            f"[{label}] Detail row count mismatch after batch. "
+            f"expected={total_row}, actual={actual_detail_count}, "
+            f"missing_indices={missing_indices}, extra_indices={extra_indices}"
+        )
+
+    return rows
+
 def run_ocr(
     invoice_name,
     uploaded_pdf_paths,
@@ -8939,18 +9274,44 @@ def run_ocr(
                 name="full"
             )
 
-        detail_input_uri = file_uri_full if file_uri_full else file_uri_detail
+        # =========================
+        # TWO-PASS INPUT MODE
+        # =========================
+        base_detail_input_uri = file_uri_detail          # INV + PL only
+        optional_detail_input_uri = file_uri_full        # INV + PL + BL/COO, jika ada
 
-        print("OCR Header")
+        print("OCR Header - BASE INV+PL")
 
-        header_obj = _call_gemini_json_uri(
-            detail_input_uri,
+        base_header_obj = _call_gemini_json_uri(
+            file_uri_detail,
             build_header_prompt(),
             expect_array=False,
             retries=3
         )
-        if not isinstance(header_obj, dict):
-            header_obj = {}
+        if not isinstance(base_header_obj, dict):
+            base_header_obj = {}
+
+        optional_header_obj = {}
+
+        if optional_detail_input_uri:
+            print("OCR Header - OPTIONAL FULL DOCS")
+
+            optional_header_obj = _call_gemini_json_uri(
+                optional_detail_input_uri,
+                build_header_prompt(),
+                expect_array=False,
+                retries=3
+            )
+            if not isinstance(optional_header_obj, dict):
+                optional_header_obj = {}
+
+        # header_obj final:
+        # - inv_* dan pl_* dari base_header_obj
+        # - bl_* dan coo_* dari optional_header_obj
+        header_obj = _merge_optional_header_into_base_header(
+            base_header_obj=base_header_obj,
+            optional_header_obj=optional_header_obj,
+        )
 
         # GET TOTAL ROW FROM GEMINI
         data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
@@ -9039,99 +9400,38 @@ def run_ocr(
 
         MAX_WORKERS = max(1, len(jobs))
 
-        results = {}
-
-        print(
-            f"OCR Batching | total_jobs={len(jobs)} "
-            f"| max_workers={MAX_WORKERS} "
-            f"| total_row={total_row} "
-            f"| batch_size={BATCH_SIZE}"
+        # =========================================
+        # PASS 1: BASE DETAIL OCR
+        # Input hanya INV + PL.
+        # Vendor prompt tetap sama.
+        # Schema tetap sama.
+        # =========================================
+        all_rows = _run_detail_jobs(
+            input_uri=base_detail_input_uri,
+            run_prefix=f"{run_prefix}/detail_base",
+            jobs=jobs,
+            total_row=total_row,
+            label="BASE_INV_PL",
         )
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futures = [
-                ex.submit(
-                    _run_one_detail_batch,
-                    detail_input_uri,
-                    run_prefix,
-                    job["batch_no"],
-                    job["prompt"],
-                    job["first_index"],
-                    job["last_index"],
-                    job["expected_indices"],
-                )
-                for job in jobs
-            ]
-
-            for f in as_completed(futures):
-                bn, arr = f.result()
-                results[bn] = arr
-
-                expected_count = len(next(
-                    job["expected_indices"]
-                    for job in jobs
-                    if job["batch_no"] == bn
-                ))
-
-                print(
-                    f"[BATCH DONE] "
-                    f"batch_no={bn} "
-                    f"expected={expected_count} "
-                    f"actual={len(arr)}"
-                )
-
-        missing_batches = sorted({
-            job["batch_no"] for job in jobs
-        } - set(results.keys()))
-
-        if missing_batches:
-            raise Exception(f"Missing detail batch results: {missing_batches}")
-
-        all_rows = []
-        for bn in sorted(results.keys()):
-            all_rows.extend(results[bn])
-
-        if not all_rows:
-            raise Exception("Tidak ada data detail hasil Gemini")
-
-        actual_detail_count = len(all_rows)
-
-        print(
-            f"[DETAIL_COUNT_AFTER_BATCH] "
-            f"expected={total_row} actual={actual_detail_count}"
-        )
-
-        if actual_detail_count != total_row:
-            got_indices = sorted([
-                int(r.get("_expected_index"))
-                for r in all_rows
-                if isinstance(r, dict) and r.get("_expected_index") is not None
-            ])
-
-            expected_indices_all = list(range(1, total_row + 1))
-            missing_indices = sorted(set(expected_indices_all) - set(got_indices))
-            extra_indices = sorted(set(got_indices) - set(expected_indices_all))
-
-            raise Exception(
-                f"Detail row count mismatch after batch. "
-                f"expected={total_row}, actual={actual_detail_count}, "
-                f"missing_indices={missing_indices}, extra_indices={extra_indices}"
-            )
 
         # =========================================
         # PRECHECK PYTHON
-        # isi match_score + match_description
-        # hanya untuk menentukan row gagal
+        # Untuk base INV/PL, pakai base_header_obj.
+        # Jangan pakai optional header supaya BL/COO tidak memengaruhi precheck INV/PL.
         # =========================================
-        all_rows = _run_detail_precheck_pass(all_rows, header_obj, vendor_id=vendor_id)
+        all_rows = _run_detail_precheck_pass(
+            all_rows,
+            base_header_obj,
+            vendor_id=vendor_id
+        )
         _assign_detail_row_numbers(all_rows)
 
         # =========================================
         # GEMINI RECHECK SEKALI
-        # HANYA untuk row yang match_score == false
+        # Recheck INV/PL juga HARUS pakai file_uri_detail.
         # =========================================
         repaired_rows = _call_gemini_detail_line_recheck_once(
-            detail_input_uri,
+            base_detail_input_uri,
             all_rows
         )
 
@@ -9148,13 +9448,47 @@ def run_ocr(
                 f"Detail row count changed after recheck. "
                 f"expected={total_row}, actual={len(all_rows)}"
             )
+        
+        # =========================================
+        # PASS 2: OPTIONAL FULL DOC OCR
+        # Input full docs jika ada BL/COO.
+        # Prompt vendor tetap sama, tapi ditambah base_rows sebagai anchor.
+        # Hasil optional TIDAK BOLEH overwrite inv_* / pl_*.
+        # =========================================
+        if optional_detail_input_uri:
+            try:
+                print("[OPTIONAL_PASS] Start full-doc OCR for BL/COO enrichment")
+
+                optional_jobs = _build_optional_jobs_from_base_rows(
+                    jobs=jobs,
+                    base_rows=all_rows,
+                )
+
+                optional_rows = _run_detail_jobs(
+                    input_uri=optional_detail_input_uri,
+                    run_prefix=f"{run_prefix}/detail_optional",
+                    jobs=optional_jobs,
+                    total_row=total_row,
+                    label="OPTIONAL_FULL_DOCS",
+                )
+
+                all_rows = _merge_optional_rows_into_base_rows(
+                    base_rows=all_rows,
+                    optional_rows=optional_rows,
+                )
+
+                print("[OPTIONAL_PASS] Done")
+
+            except Exception as e:
+                # Optional docs tidak boleh menghancurkan hasil INV/PL.
+                print(f"[OPTIONAL_PASS][WARN] optional BL/COO enrichment skipped: {e}")
 
         # =========================
         # OPTIONAL: total/container
         # =========================
         total_data = None
         container_data = None
-        if with_total_container:
+        if with_total_container and file_uri_full:
             container_data = _call_gemini_json_uri(
                 file_uri_full,
                 CONTAINER_SYSTEM_INSTRUCTION,
