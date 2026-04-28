@@ -3794,19 +3794,17 @@ def _row_has_total_issue_only(row: dict) -> bool:
 
 def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     """
-    Final rule baru:
+    Final confidence rule:
 
-    1) Jika Gemini recheck mengubah field target -> NEGATIVE
-       Artinya row ini terbukti berubah dari hasil ekstraksi awal.
+    HARD RULE:
+    - match_score TRUE tidak boleh negative.
+    - match_score TRUE selalu positive.
 
-    2) Jika ada NON-TOTAL issue final -> NEGATIVE
-
-    3) Jika hanya total issue tapi tidak ada field yang berubah saat recheck:
-       - Jangan paksa row jadi negative.
-       - Default POSITIVE, karena row existing tidak terbukti salah.
-       - Missing row / total cell issue tidak boleh membuat row random negative.
-
-    4) Jika tidak ada issue -> POSITIVE
+    Untuk match_score FALSE:
+    - Jika Gemini recheck accepted dan field berubah -> negative.
+    - Jika ada non-total issue -> negative.
+    - Jika hanya total issue tapi tidak ada accepted changed field -> positive.
+      Artinya row ini ikut terdampak total mismatch, tapi belum terbukti sebagai row yang salah.
     """
     if not isinstance(rows, list):
         return rows
@@ -3818,8 +3816,19 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         if not isinstance(row, dict):
             continue
 
+        match_score = str(row.get("match_score", "")).strip().lower()
         invoice_group = _get_detail_total_group_key(row, idx)
 
+        # =====================================================
+        # RULE PALING PENTING:
+        # TRUE tidak boleh negative.
+        # =====================================================
+        if match_score == "true":
+            row["confidence_label"] = "positive"
+            continue
+
+        # Default untuk FALSE adalah positive dulu,
+        # kecuali terbukti changed / non-total issue.
         row["confidence_label"] = "positive"
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
@@ -3831,7 +3840,7 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             row["confidence_label"] = "negative"
             continue
 
-        # Total issue tanpa perubahan recheck tidak boleh auto-negative.
+        # Total issue tanpa accepted change tidak boleh auto-negative.
         if invoice_group in total_issue_groups:
             row["confidence_label"] = "positive"
             continue
@@ -3839,8 +3848,6 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         if _row_has_total_issue_only(row):
             row["confidence_label"] = "positive"
             continue
-
-        row["confidence_label"] = "positive"
 
     return rows
 
@@ -7358,9 +7365,9 @@ def _build_candidate_values_for_field(
                     "gap_adjust_candidate",
                     _round_recheck_candidate(max(0, suggested)),
                     (
-                        "Kandidat dari audit total: "
-                        "current_value - total_gap. "
-                        "Ini bukan jawaban pasti; pilih hanya jika cocok dengan PDF."
+                        "Kandidat expected dari audit total mismatch. "
+                        "Nilai ini akan membuat total lebih dekat/match, tetapi BUKAN jawaban pasti. "
+                        "Pilih hanya jika nilai ini terlihat pada target cell PDF atau didukung layout visual."
                     )
                 )
 
@@ -7386,13 +7393,289 @@ def _build_candidate_values_for_field(
                 "merge_continuation_zero",
                 0,
                 (
-                    "Kandidat jika cell numeric terlihat merged/span beberapa row "
-                    "dan row ini adalah continuation row, bukan owner row."
+                    "Kandidat jika row ini adalah continuation dari merged numeric cell. "
+                    "Untuk field additive, continuation row harus 0 agar value tidak terduplikat."
                 )
             )
 
     return candidates
 
+# =========================================================
+# LAYOUT-AWARE RECHECK CONTEXT
+# =========================================================
+
+DETAIL_RECHECK_COLUMN_DEFINITIONS = {
+    "pl_volume": {
+        "document_type": "Packing List",
+        "target_column": "Volume / CBM / Measurement / M3",
+        "must_not_use_columns": [
+            "NW", "N.W.", "Net Weight",
+            "GW", "G.W.", "Gross Weight",
+            "Package", "Carton", "CTN", "Quantity",
+        ],
+        "visual_hints": [
+            "Biasanya berada dekat kolom NW/GW tetapi bukan kolom weight.",
+            "Bisa tertulis sebagai CBM, M3, Measurement, Volume.",
+            "Decimal kecil seperti 0.325 bisa terlihat seperti 0.35 jika digit tengah rapat.",
+        ],
+    },
+    "pl_gw": {
+        "document_type": "Packing List",
+        "target_column": "GW / G.W. / Gross Weight",
+        "must_not_use_columns": [
+            "NW", "N.W.", "Net Weight",
+            "Volume", "CBM", "Measurement", "M3",
+            "Package", "Carton", "CTN",
+        ],
+        "visual_hints": [
+            "GW biasanya lebih besar atau sama dengan NW.",
+            "Jangan ambil angka dari kolom volume/CBM.",
+        ],
+    },
+    "pl_nw": {
+        "document_type": "Packing List",
+        "target_column": "NW / N.W. / Net Weight",
+        "must_not_use_columns": [
+            "GW", "G.W.", "Gross Weight",
+            "Volume", "CBM", "Measurement", "M3",
+            "Package", "Carton", "CTN",
+        ],
+        "visual_hints": [
+            "NW biasanya lebih kecil atau sama dengan GW.",
+            "Jangan tertukar dengan GW.",
+        ],
+    },
+    "pl_package_count": {
+        "document_type": "Packing List",
+        "target_column": "Package / Carton / CTN / PKGS",
+        "must_not_use_columns": [
+            "NW", "GW", "Volume", "CBM", "Measurement", "Quantity",
+        ],
+        "visual_hints": [
+            "Package count biasanya integer.",
+            "Jika cell merged, jangan duplikasikan package count ke continuation row.",
+        ],
+    },
+    "pl_quantity": {
+        "document_type": "Packing List",
+        "target_column": "Quantity / QTY",
+        "must_not_use_columns": [
+            "Package", "NW", "GW", "Volume", "CBM",
+        ],
+        "visual_hints": [
+            "Quantity bisa berbeda dari package count.",
+        ],
+    },
+    "inv_amount": {
+        "document_type": "Invoice",
+        "target_column": "Amount / Total Amount",
+        "must_not_use_columns": [
+            "Quantity", "Unit Price", "Description",
+        ],
+        "visual_hints": [
+            "Amount sering dapat divalidasi dari quantity * unit price.",
+            "Jangan ambil unit price sebagai amount.",
+        ],
+    },
+    "inv_quantity": {
+        "document_type": "Invoice",
+        "target_column": "Quantity / QTY",
+        "must_not_use_columns": [
+            "Unit Price", "Amount", "Description",
+        ],
+        "visual_hints": [
+            "Quantity biasanya berada sebelum unit price dan amount.",
+        ],
+    },
+    "inv_unit_price": {
+        "document_type": "Invoice",
+        "target_column": "Unit Price / Price",
+        "must_not_use_columns": [
+            "Quantity", "Amount", "Description",
+        ],
+        "visual_hints": [
+            "Unit price biasanya berada sebelum amount.",
+        ],
+    },
+}
+
+
+def _get_column_context_for_field(field: str):
+    return DETAIL_RECHECK_COLUMN_DEFINITIONS.get(field, {
+        "document_type": "Unknown",
+        "target_column": field,
+        "must_not_use_columns": [],
+        "visual_hints": [],
+    })
+
+
+def _build_layout_risk_context_for_field(field: str):
+    risks = [
+        {
+            "risk": "value_continues_to_next_line_because_cell_is_small",
+            "instruction": (
+                "Jika angka turun ke baris bawah tetapi masih dalam cell yang sama, "
+                "gabungkan sebagai satu value. Contoh: '0.' di line pertama dan '325' "
+                "di line bawah masih bisa berarti 0.325."
+            ),
+        },
+        {
+            "risk": "page_break_split_row",
+            "instruction": (
+                "Jika row terpotong di akhir halaman dan lanjut di halaman berikutnya, "
+                "pakai item_no/description/neighbor row untuk menentukan apakah itu masih row yang sama."
+            ),
+        },
+        {
+            "risk": "merged_cell_duplicate",
+            "instruction": (
+                "Jika numeric cell merged/span beberapa row, value hanya dihitung pada owner row. "
+                "Continuation row harus return 0 untuk field additive numeric."
+            ),
+        },
+        {
+            "risk": "wrong_column_extraction",
+            "instruction": (
+                "Pastikan angka berasal dari target column, bukan kolom sebelah seperti NW/GW/package/quantity."
+            ),
+        },
+        {
+            "risk": "row_shift_previous_next",
+            "instruction": (
+                "Cek previous_row dan next_row. Jangan ambil value dari row sebelum/sesudah jika posisi visualnya bukan row target."
+            ),
+        },
+        {
+            "risk": "decimal_digit_confusion",
+            "instruction": (
+                "Periksa digit decimal dengan hati-hati. Contoh 0.325 bisa salah terbaca 0.35, "
+                "3.170 bisa salah terbaca 3.110."
+            ),
+        },
+    ]
+
+    if field == "pl_volume":
+        risks.append({
+            "risk": "volume_column_confused_with_weight",
+            "instruction": (
+                "Untuk pl_volume, hanya gunakan kolom Volume/CBM/Measurement/M3. "
+                "Jangan gunakan kolom NW atau GW."
+            ),
+        })
+
+    if field in {"pl_nw", "pl_gw"}:
+        risks.append({
+            "risk": "nw_gw_swapped",
+            "instruction": (
+                "Untuk weight, cek apakah NW dan GW tertukar. GW biasanya >= NW."
+            ),
+        })
+
+    return risks
+
+
+def _get_declared_field_for_detail_field(field: str):
+    mapping = {
+        "inv_quantity": "inv_total_quantity",
+        "inv_amount": "inv_total_amount",
+        "pl_quantity": "pl_total_quantity",
+        "pl_package_count": "pl_total_package",
+        "pl_nw": "pl_total_nw",
+        "pl_gw": "pl_total_gw",
+        "pl_volume": "pl_total_volume",
+    }
+    return mapping.get(field)
+
+
+def _build_field_comparison_for_recheck(row: dict, field: str, group_field_meta: dict):
+    current_value = row.get(field)
+    current_num = _to_float(current_value)
+
+    meta = group_field_meta.get(field) if isinstance(group_field_meta, dict) else None
+
+    audit_expected_candidate = None
+    gap = None
+    actual_sum = None
+    declared_total = None
+
+    if isinstance(meta, dict):
+        gap = _to_float(meta.get("gap"))
+        actual_sum = _to_float(meta.get("actual_sum"))
+        declared_total = _to_float(meta.get("declared_total"))
+
+        if current_num is not None and gap is not None:
+            audit_expected_candidate = _round_recheck_candidate(current_num - gap)
+
+    comparison = {
+        "extracted_value": current_value,
+        "audit_expected_candidate": audit_expected_candidate,
+        "candidate_is_not_ground_truth": True,
+        "candidate_reason": (
+            "audit_expected_candidate dibuat dari audit total: "
+            "current_value - total_gap. Ini hanya kandidat, bukan jawaban pasti."
+        ),
+        "total_math_context": {
+            "current_group_sum": actual_sum,
+            "document_total": declared_total,
+            "gap": gap,
+            "needed_delta_to_match_total": None if gap is None else _round_recheck_candidate(-gap),
+        },
+        "column_context": _get_column_context_for_field(field),
+        "layout_risk_context": _build_layout_risk_context_for_field(field),
+        "decision_rule": [
+            "Pilih audit_expected_candidate hanya jika visual PDF mendukung kandidat tersebut.",
+            "Pilih extracted_value jika extracted_value terlihat benar pada target cell.",
+            "Jika target cell kosong karena merged-cell continuation, return 0.",
+            "Jika angka terlihat di kolom sebelah, jangan gunakan angka itu.",
+            "Jika PDF menunjukkan value lain yang bukan extracted_value atau audit_expected_candidate, return value yang benar-benar terlihat.",
+        ],
+    }
+
+    if field == "inv_amount":
+        qty = _to_float(row.get("inv_quantity"))
+        unit_price = _to_float(row.get("inv_unit_price"))
+        if qty is not None and unit_price is not None:
+            comparison["formula_candidate"] = _round_recheck_candidate(qty * unit_price)
+            comparison["formula_reason"] = "Kandidat dari inv_quantity * inv_unit_price."
+
+    if field in DETAIL_RECHECK_ADDITIVE_NUM_FIELDS:
+        comparison["merge_continuation_candidate"] = 0
+        comparison["merge_candidate_reason"] = (
+            "Jika row ini adalah continuation dari merged numeric cell, "
+            "field additive numeric harus 0 agar value tidak terduplikat."
+        )
+
+    return comparison
+
+
+def _build_document_audit_context(recheck_fields: list, group_plan_item: dict):
+    field_meta = group_plan_item.get("field_meta", {}) if isinstance(group_plan_item, dict) else {}
+
+    total_context = {}
+
+    for field in recheck_fields or []:
+        meta = field_meta.get(field) if isinstance(field_meta, dict) else None
+        if not isinstance(meta, dict):
+            continue
+
+        total_context[field] = {
+            "detail_field": field,
+            "declared_total_field": meta.get("declared_field") or _get_declared_field_for_detail_field(field),
+            "actual_sum_from_extraction": meta.get("actual_sum"),
+            "declared_total_from_document": meta.get("declared_total"),
+            "gap": meta.get("gap"),
+            "issue_label": meta.get("label"),
+        }
+
+    return {
+        "audit_type": "layout_aware_total_mismatch_recheck",
+        "important": (
+            "Recheck ini terjadi karena total mismatch. "
+            "Gemini harus membandingkan extracted_value vs audit_expected_candidate "
+            "dengan melihat layout visual PDF, bukan hanya matematika."
+        ),
+        "total_context_by_field": total_context,
+    }
 
 def _build_recheck_payload_item(
     row: dict,
@@ -7404,17 +7687,47 @@ def _build_recheck_payload_item(
     group_plan_item = group_plan_item or {}
     group_field_meta = group_plan_item.get("field_meta", {}) or {}
 
+    field_comparison = {}
+    candidate_values = {}
+
+    for field in recheck_fields:
+        field_comparison[field] = _build_field_comparison_for_recheck(
+            row=row,
+            field=field,
+            group_field_meta=group_field_meta,
+        )
+
+        # Tetap kirim candidate_values lama agar prompt bisa pilih opsi eksplisit.
+        candidate_values[field] = _build_candidate_values_for_field(
+            row=row,
+            field=field,
+            group_field_meta=group_field_meta,
+        )
+
     item = {
         "_detail_row_no": row.get("_detail_row_no"),
         "_recheck_fields": list(recheck_fields),
+
+        # Context dari validasi
         "match_description": row.get("match_description", "null"),
         "total_issue_context": group_plan_item.get("issues", []),
+        "document_audit_context": _build_document_audit_context(
+            recheck_fields=recheck_fields,
+            group_plan_item=group_plan_item,
+        ),
+
+        # Context lokasi row
         "row_context": _build_row_context_for_recheck(
             row=row,
             prev_row=prev_row,
             next_row=next_row,
         ),
-        "candidate_values": {},
+
+        # Expected vs extracted + alasan layout
+        "field_comparison": field_comparison,
+
+        # Opsi eksplisit untuk Gemini
+        "candidate_values": candidate_values,
     }
 
     # Current values untuk semua field recheck schema
@@ -7425,14 +7738,6 @@ def _build_recheck_payload_item(
             item[key] = 0 if _is_null(value) else value
         else:
             item[key] = "null" if value is None else value
-
-    # Candidate values hanya untuk field yang direcheck
-    for field in recheck_fields:
-        item["candidate_values"][field] = _build_candidate_values_for_field(
-            row=row,
-            field=field,
-            group_field_meta=group_field_meta,
-        )
 
     return item
 
@@ -7570,59 +7875,101 @@ def _build_detail_line_recheck_schema():
     return schema
 
 
-def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
+ddef _build_detail_line_recheck_prompt(rows_payload: list) -> str:
     schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
 
     return f"""
 ROLE:
-Anda adalah AI validator-checker untuk OUTPUT DETAIL OCR.
+Anda adalah AI LAYOUT-AWARE VERIFIER untuk hasil ekstraksi detail OCR.
 
 SOURCE OF TRUTH:
-- PDF pada request ini adalah sumber kebenaran utama.
-- JSON rows di bawah adalah hasil ekstraksi awal.
-- match_description / total_issue_context menjelaskan kenapa row perlu dicek.
-- Setiap row memiliki "_recheck_fields".
-- Anda HANYA boleh mengoreksi field yang namanya ada di "_recheck_fields".
-- Untuk field lain di luar "_recheck_fields", WAJIB return nilai input apa adanya.
-- Jangan buat row baru.
-- Jangan hapus row.
-- Jangan mengubah header.
+- PDF visual pada request ini adalah sumber kebenaran utama.
+- JSON input adalah hasil ekstraksi awal + kandidat audit.
+- audit_expected_candidate / gap_adjust_candidate BUKAN jawaban pasti.
+- Tugas Anda adalah membaca layout visual PDF dan menentukan value target cell yang benar.
 
 TUGAS UTAMA:
-Untuk setiap row dan setiap field dalam "_recheck_fields":
-1. Lihat PDF / tabel visual.
-2. Bandingkan angka yang terlihat di PDF dengan candidate_values[field].
-3. Pilih value yang paling sesuai dengan PDF.
-4. Jika value yang terlihat di PDF berbeda dari semua kandidat, return value yang benar-benar terlihat.
-5. Jangan menganggap "gap_adjust_candidate" pasti benar.
-6. Jangan menganggap "current_extracted" pasti benar.
-7. Candidate hanya pilihan bantu; PDF tetap source of truth.
+Untuk setiap row:
+1. Baca "_recheck_fields".
+2. HANYA field dalam "_recheck_fields" yang boleh dikoreksi.
+3. Untuk setiap field target, bandingkan:
+   - extracted_value
+   - audit_expected_candidate
+   - candidate_values[field]
+   - value yang benar-benar terlihat pada PDF visual
+4. Pilih value yang didukung oleh visual PDF.
+5. Jika PDF menunjukkan value lain yang tidak ada dalam kandidat, return value yang terlihat di PDF.
+6. Jika tidak yakin dan tidak ada bukti visual yang jelas, pertahankan extracted_value.
 
-ATURAN MERGE CELL:
-- Jika numeric cell terlihat merged / span beberapa item row:
-  - value hanya boleh dihitung sekali pada owner row.
-  - Owner row terletak dari row pertama dari merge cell.
-  - continuation row harus return 0 untuk field additive numeric.
-- Field additive numeric termasuk:
-  inv_quantity, inv_amount, pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
-- Jika value 1 terlihat sama di dua row karena merged cell, jangan duplikasikan 1 ke dua row.
-  Owner row = 1, continuation row = 0.
+KONTEKS AUDIT:
+- document_audit_context menjelaskan total mismatch.
+- field_comparison menjelaskan extracted_value vs audit_expected_candidate.
+- candidate_values adalah opsi bantu.
+- row_context berisi current_row, previous_row, next_row untuk membantu menemukan row target.
+
+PENTING TENTANG EXPECTED / CANDIDATE:
+- audit_expected_candidate dibuat dari audit matematis total mismatch.
+- Jangan otomatis memilih audit_expected_candidate.
+- Jangan otomatis mempertahankan extracted_value.
+- Pilih berdasarkan layout PDF.
+- Jika audit_expected_candidate terlihat pada target cell PDF, pilih candidate tersebut.
+- Jika extracted_value terlihat pada target cell PDF, pilih extracted_value.
+- Jika target cell kosong karena merged-cell continuation, return 0 untuk field additive numeric.
+
+WAJIB PERIKSA KEMUNGKINAN ERROR LAYOUT:
+1. VALUE LANJUT KE BAWAH KARENA CELL KECIL
+   - Jika angka terpotong ke beberapa line tetapi masih dalam cell yang sama, gabungkan.
+   - Contoh: "0." pada line pertama dan "325" pada line bawah dapat berarti 0.325.
+   - Jangan anggap line bawah sebagai row baru jika masih dalam cell yang sama.
+
+2. PAGE BREAK
+   - Jika row terpotong di akhir halaman dan lanjut di halaman berikutnya, gunakan item_no, description,
+     previous_row, dan next_row untuk memastikan apakah itu masih row yang sama.
+   - Jangan membuat row baru.
+   - Jangan memindahkan value ke row salah karena page break.
+
+3. MERGE CELL
+   - Jika numeric cell terlihat merged / span beberapa item row:
+     owner row mendapat value asli.
+     continuation row harus return 0 untuk field additive numeric.
+   - Field additive numeric:
+     inv_quantity, inv_amount, pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
+   - Jangan duplikasikan value merged cell ke semua row.
+
+4. SALAH KOLOM
+   - Pastikan angka berasal dari target column.
+   - Jika target field adalah pl_volume:
+     baca hanya kolom Volume / CBM / Measurement / M3.
+     Jangan ambil NW, GW, Package, Quantity.
+   - Jika target field adalah pl_gw:
+     baca hanya kolom GW / Gross Weight.
+     Jangan ambil NW atau Volume.
+   - Jika target field adalah pl_nw:
+     baca hanya kolom NW / Net Weight.
+     Jangan ambil GW atau Volume.
+   - Jika target field adalah pl_package_count:
+     baca hanya kolom Package / Carton / CTN / PKGS.
+
+5. ROW SHIFT
+   - Gunakan previous_row dan next_row untuk membedakan row target.
+   - Jangan ambil value dari row sebelum/sesudah hanya karena posisinya dekat.
+   - Jika description atau item_no membungkus ke line berikutnya, tetap identifikasi row target secara visual.
+
+6. DECIMAL CONFUSION
+   - Periksa digit decimal dengan hati-hati.
+   - Contoh:
+     0.325 bisa salah terbaca 0.35
+     3.170 bisa salah terbaca 3.110
+   - Jangan membulatkan angka kecuali PDF memang menampilkan angka bulat.
 
 ATURAN KHUSUS TOTAL MISMATCH:
 - Jika total_issue_context berisi total_volume mismatch, fokus ke pl_volume.
 - Jika total_issue_context berisi total_gw mismatch, fokus ke pl_gw.
 - Jika total_issue_context berisi total_nw mismatch, fokus ke pl_nw.
 - Jika total_issue_context berisi total_package mismatch, fokus ke pl_package_count.
-- Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount, inv_quantity, inv_unit_price.
-- Jangan menghitung ulang seluruh dokumen kecuali untuk memahami field target.
-- Jangan mengubah field di luar "_recheck_fields".
-
-ATURAN LOKASI ROW:
-- Gunakan row_context.current_row untuk mencari row target.
-- Gunakan previous_row dan next_row untuk membedakan row target, terutama saat merge cell.
-- _detail_row_no hanya identifier internal, bukan nomor baris PDF.
-- Gunakan kombinasi invoice_no, item_no, description, package, NW/GW/volume sebagai anchor visual.
+- Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount.
+- Jangan mengoreksi field lain di luar "_recheck_fields".
 
 ATURAN OUTPUT:
 1. Output HANYA JSON ARRAY valid, tanpa teks lain.
@@ -7632,11 +7979,13 @@ ATURAN OUTPUT:
 5. WAJIB pertahankan _recheck_fields persis seperti input.
 6. Jangan return candidate_values.
 7. Jangan return row_context.
-8. Jangan return total_issue_context.
-9. Jangan return field header.
-10. Jangan return field po_*.
-11. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
-12. Jika value memang tidak ada di dokumen:
+8. Jangan return field_comparison.
+9. Jangan return document_audit_context.
+10. Jangan return total_issue_context.
+11. Jangan return field header.
+12. Jangan return field po_*.
+13. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
+14. Jika value memang tidak ada di dokumen:
     - string -> "null"
     - number -> 0
 
@@ -7721,18 +8070,13 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
 
 def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
     """
-    Apply Gemini recheck dengan acceptance gate.
+    Apply Gemini recheck dengan greedy acceptance gate.
 
-    Kenapa perlu gate?
-    Karena Gemini bisa memilih gap_adjust_candidate untuk semua row.
-    Kalau semua perubahan langsung diterima, semua row jadi negative.
-
-    Rule:
-    - Untuk total mismatch field:
-      accept perubahan hanya kalau total sum setelah perubahan membaik.
-    - Untuk non-total issue:
-      accept seperti biasa.
-    - Negative hanya untuk perubahan yang diterima.
+    Fix dari bug sebelumnya:
+    - Jangan accept semua perubahan Gemini sekaligus.
+    - Jangan reject semua perubahan sekaligus.
+    - Accept perubahan satu per satu jika perubahan itu memperbaiki total.
+    - match_score TRUE tidak boleh diubah / tidak boleh diberi changed marker.
     """
     repaired_by_no = {}
 
@@ -7753,12 +8097,17 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         return rows
 
     # =========================================================
-    # STEP 1: Build proposal, jangan langsung apply.
+    # STEP 1: Build proposals, jangan langsung apply.
     # =========================================================
     proposals = []
 
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
+            continue
+
+        # TRUE tidak boleh berubah / negative.
+        match_score = str(row.get("match_score", "")).strip().lower()
+        if match_score == "true":
             continue
 
         row_no = _safe_row_no_int(row)
@@ -7801,7 +8150,7 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         return rows
 
     # =========================================================
-    # STEP 2: Group proposal by invoice_group + field.
+    # STEP 2: Group proposals by invoice_group + field.
     # =========================================================
     grouped_proposals = {}
 
@@ -7813,53 +8162,59 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
 
     for (group_key, field), field_proposals in grouped_proposals.items():
         # Ambil metadata total mismatch.
-        # Kalau tidak ada metadata, berarti ini non-total issue,
-        # boleh accept per-row seperti flow lama.
         meta = None
         for p in field_proposals:
             if isinstance(p.get("field_meta"), dict):
                 meta = p.get("field_meta")
                 break
 
+        # Non-total issue: accept seperti flow lama.
         if not meta:
             accepted.extend(field_proposals)
             continue
 
         declared_total = _to_float(meta.get("declared_total"))
-        old_actual_sum = _to_float(meta.get("actual_sum"))
 
-        if declared_total is None or old_actual_sum is None:
-            # Tidak cukup data untuk gate, jangan agresif.
-            # Untuk total issue, lebih aman reject daripada semua negative.
+        if declared_total is None:
             print(
-                f"[RECHECK_GATE][REJECT_NO_META] group={group_key} field={field} "
+                f"[RECHECK_GATE][REJECT_NO_DECLARED] group={group_key} field={field} "
                 f"proposal_count={len(field_proposals)}"
             )
             continue
 
-        # Hitung old sum dari current rows agar lebih akurat.
-        current_group_rows = []
+        # Hitung current sum dari rows saat ini.
+        current_sum = 0.0
+        has_value = False
+
         for idx, row in enumerate(rows):
             if not isinstance(row, dict):
                 continue
 
             this_group = _get_detail_total_group_key(row, idx)
-            if this_group == group_key:
-                current_group_rows.append(row)
+            if this_group != group_key:
+                continue
 
-        recomputed_old_sum = 0.0
-        has_value = False
-
-        for row in current_group_rows:
             value = _to_float(row.get(field))
             if value is not None:
-                recomputed_old_sum += value
+                current_sum += value
                 has_value = True
 
-        if has_value:
-            old_actual_sum = recomputed_old_sum
+        if not has_value:
+            print(
+                f"[RECHECK_GATE][REJECT_NO_VALUES] group={group_key} field={field} "
+                f"proposal_count={len(field_proposals)}"
+            )
+            continue
 
-        proposed_sum = old_actual_sum
+        eps = float(TOTAL_CONTRIBUTION_EPS)
+        current_gap_abs = abs(current_sum - declared_total)
+
+        # =====================================================
+        # Greedy acceptance:
+        # Pilih perubahan yang memperbaiki gap satu per satu.
+        # Ini menghindari kasus semua row berubah lalu semua di-reject.
+        # =====================================================
+        scored = []
 
         for p in field_proposals:
             old_num = _to_float(p.get("old_value"))
@@ -7870,43 +8225,71 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
             if new_num is None:
                 new_num = 0.0
 
-            proposed_sum = proposed_sum - old_num + new_num
+            delta = new_num - old_num
+            after_sum = current_sum + delta
+            after_gap_abs = abs(after_sum - declared_total)
+            improvement = current_gap_abs - after_gap_abs
 
-        old_gap_abs = abs(old_actual_sum - declared_total)
-        new_gap_abs = abs(proposed_sum - declared_total)
+            scored.append({
+                **p,
+                "_delta": delta,
+                "_after_sum": after_sum,
+                "_after_gap_abs": after_gap_abs,
+                "_improvement": improvement,
+            })
 
-        eps = float(TOTAL_CONTRIBUTION_EPS)
+        # Prioritaskan proposal yang paling memperbaiki total.
+        scored.sort(
+            key=lambda x: float(x.get("_improvement", 0.0) or 0.0),
+            reverse=True
+        )
 
-        # =====================================================
-        # Acceptance rule:
-        # 1. accept kalau total menjadi match
-        # 2. atau gap membaik signifikan
-        # 3. reject kalau tidak membaik
-        # =====================================================
-        total_match = new_gap_abs <= eps
-        improves = new_gap_abs + eps < old_gap_abs
+        for p in scored:
+            delta = _to_float(p.get("_delta")) or 0.0
 
-        if total_match or improves:
-            accepted.extend(field_proposals)
-            print(
-                f"[RECHECK_GATE][ACCEPT] group={group_key} field={field} "
-                f"old_sum={old_actual_sum} new_sum={proposed_sum} "
-                f"doc={declared_total} old_gap={old_gap_abs} new_gap={new_gap_abs} "
-                f"changes={len(field_proposals)}"
-            )
-        else:
-            print(
-                f"[RECHECK_GATE][REJECT] group={group_key} field={field} "
-                f"old_sum={old_actual_sum} new_sum={proposed_sum} "
-                f"doc={declared_total} old_gap={old_gap_abs} new_gap={new_gap_abs} "
-                f"changes={len(field_proposals)}"
-            )
+            before_gap_abs = abs(current_sum - declared_total)
+            after_sum = current_sum + delta
+            after_gap_abs = abs(after_sum - declared_total)
+            improvement = before_gap_abs - after_gap_abs
+
+            # Accept kalau:
+            # - total menjadi match, atau
+            # - gap membaik
+            total_match = after_gap_abs <= eps
+            improves = improvement > eps
+
+            if total_match or improves:
+                accepted.append(p)
+                current_sum = after_sum
+
+                print(
+                    f"[RECHECK_GATE][ACCEPT_ONE] group={group_key} field={field} "
+                    f"row_no={p.get('row_no')} old={p.get('old_value')} new={p.get('new_value')} "
+                    f"doc={declared_total} new_sum={current_sum} "
+                    f"new_gap={abs(current_sum - declared_total)}"
+                )
+
+                # Kalau sudah match, stop untuk field ini.
+                if abs(current_sum - declared_total) <= eps:
+                    break
+            else:
+                print(
+                    f"[RECHECK_GATE][REJECT_ONE] group={group_key} field={field} "
+                    f"row_no={p.get('row_no')} old={p.get('old_value')} new={p.get('new_value')} "
+                    f"doc={declared_total} before_gap={before_gap_abs} after_gap={after_gap_abs}"
+                )
 
     # =========================================================
     # STEP 3: Apply hanya proposal yang accepted.
     # =========================================================
     for p in accepted:
         row = p["row"]
+
+        # Safety lagi: TRUE tidak boleh berubah.
+        match_score = str(row.get("match_score", "")).strip().lower()
+        if match_score == "true":
+            continue
+
         field = p["field"]
         new_value = p["new_value"]
 
