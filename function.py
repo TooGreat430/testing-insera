@@ -4175,7 +4175,8 @@ def _validate_detail_batch_rows(
     if not isinstance(json_array, list):
         raise Exception("Batch result bukan array")
 
-    expected_set = set(int(x) for x in expected_indices)
+    expected_indices = [int(x) for x in expected_indices]
+    expected_set = set(expected_indices)
 
     got_indices = []
     missing_index_field_rows = []
@@ -4187,9 +4188,50 @@ def _validate_detail_batch_rows(
             missing_index_field_rows.append(pos)
             continue
 
-        got_indices.append(idx)
+        got_indices.append(int(idx))
 
     got_set = set(got_indices)
+
+    # =========================================================
+    # SAFE NORMALIZATION:
+    # Jika Gemini pakai zero-based indexing:
+    # expected 1..30, got 0..29
+    # expected 31..60, got 30..59
+    # Maka geser semua index +1.
+    #
+    # HANYA aktif kalau:
+    # - jumlah row benar
+    # - semua row punya index
+    # - tidak ada duplicate
+    # - got_set persis expected_set yang dikurangi 1
+    # =========================================================
+    expected_minus_one_set = {x - 1 for x in expected_indices}
+
+    is_clean_zero_based_shift = (
+        len(json_array) == len(expected_indices)
+        and not missing_index_field_rows
+        and len(got_indices) == len(expected_indices)
+        and len(got_set) == len(got_indices)
+        and got_set == expected_minus_one_set
+    )
+
+    if is_clean_zero_based_shift:
+        for row in json_array:
+            original_idx = int(_get_row_expected_index(row))
+            row["_expected_index"] = original_idx + 1
+
+        got_indices = [
+            int(row["_expected_index"])
+            for row in json_array
+        ]
+        got_set = set(got_indices)
+
+        print(
+            f"[DETAIL_BATCH_INDEX_SHIFTED_PLUS_ONE] "
+            f"batch_no={batch_no} "
+            f"from_zero_based=true "
+            f"indices={sorted(got_indices)}"
+        )
 
     missing = sorted(expected_set - got_set)
     extra = sorted(got_set - expected_set)
