@@ -3722,10 +3722,35 @@ def _row_has_non_total_issue(row: dict) -> bool:
         return False
 
     messages = _split_match_description_messages(match_description)
-    if not messages:
-        return True
 
-    return any(not _is_total_issue_message(msg) for msg in messages)
+    # Kalau false tapi tidak ada description, jangan otomatis negative.
+    # Bisa terjadi karena total issue sudah diproses / field kosong.
+    if not messages:
+        return False
+
+    ignored_total_metadata_prefixes = (
+        "suspected_row_contribution=",
+        "reason=",
+        "row_value=",
+        "root_cause=",
+    )
+
+    meaningful_messages = []
+
+    for msg in messages:
+        s = str(msg or "").strip().lower()
+        if not s:
+            continue
+
+        if s.startswith(ignored_total_metadata_prefixes):
+            continue
+
+        meaningful_messages.append(msg)
+
+    if not meaningful_messages:
+        return False
+
+    return any(not _is_total_issue_message(msg) for msg in meaningful_messages)
 
 
 def _row_has_total_issue_only(row: dict) -> bool:
@@ -3742,7 +3767,29 @@ def _row_has_total_issue_only(row: dict) -> bool:
     if not messages:
         return False
 
-    return all(_is_total_issue_message(msg) for msg in messages)
+    ignored_total_metadata_prefixes = (
+        "suspected_row_contribution=",
+        "reason=",
+        "row_value=",
+        "root_cause=",
+    )
+
+    meaningful_messages = []
+
+    for msg in messages:
+        s = str(msg or "").strip().lower()
+        if not s:
+            continue
+
+        if s.startswith(ignored_total_metadata_prefixes):
+            continue
+
+        meaningful_messages.append(msg)
+
+    if not meaningful_messages:
+        return False
+
+    return all(_is_total_issue_message(msg) for msg in meaningful_messages)
 
 
 def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
@@ -7486,6 +7533,12 @@ def _build_detail_line_recheck_rows_payload(rows: list):
                 field: row.get(field) for field in recheck_fields
             }
 
+            # NEW: simpan context total untuk acceptance gate
+            row["_recheck_group_key"] = invoice_group
+            row["_recheck_field_meta"] = {
+                field: (plan_item.get("field_meta", {}) or {}).get(field)
+                for field in recheck_fields
+            }
             payload.append(
                 _build_recheck_payload_item(
                     row=row,
@@ -7526,6 +7579,9 @@ def _build_detail_line_recheck_rows_payload(rows: list):
         row["_recheck_original_values"] = {
             field: row.get(field) for field in recheck_fields
         }
+
+        row["_recheck_group_key"] = _get_detail_total_group_key(row, 0)
+        row["_recheck_field_meta"] = {}
 
         payload.append(
             _build_recheck_payload_item(
@@ -7701,6 +7757,20 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
 
 
 def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
+    """
+    Apply Gemini recheck dengan acceptance gate.
+
+    Kenapa perlu gate?
+    Karena Gemini bisa memilih gap_adjust_candidate untuk semua row.
+    Kalau semua perubahan langsung diterima, semua row jadi negative.
+
+    Rule:
+    - Untuk total mismatch field:
+      accept perubahan hanya kalau total sum setelah perubahan membaik.
+    - Untuk non-total issue:
+      accept seperti biasa.
+    - Negative hanya untuk perubahan yang diterima.
+    """
     repaired_by_no = {}
 
     for repaired in repaired_rows or []:
@@ -7711,17 +7781,28 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         if row_no is None:
             continue
 
-        repaired_by_no[int(row_no)] = repaired
+        try:
+            repaired_by_no[int(row_no)] = repaired
+        except Exception:
+            continue
 
-    for row in rows:
+    if not isinstance(rows, list):
+        return rows
+
+    # =========================================================
+    # STEP 1: Build proposal, jangan langsung apply.
+    # =========================================================
+    proposals = []
+
+    for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
-        row_no = row.get("_detail_row_no")
+        row_no = _safe_row_no_int(row)
         if row_no is None:
             continue
 
-        repaired = repaired_by_no.get(int(row_no))
+        repaired = repaired_by_no.get(row_no)
         if not repaired:
             continue
 
@@ -7732,32 +7813,150 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         if not allowed_fields:
             continue
 
-        changed_fields = []
-
-        for key in allowed_fields:
-            if key not in repaired:
+        for field in allowed_fields:
+            if field not in repaired:
                 continue
 
-            old_value = row.get(key)
-            new_value = repaired.get(key)
+            old_value = row.get(field)
+            new_value = repaired.get(field)
 
-            if not _same_recheck_value(old_value, new_value, key):
-                changed_fields.append(key)
+            if _same_recheck_value(old_value, new_value, field):
+                continue
 
-            row[key] = new_value
+            proposals.append({
+                "row": row,
+                "row_index": idx,
+                "row_no": row_no,
+                "field": field,
+                "old_value": old_value,
+                "new_value": new_value,
+                "group_key": row.get("_recheck_group_key") or _get_detail_total_group_key(row, idx),
+                "field_meta": (row.get("_recheck_field_meta") or {}).get(field),
+            })
 
-        # Internal marker untuk final confidence.
-        # Tidak diekspor.
-        if changed_fields:
-            existing = row.get("_gemini_recheck_changed_fields")
-            if not isinstance(existing, list):
-                existing = []
+    if not proposals:
+        return rows
 
-            for field in changed_fields:
-                if field not in existing:
-                    existing.append(field)
+    # =========================================================
+    # STEP 2: Group proposal by invoice_group + field.
+    # =========================================================
+    grouped_proposals = {}
 
-            row["_gemini_recheck_changed_fields"] = existing
+    for p in proposals:
+        key = (p["group_key"], p["field"])
+        grouped_proposals.setdefault(key, []).append(p)
+
+    accepted = []
+
+    for (group_key, field), field_proposals in grouped_proposals.items():
+        # Ambil metadata total mismatch.
+        # Kalau tidak ada metadata, berarti ini non-total issue,
+        # boleh accept per-row seperti flow lama.
+        meta = None
+        for p in field_proposals:
+            if isinstance(p.get("field_meta"), dict):
+                meta = p.get("field_meta")
+                break
+
+        if not meta:
+            accepted.extend(field_proposals)
+            continue
+
+        declared_total = _to_float(meta.get("declared_total"))
+        old_actual_sum = _to_float(meta.get("actual_sum"))
+
+        if declared_total is None or old_actual_sum is None:
+            # Tidak cukup data untuk gate, jangan agresif.
+            # Untuk total issue, lebih aman reject daripada semua negative.
+            print(
+                f"[RECHECK_GATE][REJECT_NO_META] group={group_key} field={field} "
+                f"proposal_count={len(field_proposals)}"
+            )
+            continue
+
+        # Hitung old sum dari current rows agar lebih akurat.
+        current_group_rows = []
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+
+            this_group = _get_detail_total_group_key(row, idx)
+            if this_group == group_key:
+                current_group_rows.append(row)
+
+        recomputed_old_sum = 0.0
+        has_value = False
+
+        for row in current_group_rows:
+            value = _to_float(row.get(field))
+            if value is not None:
+                recomputed_old_sum += value
+                has_value = True
+
+        if has_value:
+            old_actual_sum = recomputed_old_sum
+
+        proposed_sum = old_actual_sum
+
+        for p in field_proposals:
+            old_num = _to_float(p.get("old_value"))
+            new_num = _to_float(p.get("new_value"))
+
+            if old_num is None:
+                old_num = 0.0
+            if new_num is None:
+                new_num = 0.0
+
+            proposed_sum = proposed_sum - old_num + new_num
+
+        old_gap_abs = abs(old_actual_sum - declared_total)
+        new_gap_abs = abs(proposed_sum - declared_total)
+
+        eps = float(TOTAL_CONTRIBUTION_EPS)
+
+        # =====================================================
+        # Acceptance rule:
+        # 1. accept kalau total menjadi match
+        # 2. atau gap membaik signifikan
+        # 3. reject kalau tidak membaik
+        # =====================================================
+        total_match = new_gap_abs <= eps
+        improves = new_gap_abs + eps < old_gap_abs
+
+        if total_match or improves:
+            accepted.extend(field_proposals)
+            print(
+                f"[RECHECK_GATE][ACCEPT] group={group_key} field={field} "
+                f"old_sum={old_actual_sum} new_sum={proposed_sum} "
+                f"doc={declared_total} old_gap={old_gap_abs} new_gap={new_gap_abs} "
+                f"changes={len(field_proposals)}"
+            )
+        else:
+            print(
+                f"[RECHECK_GATE][REJECT] group={group_key} field={field} "
+                f"old_sum={old_actual_sum} new_sum={proposed_sum} "
+                f"doc={declared_total} old_gap={old_gap_abs} new_gap={new_gap_abs} "
+                f"changes={len(field_proposals)}"
+            )
+
+    # =========================================================
+    # STEP 3: Apply hanya proposal yang accepted.
+    # =========================================================
+    for p in accepted:
+        row = p["row"]
+        field = p["field"]
+        new_value = p["new_value"]
+
+        row[field] = new_value
+
+        existing = row.get("_gemini_recheck_changed_fields")
+        if not isinstance(existing, list):
+            existing = []
+
+        if field not in existing:
+            existing.append(field)
+
+        row["_gemini_recheck_changed_fields"] = existing
 
     return rows
 
@@ -8146,7 +8345,7 @@ def run_ocr(
             rows=all_rows,
             current_vendor_id=vendor_id,
             target_vendor_ids="shimano_singapore",
-            columns=["inv_quantity", "pl_quantity"],
+            columns=["inv_total_quantity", "pl_total_quantity"],
         )
 
         _postprocess_null_fields_for_vendor(
@@ -8209,10 +8408,13 @@ def run_ocr(
             if isinstance(row, dict):
                 row.pop("_expected_index", None)
 
-                # internal recheck keys, jangan diekspor
                 row.pop("_recheck_fields", None)
                 row.pop("_recheck_original_values", None)
                 row.pop("_gemini_recheck_changed_fields", None)
+
+                # NEW
+                row.pop("_recheck_group_key", None)
+                row.pop("_recheck_field_meta", None)
 
         # =========================
         # FINAL RESULT OBJECT
