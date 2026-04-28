@@ -40,6 +40,8 @@ from vendor_detection import (
     normalize_vendor_id,
 )
 
+DETAIL_GEMINI_RECHECK_BATCH_SIZE=5
+
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 
@@ -8083,11 +8085,17 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
         return []
 
     repaired_rows = []
-    batch_size = max(1, DETAIL_GEMINI_RECHECK_BATCH_SIZE)
 
-    for start in range(0, len(rows_payload), batch_size):
-        batch = rows_payload[start:start + batch_size]
+    try:
+        configured_batch_size = int(DETAIL_GEMINI_RECHECK_BATCH_SIZE)
+    except Exception:
+        configured_batch_size = 1
 
+    # Jangan terlalu besar. Recheck bukan extraction utama.
+    # Batch besar sering bikin Gemini collapse jadi 1 object.
+    batch_size = max(1, min(configured_batch_size, 5))
+
+    def _call_recheck_batch(batch: list, label: str):
         repaired_batch = _call_gemini_json_uri(
             file_uri,
             _build_detail_line_recheck_prompt(batch),
@@ -8096,14 +8104,60 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
         )
 
         if not isinstance(repaired_batch, list):
-            raise Exception("Gemini detail line recheck output bukan array")
+            raise Exception(
+                f"Gemini detail line recheck output bukan array ({label})"
+            )
 
         if len(repaired_batch) != len(batch):
             raise Exception(
-                f"Gemini detail line recheck count mismatch. expected={len(batch)} got={len(repaired_batch)}"
+                f"Gemini detail line recheck count mismatch ({label}). "
+                f"expected={len(batch)} got={len(repaired_batch)}"
             )
 
-        repaired_rows.extend(repaired_batch)
+        return repaired_batch
+
+    for start in range(0, len(rows_payload), batch_size):
+        batch = rows_payload[start:start + batch_size]
+
+        try:
+            repaired_batch = _call_recheck_batch(
+                batch,
+                label=f"batch_start={start + 1}"
+            )
+            repaired_rows.extend(repaired_batch)
+            continue
+
+        except Exception as batch_error:
+            print(
+                f"[DETAIL_RECHECK_BATCH_WARN] "
+                f"start={start + 1} "
+                f"size={len(batch)} "
+                f"error={batch_error}; fallback single-row"
+            )
+
+        # Fallback: recheck satu per satu.
+        for item in batch:
+            row_no = None
+            if isinstance(item, dict):
+                row_no = item.get("_detail_row_no")
+
+            try:
+                single_repaired = _call_recheck_batch(
+                    [item],
+                    label=f"row_no={row_no}"
+                )
+
+                repaired_rows.extend(single_repaired)
+
+            except Exception as single_error:
+                # Recheck sifatnya optional repair.
+                # Jangan gagalkan OCR utama hanya karena recheck gagal.
+                print(
+                    f"[DETAIL_RECHECK_ROW_SKIP] "
+                    f"row_no={row_no} "
+                    f"error={single_error}"
+                )
+                continue
 
     return repaired_rows
 
