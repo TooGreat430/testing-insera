@@ -3819,15 +3819,11 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             continue
 
         match_score = str(row.get("match_score", "")).strip().lower()
-        invoice_group = _get_detail_total_group_key(row, idx)
 
-        # =====================================================
-        # RULE PALING PENTING:
-        # TRUE tidak boleh negative.
-        # =====================================================
         if match_score == "true":
             row["confidence_label"] = "positive"
             continue
+        invoice_group = _get_detail_total_group_key(row, idx)
 
         # Default untuk FALSE adalah positive dulu,
         # kecuali terbukti changed / non-total issue.
@@ -3850,6 +3846,121 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         if _row_has_total_issue_only(row):
             row["confidence_label"] = "positive"
             continue
+
+    return rows
+
+def _force_min_one_negative_for_total_issue(rows: list, total_attribution=None):
+    """
+    HARD GUARANTEE:
+    - match_score TRUE selalu positive.
+    - Untuk setiap invoice group yang punya total issue,
+      kalau semua row FALSE total issue masih positive,
+      paksa 1 row FALSE total issue menjadi negative.
+
+    Catatan:
+    - Function ini hanya mengubah confidence_label.
+    - Tidak mengubah value numeric hasil ekstraksi.
+    - Tidak menambah kolom output final.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    total_attribution = total_attribution or {}
+    total_issue_groups = set(total_attribution.get("total_issue_groups", []))
+
+    grouped_rows = _group_rows_by_invoice_no(rows)
+
+    for invoice_group, group_rows in grouped_rows.items():
+        # Group dianggap total issue kalau:
+        # 1. ada di total_attribution.total_issue_groups, atau
+        # 2. ada row FALSE total issue di group tersebut.
+        group_has_total_issue = invoice_group in total_issue_groups
+
+        if not group_has_total_issue:
+            group_has_total_issue = any(
+                _is_false_total_issue_row(row)
+                for row in group_rows
+                if isinstance(row, dict)
+            )
+
+        if not group_has_total_issue:
+            continue
+
+        false_total_rows = []
+
+        for row in group_rows:
+            if not isinstance(row, dict):
+                continue
+
+            match_score = str(row.get("match_score", "")).strip().lower()
+
+            # HARD RULE: TRUE tidak boleh disentuh.
+            if match_score == "true":
+                row["confidence_label"] = "positive"
+                continue
+
+            if _is_false_total_issue_row(row):
+                false_total_rows.append(row)
+
+        if not false_total_rows:
+            continue
+
+        already_has_negative = any(
+            str(row.get("confidence_label", "")).strip().lower() == "negative"
+            for row in false_total_rows
+        )
+
+        if already_has_negative:
+            continue
+
+        # Pilih row terbaik untuk dipaksa negative.
+        # Priority:
+        # 1. row yang sudah ditandai _force_total_issue_candidate
+        # 2. row dengan score paling tinggi dari _score_primary_force_candidate
+        # 3. fallback: FALSE total row pertama
+        selected = None
+
+        for row in false_total_rows:
+            if row.get("_force_total_issue_candidate"):
+                selected = row
+                break
+
+        if selected is None:
+            best_score = -1.0
+            for row in false_total_rows:
+                recheck_fields = row.get("_recheck_fields")
+                if not isinstance(recheck_fields, list):
+                    recheck_fields = []
+
+                field_meta_map = row.get("_recheck_field_meta")
+                if not isinstance(field_meta_map, dict):
+                    field_meta_map = {}
+
+                try:
+                    score = _score_primary_force_candidate(
+                        row=row,
+                        recheck_fields=recheck_fields,
+                        field_meta_map=field_meta_map,
+                    )
+                except Exception:
+                    score = 0.0
+
+                if selected is None or score > best_score:
+                    selected = row
+                    best_score = score
+
+        if selected is None:
+            selected = false_total_rows[0]
+
+        selected["confidence_label"] = "negative"
+        selected["_forced_total_issue_negative"] = True
+
+        print(
+            f"[FORCE_MIN_ONE_NEGATIVE] "
+            f"invoice_group={invoice_group} "
+            f"row_no={selected.get('_detail_row_no')} "
+            f"reason=total_issue_all_positive"
+        )
 
     return rows
 
@@ -7761,12 +7872,34 @@ def _build_document_audit_context(recheck_fields: list, group_plan_item: dict):
         "total_context_by_field": total_context,
     }
 
+def _build_force_one_negative_context(row: dict, recheck_fields: list, plan_item: dict, is_primary: bool):
+    field_meta_map = (plan_item or {}).get("field_meta", {}) or {}
+
+    expected_map = _build_expected_candidate_map(
+        row=row,
+        recheck_fields=recheck_fields,
+        field_meta_map=field_meta_map,
+    )
+
+    return {
+        "is_primary_candidate": bool(is_primary),
+        "expected_candidates_by_field": expected_map,
+        "instruction": (
+            "Jika total_issue_context tidak kosong dan semua row dalam batch ini terlihat unchanged/positive, "
+            "maka hanya row dengan is_primary_candidate=true yang boleh dipaksa dicek ulang paling detail. "
+            "Jika expected_candidate pada row primary terlihat plausible secara visual/layout PDF, "
+            "return expected_candidate untuk minimal satu field dalam _recheck_fields. "
+            "Jika is_primary_candidate=false, jangan paksa row ini menjadi salah."
+        ),
+    }
+
 def _build_recheck_payload_item(
     row: dict,
     recheck_fields: list,
     group_plan_item: dict = None,
     prev_row=None,
     next_row=None,
+    force_primary_candidate: bool = False,
 ):
     group_plan_item = group_plan_item or {}
     group_field_meta = group_plan_item.get("field_meta", {}) or {}
@@ -7812,6 +7945,13 @@ def _build_recheck_payload_item(
 
         # Opsi eksplisit untuk Gemini
         "candidate_values": candidate_values,
+
+        "force_one_negative_context": _build_force_one_negative_context(
+            row=row,
+            recheck_fields=recheck_fields,
+            plan_item=group_plan_item,
+            is_primary=force_primary_candidate,
+        ),
     }
 
     # Current values untuk semua field recheck schema
@@ -7822,8 +7962,215 @@ def _build_recheck_payload_item(
             item[key] = 0 if _is_null(value) else value
         else:
             item[key] = "null" if value is None else value
+    if force_primary_candidate:
+        row["_force_total_issue_candidate"] = True
 
     return item
+
+# =========================================================
+# FORCE-ONE-CANDIDATE CONTEXT FOR GEMINI RECHECK
+# =========================================================
+
+DETAIL_RECHECK_ADDITIVE_NUM_FIELDS = {
+    "inv_quantity",
+    "inv_amount",
+    "pl_quantity",
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+}
+
+
+def _is_false_total_issue_row(row: dict) -> bool:
+    """
+    TRUE tidak boleh dipaksa negative.
+    Hanya FALSE + total issue yang boleh jadi primary candidate.
+    """
+    if not isinstance(row, dict):
+        return False
+
+    match_score = str(row.get("match_score", "")).strip().lower()
+    if match_score == "true":
+        return False
+
+    try:
+        if _row_has_total_issue_only(row):
+            return True
+    except Exception:
+        pass
+
+    desc = str(row.get("match_description") or "").lower()
+    total_keywords = [
+        "total_quantity mismatch",
+        "total_amount mismatch",
+        "total_package mismatch",
+        "total_nw mismatch",
+        "total_gw mismatch",
+        "total_volume mismatch",
+    ]
+
+    return any(k in desc for k in total_keywords)
+
+
+def _expected_candidate_from_total_gap(row: dict, field: str, field_meta: dict):
+    """
+    expected_candidate = current_value - gap
+
+    Contoh:
+    actual_sum = 2.127
+    doc_total  = 2.152
+    gap        = -0.025
+    current    = 0.3
+
+    expected = 0.3 - (-0.025) = 0.325
+    """
+    if not isinstance(row, dict):
+        return None
+
+    if not isinstance(field_meta, dict):
+        return None
+
+    current = _to_float(row.get(field))
+    gap = _to_float(field_meta.get("gap"))
+
+    if current is None or gap is None:
+        return None
+
+    expected = current - gap
+
+    if field in DETAIL_RECHECK_ADDITIVE_NUM_FIELDS:
+        if expected < -float(TOTAL_CONTRIBUTION_EPS):
+            return None
+        expected = max(0, expected)
+
+    return _round_recheck_candidate(expected)
+
+
+def _build_expected_candidate_map(row: dict, recheck_fields: list, field_meta_map: dict):
+    """
+    Build expected candidate per field untuk dikirim ke Gemini.
+    """
+    result = {}
+
+    for field in recheck_fields or []:
+        meta = field_meta_map.get(field) if isinstance(field_meta_map, dict) else None
+        if not isinstance(meta, dict):
+            continue
+
+        expected = _expected_candidate_from_total_gap(row, field, meta)
+        if expected is None:
+            continue
+
+        extracted = row.get(field)
+
+        if _same_recheck_value(extracted, expected, field):
+            continue
+
+        result[field] = {
+            "extracted_value": extracted,
+            "expected_candidate": expected,
+            "actual_sum": meta.get("actual_sum"),
+            "declared_total": meta.get("declared_total"),
+            "gap": meta.get("gap"),
+            "needed_delta": None if _to_float(meta.get("gap")) is None else _round_recheck_candidate(-_to_float(meta.get("gap"))),
+            "reason": (
+                "expected_candidate berasal dari total mismatch: "
+                "expected_candidate = extracted_value - gap."
+            ),
+        }
+
+    return result
+
+
+def _score_primary_force_candidate(row: dict, recheck_fields: list, field_meta_map: dict) -> float:
+    """
+    Pilih row paling kuat untuk dipaksa dicek detail oleh Gemini.
+    Semakin banyak field total mismatch yang punya expected_candidate pada row yang sama,
+    semakin tinggi skornya.
+
+    Contoh kuat:
+    pl_nw     130.8 -> 138.98
+    pl_gw     151.2 -> 161.08
+    pl_volume 0.3 -> 0.325
+    """
+    if not _is_false_total_issue_row(row):
+        return -1.0
+
+    expected_map = _build_expected_candidate_map(
+        row=row,
+        recheck_fields=recheck_fields,
+        field_meta_map=field_meta_map,
+    )
+
+    if not expected_map:
+        return 0.0
+
+    score = 0.0
+    field_count = len(expected_map)
+
+    # Cross-field candidate jauh lebih kuat.
+    if field_count >= 2:
+        score += 200.0 + field_count * 50.0
+    else:
+        score += 50.0
+
+    for field, info in expected_map.items():
+        extracted = _to_float(info.get("extracted_value"))
+        expected = _to_float(info.get("expected_candidate"))
+        gap = _to_float(info.get("gap"))
+
+        if extracted is None or expected is None:
+            continue
+
+        # Correction kecil relatif terhadap value lebih plausible.
+        if gap is not None:
+            correction_share = abs(gap) / max(abs(extracted), float(TOTAL_CONTRIBUTION_EPS))
+            if correction_share <= 0.35:
+                score += 20.0
+            if correction_share <= 0.10:
+                score += 10.0
+
+        # Field packing numeric utama.
+        if field in {"pl_nw", "pl_gw", "pl_volume"}:
+            score += 15.0
+
+        # Sanity: GW >= NW jika dua-duanya ada setelah expected.
+        if field == "pl_gw":
+            nw_expected = expected_map.get("pl_nw", {}).get("expected_candidate")
+            nw = _to_float(nw_expected if nw_expected is not None else row.get("pl_nw"))
+            if nw is not None and expected >= nw:
+                score += 20.0
+
+    return score
+
+
+def _pick_primary_force_candidate_row_no(group_rows: list, recheck_fields: list, plan_item: dict):
+    """
+    Pilih 1 primary candidate per invoice group.
+    Hanya row ini yang boleh dipaksa oleh prompt jika semua row tampak positive.
+    """
+    field_meta_map = (plan_item or {}).get("field_meta", {}) or {}
+
+    best_row_no = None
+    best_score = -1.0
+
+    for row in group_rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        score = _score_primary_force_candidate(
+            row=row,
+            recheck_fields=recheck_fields,
+            field_meta_map=field_meta_map,
+        )
+
+        if score > best_score:
+            best_score = score
+            best_row_no = _safe_row_no_int(row)
+
+    return best_row_no
+
 
 def _build_detail_line_recheck_rows_payload(rows: list):
     """
@@ -7868,6 +8215,15 @@ def _build_detail_line_recheck_rows_payload(rows: list):
         if not recheck_fields:
             continue
 
+        # NEW:
+        # Pilih 1 row kandidat terkuat per invoice group.
+        # Hanya row ini yang boleh dipaksa Gemini jika semua row terlihat positive.
+        primary_force_row_no = _pick_primary_force_candidate_row_no(
+            group_rows=group_rows,
+            recheck_fields=recheck_fields,
+            plan_item=plan_item,
+        )
+
         for idx, row in enumerate(group_rows):
             if not isinstance(row, dict):
                 continue
@@ -7898,6 +8254,7 @@ def _build_detail_line_recheck_rows_payload(rows: list):
                     group_plan_item=plan_item,
                     prev_row=prev_row,
                     next_row=next_row,
+                    force_primary_candidate=(row_no == primary_force_row_no),
                 )
             )
 
@@ -8055,6 +8412,41 @@ ATURAN KHUSUS TOTAL MISMATCH:
 - Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount.
 - Jangan mengoreksi field lain di luar "_recheck_fields".
 
+ATURAN FORCE-ONE-CANDIDATE UNTUK TOTAL MISMATCH:
+- Aturan ini hanya berlaku jika total_issue_context tidak kosong.
+- Jika setelah mengecek semua row dalam batch, semua row tampak unchanged / positive,
+  JANGAN langsung return semuanya unchanged.
+
+- Cari row dengan:
+  force_one_negative_context.is_primary_candidate = true
+
+- Jika TIDAK ADA row primary_candidate=true dalam batch ini:
+  jangan memaksa row mana pun dalam batch ini.
+  Return berdasarkan visual PDF seperti biasa.
+
+- Jika ADA row primary_candidate=true:
+  cek row tersebut paling detail dibanding row lain.
+  Gunakan:
+  1. force_one_negative_context.expected_candidates_by_field
+  2. field_comparison
+  3. candidate_values
+  4. row_context previous/current/next
+  5. visual PDF
+
+- Untuk primary candidate, periksa kemungkinan:
+  1. angka turun ke baris bawah karena cell kecil
+  2. angka tertukar kolom
+  3. merged cell / span beberapa row
+  4. page break
+  5. row shift dari previous/next row
+  6. decimal digit confusion
+
+- Jika expected_candidate pada primary candidate terlihat plausible secara visual/layout PDF,
+  WAJIB return expected_candidate untuk minimal satu field dalam _recheck_fields.
+
+- Jangan pernah mengubah row dengan match_score TRUE.
+- Jangan paksa row non-primary menjadi salah hanya untuk memenuhi aturan ini.
+
 ATURAN OUTPUT:
 1. Output HANYA JSON ARRAY valid, tanpa teks lain.
 2. Jumlah row output HARUS sama persis dengan jumlah row input.
@@ -8072,6 +8464,7 @@ ATURAN OUTPUT:
 14. Jika value memang tidak ada di dokumen:
     - string -> "null"
     - number -> 0
+15. Jangan return force_one_negative_context.
 
 OUTPUT SCHEMA:
 {schema_json}
@@ -8886,6 +9279,12 @@ def run_ocr(
             total_attribution=total_attribution
         )
 
+        all_rows = _force_min_one_negative_for_total_issue(
+            all_rows,
+            total_attribution=total_attribution
+        )
+
+
         _rename_final_fields(all_rows)
         _drop_internal_detail_fields(all_rows)
 
@@ -8904,6 +9303,8 @@ def run_ocr(
                 # NEW
                 row.pop("_recheck_group_key", None)
                 row.pop("_recheck_field_meta", None)
+                row.pop("_force_total_issue_candidate", None)
+                row.pop("_forced_total_issue_negative", None)
 
         # =========================
         # FINAL RESULT OBJECT
