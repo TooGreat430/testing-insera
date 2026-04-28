@@ -892,55 +892,30 @@ def _apply_total_contribution_scoring(rows: list):
             # CASE 4: fallback wajib -> minimal 1 kandidat paling kuat
             if candidates:
                 top = dict(candidates[0])
-                forced_reason = top.get("reason") or "forced_top1_candidate"
-                top["reason"] = f"{forced_reason}_fallback_min1"
-
-                _apply_selected_total_culprits(
-                    [top],
-                    spec,
-                    invoice_group,
-                    actual_sum,
-                    declared_total,
-                    gap,
-                    culprit_row_nos,
-                    culprit_groups,
-                )
 
                 print(
-                    f"[TOTAL_ATTRIBUTION][FORCED_TOP1] invoice_no={invoice_group} "
+                    f"[TOTAL_ATTRIBUTION][TOP1_NOT_CONVICTED] invoice_no={invoice_group} "
                     f"field={spec['declared_field']} "
-                    f"row_no={top['row_no']} ratio={top['ratio']} gap={gap}"
+                    f"row_no={top.get('row_no')} ratio={top.get('ratio')} gap={gap} "
+                    f"reason={top.get('reason')}"
                 )
                 continue
 
             # CASE 5: no candidate dari rule utama -> pakai most influential anchor
+            # CASE 5:
+            # Jangan pakai anchor fallback sebagai culprit.
+            # Missing row / total cell error tidak boleh membuat row existing negative.
             fallback = _pick_most_influential_fallback(
                 group_rows=group_rows,
                 spec=spec,
                 gap=gap,
             )
             if fallback:
-                fallback["reason"] = (
-                    f"{fallback.get('reason', 'forced_absmax_fallback')}"
-                    f"_missing_or_under_anchor"
-                )
-
-                _apply_selected_total_culprits(
-                    [fallback],
-                    spec,
-                    invoice_group,
-                    actual_sum,
-                    declared_total,
-                    gap,
-                    culprit_row_nos,
-                    culprit_groups,
-                )
-
                 print(
-                    f"[TOTAL_ATTRIBUTION][ANCHOR_FALLBACK] invoice_no={invoice_group} "
+                    f"[TOTAL_ATTRIBUTION][ANCHOR_NOT_CONVICTED] invoice_no={invoice_group} "
                     f"field={spec['declared_field']} "
-                    f"row_no={fallback['row_no']} gap={gap} "
-                    f"reason={fallback['reason']}"
+                    f"row_no={fallback.get('row_no')} gap={gap} "
+                    f"reason={fallback.get('reason')}"
                 )
                 continue
 
@@ -3772,49 +3747,50 @@ def _row_has_total_issue_only(row: dict) -> bool:
 
 def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     """
-    Final rule:
+    Final rule baru:
 
-    1) Jika ada NON-TOTAL issue -> NEGATIVE
-    2) Jika issue TOTAL dan culprit berhasil ditemukan:
-       - culprit row -> NEGATIVE
-       - row lain di invoice yang sama -> POSITIVE
-    3) Jika issue TOTAL tapi culprit belum ketemu yakin:
-       - NEUTRAL
-    4) Jika tidak ada issue apa pun -> POSITIVE
+    1) Jika Gemini recheck mengubah field target -> NEGATIVE
+       Artinya row ini terbukti berubah dari hasil ekstraksi awal.
+
+    2) Jika ada NON-TOTAL issue final -> NEGATIVE
+
+    3) Jika hanya total issue tapi tidak ada field yang berubah saat recheck:
+       - Jangan paksa row jadi negative.
+       - Default POSITIVE, karena row existing tidak terbukti salah.
+       - Missing row / total cell issue tidak boleh membuat row random negative.
+
+    4) Jika tidak ada issue -> POSITIVE
     """
     if not isinstance(rows, list):
         return rows
 
     total_attribution = total_attribution or {}
     total_issue_groups = set(total_attribution.get("total_issue_groups", []))
-    culprit_row_nos = set(total_attribution.get("culprit_row_nos", []))
-    culprit_groups = set(total_attribution.get("culprit_groups", []))
 
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
         invoice_group = _get_detail_total_group_key(row, idx)
-        row_no = _safe_row_no_int(row)
 
         row["confidence_label"] = "positive"
+
+        changed_fields = row.get("_gemini_recheck_changed_fields")
+        if isinstance(changed_fields, list) and changed_fields:
+            row["confidence_label"] = "negative"
+            continue
 
         if _row_has_non_total_issue(row):
             row["confidence_label"] = "negative"
             continue
 
+        # Total issue tanpa perubahan recheck tidak boleh auto-negative.
         if invoice_group in total_issue_groups:
-            if invoice_group in culprit_groups:
-                if row_no is not None and row_no in culprit_row_nos:
-                    row["confidence_label"] = "negative"
-                else:
-                    row["confidence_label"] = "positive"
-            else:
-                row["confidence_label"] = "neutral"
+            row["confidence_label"] = "positive"
             continue
 
         if _row_has_total_issue_only(row):
-            row["confidence_label"] = "neutral"
+            row["confidence_label"] = "positive"
             continue
 
         row["confidence_label"] = "positive"
@@ -7129,11 +7105,410 @@ def _infer_recheck_fields_from_match_description(match_description: str):
 
     return failed
 
+# =========================================================
+# CANDIDATE-BASED GEMINI RECHECK FOR TOTAL MISMATCH
+# =========================================================
+
+DETAIL_RECHECK_ADDITIVE_NUM_FIELDS = {
+    "inv_quantity",
+    "inv_amount",
+    "pl_quantity",
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+}
+
+DETAIL_RECHECK_CONTEXT_FIELDS = [
+    "_detail_row_no",
+    "inv_invoice_no",
+    "pl_invoice_no",
+    "coo_invoice_no",
+
+    "inv_item_no",
+    "pl_item_no",
+    "coo_item_no",
+
+    "inv_description",
+    "pl_description",
+    "coo_description",
+
+    "inv_quantity",
+    "inv_unit_price",
+    "inv_amount",
+
+    "pl_quantity",
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+]
+
+
+def _round_recheck_candidate(value, ndigits: int = 6):
+    num = _to_float(value)
+    if num is None:
+        return None
+
+    rounded = round(num, ndigits)
+
+    # supaya 1.0 jadi 1, tapi 0.325 tetap 0.325
+    if abs(rounded - int(rounded)) < 1e-9:
+        return int(rounded)
+
+    return rounded
+
+
+def _same_recheck_value(left, right, field: str = "") -> bool:
+    if field in DETAIL_RECHECK_NUM_FIELDS:
+        l = _to_float(left)
+        r = _to_float(right)
+
+        if l is None and r is None:
+            return True
+
+        if l is None or r is None:
+            return False
+
+        return abs(l - r) <= 0.000001
+
+    return str(left or "").strip() == str(right or "").strip()
+
+
+def _add_candidate_value(candidates: list, candidate_type: str, value, reason: str = ""):
+    """
+    Candidate internal untuk membantu Gemini memilih.
+    Tidak diekspor ke CSV final.
+    """
+    if value is None:
+        return
+
+    if isinstance(value, float):
+        value = _round_recheck_candidate(value)
+
+    for existing in candidates:
+        if _same_recheck_value(existing.get("value"), value):
+            return
+
+    candidates.append({
+        "candidate_type": candidate_type,
+        "value": value,
+        "reason": reason,
+    })
+
+
+def _build_recheck_total_group_plan(rows: list):
+    """
+    Build plan per invoice_group untuk total mismatch.
+
+    Output:
+    {
+        invoice_group: {
+            "fields": set(["pl_volume", ...]),
+            "issues": [...],
+            "field_meta": {
+                "pl_volume": {
+                    "declared_field": "pl_total_volume",
+                    "declared_total": 2.152,
+                    "actual_sum": 2.177,
+                    "gap": 0.025,
+                    "label": "PackingList: total_volume mismatch"
+                }
+            }
+        }
+    }
+
+    Kenapa hitung ulang di sini?
+    Supaya semua row dalam affected invoice group ikut recheck,
+    bukan hanya row yang kebetulan match_score=false.
+    """
+    group_plan = {}
+    grouped_rows = _group_rows_by_invoice_no(rows)
+    eps = float(TOTAL_CONTRIBUTION_EPS)
+
+    for invoice_group, group_rows in grouped_rows.items():
+        for spec in _get_total_contribution_specs():
+            declared_total = _get_declared_total_from_group_rows(
+                group_rows,
+                spec["declared_field"]
+            )
+
+            if declared_total is None:
+                continue
+
+            actual_sum = 0.0
+            has_actual = False
+
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                value = _to_float(row.get(spec["row_field"]))
+                if value is not None:
+                    actual_sum += value
+                    has_actual = True
+
+            if not has_actual:
+                continue
+
+            is_mismatch = False
+
+            if spec["declared_field"] == "pl_total_volume":
+                is_mismatch = not _volume_values_match_with_conversion(
+                    actual_sum,
+                    declared_total
+                )
+            else:
+                is_mismatch = abs(actual_sum - declared_total) > eps
+
+            if not is_mismatch:
+                continue
+
+            gap = actual_sum - declared_total
+            row_field = spec["row_field"]
+
+            if invoice_group not in group_plan:
+                group_plan[invoice_group] = {
+                    "fields": set(),
+                    "issues": [],
+                    "field_meta": {},
+                }
+
+            group_plan[invoice_group]["fields"].add(row_field)
+            group_plan[invoice_group]["issues"].append(
+                f"{spec['label']} for invoice_no={invoice_group} "
+                f"(sum {actual_sum}, doc {declared_total}, gap {gap})"
+            )
+            group_plan[invoice_group]["field_meta"][row_field] = {
+                "declared_field": spec["declared_field"],
+                "declared_total": declared_total,
+                "actual_sum": actual_sum,
+                "gap": gap,
+                "label": spec["label"],
+            }
+
+    return group_plan
+
+
+def _build_row_context_for_recheck(row: dict, prev_row=None, next_row=None):
+    def _pick_context(src):
+        if not isinstance(src, dict):
+            return None
+
+        out = {}
+        for key in DETAIL_RECHECK_CONTEXT_FIELDS:
+            if key in src:
+                out[key] = src.get(key)
+
+        return out
+
+    return {
+        "current_row": _pick_context(row),
+        "previous_row": _pick_context(prev_row),
+        "next_row": _pick_context(next_row),
+    }
+
+
+def _build_candidate_values_for_field(
+    row: dict,
+    field: str,
+    group_field_meta: dict,
+):
+    """
+    Candidate values untuk Gemini pilih.
+    Penting:
+    - current_extracted selalu dikirim.
+    - gap_adjust_candidate dikirim sebagai kandidat matematis, bukan kebenaran.
+    - formula_candidate untuk inv_amount.
+    - merge_continuation_zero untuk additive numeric field.
+    """
+    candidates = []
+
+    current_value = row.get(field)
+    current_num = _to_float(current_value)
+
+    _add_candidate_value(
+        candidates,
+        "current_extracted",
+        current_value,
+        "Nilai hasil ekstraksi saat ini."
+    )
+
+    # Candidate 1: gap adjustment
+    meta = group_field_meta.get(field) if isinstance(group_field_meta, dict) else None
+    if meta and current_num is not None:
+        gap = _to_float(meta.get("gap"))
+        if gap is not None:
+            suggested = current_num - gap
+
+            # Jangan kirim candidate negatif untuk field additive.
+            if suggested >= -float(TOTAL_CONTRIBUTION_EPS):
+                _add_candidate_value(
+                    candidates,
+                    "gap_adjust_candidate",
+                    _round_recheck_candidate(max(0, suggested)),
+                    (
+                        "Kandidat dari audit total: "
+                        "current_value - total_gap. "
+                        "Ini bukan jawaban pasti; pilih hanya jika cocok dengan PDF."
+                    )
+                )
+
+    # Candidate 2: formula khusus invoice amount
+    if field == "inv_amount":
+        qty = _to_float(row.get("inv_quantity"))
+        unit_price = _to_float(row.get("inv_unit_price"))
+
+        if qty is not None and unit_price is not None:
+            formula_amount = qty * unit_price
+            _add_candidate_value(
+                candidates,
+                "formula_candidate",
+                _round_recheck_candidate(formula_amount),
+                "Kandidat dari rumus inv_quantity * inv_unit_price."
+            )
+
+    # Candidate 3: merge-cell continuation
+    if field in DETAIL_RECHECK_ADDITIVE_NUM_FIELDS:
+        if current_num is not None and abs(current_num) > float(TOTAL_CONTRIBUTION_EPS):
+            _add_candidate_value(
+                candidates,
+                "merge_continuation_zero",
+                0,
+                (
+                    "Kandidat jika cell numeric terlihat merged/span beberapa row "
+                    "dan row ini adalah continuation row, bukan owner row."
+                )
+            )
+
+    return candidates
+
+
+def _build_recheck_payload_item(
+    row: dict,
+    recheck_fields: list,
+    group_plan_item: dict = None,
+    prev_row=None,
+    next_row=None,
+):
+    group_plan_item = group_plan_item or {}
+    group_field_meta = group_plan_item.get("field_meta", {}) or {}
+
+    item = {
+        "_detail_row_no": row.get("_detail_row_no"),
+        "_recheck_fields": list(recheck_fields),
+        "match_description": row.get("match_description", "null"),
+        "total_issue_context": group_plan_item.get("issues", []),
+        "row_context": _build_row_context_for_recheck(
+            row=row,
+            prev_row=prev_row,
+            next_row=next_row,
+        ),
+        "candidate_values": {},
+    }
+
+    # Current values untuk semua field recheck schema
+    for key in DETAIL_RECHECK_FIELDS:
+        value = row.get(key)
+
+        if key in DETAIL_RECHECK_NUM_FIELDS:
+            item[key] = 0 if _is_null(value) else value
+        else:
+            item[key] = "null" if value is None else value
+
+    # Candidate values hanya untuk field yang direcheck
+    for field in recheck_fields:
+        item["candidate_values"][field] = _build_candidate_values_for_field(
+            row=row,
+            field=field,
+            group_field_meta=group_field_meta,
+        )
+
+    return item
+
 def _build_detail_line_recheck_rows_payload(rows: list):
+    """
+    Candidate-based recheck payload.
+
+    Perubahan penting:
+    1. Kalau ada total mismatch dalam invoice group,
+       SEMUA row dalam invoice group tersebut ikut recheck.
+    2. Kalau lebih dari satu total mismatch,
+       _recheck_fields adalah union field yang bermasalah.
+    3. Setiap field dikasih candidate_values:
+       - current_extracted
+       - gap_adjust_candidate
+       - formula_candidate jika applicable
+       - merge_continuation_zero jika applicable
+    """
     payload = []
 
+    if not isinstance(rows, list):
+        return payload
+
+    total_group_plan = _build_recheck_total_group_plan(rows)
+    grouped_rows = _group_rows_by_invoice_no(rows)
+
+    included_row_nos = set()
+
+    # =========================================================
+    # PASS 1:
+    # Total mismatch group-level.
+    # Semua row dalam affected invoice group ikut recheck.
+    # =========================================================
+    for invoice_group, group_rows in grouped_rows.items():
+        plan_item = total_group_plan.get(invoice_group)
+
+        if not plan_item:
+            continue
+
+        recheck_fields = _normalize_recheck_field_list(
+            list(plan_item.get("fields", []))
+        )
+
+        if not recheck_fields:
+            continue
+
+        for idx, row in enumerate(group_rows):
+            if not isinstance(row, dict):
+                continue
+
+            row_no = _safe_row_no_int(row)
+            if row_no is None:
+                continue
+
+            prev_row = group_rows[idx - 1] if idx > 0 else None
+            next_row = group_rows[idx + 1] if idx + 1 < len(group_rows) else None
+
+            # simpan internal agar apply-result tahu field mana yang boleh dioverwrite
+            row["_recheck_fields"] = list(recheck_fields)
+            row["_recheck_original_values"] = {
+                field: row.get(field) for field in recheck_fields
+            }
+
+            payload.append(
+                _build_recheck_payload_item(
+                    row=row,
+                    recheck_fields=recheck_fields,
+                    group_plan_item=plan_item,
+                    prev_row=prev_row,
+                    next_row=next_row,
+                )
+            )
+
+            included_row_nos.add(row_no)
+
+    # =========================================================
+    # PASS 2:
+    # Preserve existing behavior untuk non-total failed row.
+    # Ini supaya error selain total tetap bisa direcheck seperti flow lama.
+    # =========================================================
     for row in rows:
         if not isinstance(row, dict):
+            continue
+
+        row_no = _safe_row_no_int(row)
+        if row_no is not None and row_no in included_row_nos:
             continue
 
         if row.get("match_score") != "false":
@@ -7142,27 +7517,28 @@ def _build_detail_line_recheck_rows_payload(rows: list):
         recheck_fields = _infer_recheck_fields_from_match_description(
             row.get("match_description", "null")
         )
+        recheck_fields = _normalize_recheck_field_list(recheck_fields)
 
-        # simpan internal agar apply-result tahu field mana yang boleh dioverwrite
+        if not recheck_fields:
+            continue
+
         row["_recheck_fields"] = list(recheck_fields)
-
-        item = {
-            "_detail_row_no": row.get("_detail_row_no"),
-            "_recheck_fields": list(recheck_fields),
-            "match_description": row.get("match_description", "null"),
+        row["_recheck_original_values"] = {
+            field: row.get(field) for field in recheck_fields
         }
 
-        # tetap kirim field lama supaya prompt punya konteks,
-        # tapi nanti apply-result hanya boleh overwrite field dalam _recheck_fields
-        for key in DETAIL_RECHECK_FIELDS:
-            value = row.get(key)
+        payload.append(
+            _build_recheck_payload_item(
+                row=row,
+                recheck_fields=recheck_fields,
+                group_plan_item={},
+                prev_row=None,
+                next_row=None,
+            )
+        )
 
-            if key in DETAIL_RECHECK_NUM_FIELDS:
-                item[key] = 0 if _is_null(value) else value
-            else:
-                item[key] = "null" if value is None else value
-
-        payload.append(item)
+        if row_no is not None:
+            included_row_nos.add(row_no)
 
     return payload
 
@@ -7186,49 +7562,69 @@ Anda adalah AI validator-checker untuk OUTPUT DETAIL OCR.
 SOURCE OF TRUTH:
 - PDF pada request ini adalah sumber kebenaran utama.
 - JSON rows di bawah adalah hasil ekstraksi awal.
-- Setiap row di bawah SUDAH gagal precheck Python.
-- match_description adalah alasan kenapa row tersebut gagal.
+- match_description / total_issue_context menjelaskan kenapa row perlu dicek.
 - Setiap row memiliki "_recheck_fields".
-- Anda HANYA boleh mengoreksi field yang namanya ada di "_recheck_fields" untuk row tersebut.
-- Untuk field lain yang tidak ada di "_recheck_fields", WAJIB kembalikan nilai yang sama persis seperti input row.
-- Jangan menebak field lain.
+- Anda HANYA boleh mengoreksi field yang namanya ada di "_recheck_fields".
+- Untuk field lain di luar "_recheck_fields", WAJIB return nilai input apa adanya.
+- Jangan buat row baru.
+- Jangan hapus row.
+- Jangan mengubah header.
 
-TUGAS:
-- Cek ulang HANYA row-row yang diberikan.
-- Cek ulang HANYA field-field berikut:
-  1. inv_gw_unit
-  2. inv_quantity
-  3. inv_quantity_unit
-  4. inv_unit_price
-  5. inv_amount
-  6. pl_quantity
-  7. pl_package_count
-  8. pl_nw
-  9. pl_gw
-  10. pl_volume
-- JANGAN ubah field lain selain 10 field di atas.
-- Header TIDAK boleh disentuh.
-- Gunakan match_description sebagai petunjuk field mana yang perlu diperiksa.
+TUGAS UTAMA:
+Untuk setiap row dan setiap field dalam "_recheck_fields":
+1. Lihat PDF / tabel visual.
+2. Bandingkan angka yang terlihat di PDF dengan candidate_values[field].
+3. Pilih value yang paling sesuai dengan PDF.
+4. Jika value yang terlihat di PDF berbeda dari semua kandidat, return value yang benar-benar terlihat.
+5. Jangan menganggap "gap_adjust_candidate" pasti benar.
+6. Jangan menganggap "current_extracted" pasti benar.
+7. Candidate hanya pilihan bantu; PDF tetap source of truth.
 
-ATURAN KETAT:
-1) Output HANYA JSON ARRAY valid, tanpa teks lain.
-2) Jumlah row output HARUS sama persis dengan jumlah row input.
-3) Urutan row output HARUS sama persis dengan input.
-4) WAJIB pertahankan _detail_row_no.
-5) Jangan buat row baru.
-6) Jangan hapus row.
-7) Jangan return field header lain.
-8) Jangan return field po_*.
-9) Jika value memang tidak ada di dokumen:
-   - string -> "null"
-   - number -> 0
-10) "_recheck_fields" WAJIB dipertahankan persis seperti input.
-11) Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
+ATURAN MERGE CELL:
+- Jika numeric cell terlihat merged / span beberapa item row:
+  - value hanya boleh dihitung sekali pada owner row.
+  - Owner row terletak dari row pertama dari merge cell.
+  - continuation row harus return 0 untuk field additive numeric.
+- Field additive numeric termasuk:
+  inv_quantity, inv_amount, pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
+- Jika value 1 terlihat sama di dua row karena merged cell, jangan duplikasikan 1 ke dua row.
+  Owner row = 1, continuation row = 0.
+
+ATURAN KHUSUS TOTAL MISMATCH:
+- Jika total_issue_context berisi total_volume mismatch, fokus ke pl_volume.
+- Jika total_issue_context berisi total_gw mismatch, fokus ke pl_gw.
+- Jika total_issue_context berisi total_nw mismatch, fokus ke pl_nw.
+- Jika total_issue_context berisi total_package mismatch, fokus ke pl_package_count.
+- Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount, inv_quantity, inv_unit_price.
+- Jangan menghitung ulang seluruh dokumen kecuali untuk memahami field target.
+- Jangan mengubah field di luar "_recheck_fields".
+
+ATURAN LOKASI ROW:
+- Gunakan row_context.current_row untuk mencari row target.
+- Gunakan previous_row dan next_row untuk membedakan row target, terutama saat merge cell.
+- _detail_row_no hanya identifier internal, bukan nomor baris PDF.
+- Gunakan kombinasi invoice_no, item_no, description, package, NW/GW/volume sebagai anchor visual.
+
+ATURAN OUTPUT:
+1. Output HANYA JSON ARRAY valid, tanpa teks lain.
+2. Jumlah row output HARUS sama persis dengan jumlah row input.
+3. Urutan row output HARUS sama persis dengan input.
+4. WAJIB pertahankan _detail_row_no.
+5. WAJIB pertahankan _recheck_fields persis seperti input.
+6. Jangan return candidate_values.
+7. Jangan return row_context.
+8. Jangan return total_issue_context.
+9. Jangan return field header.
+10. Jangan return field po_*.
+11. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
+12. Jika value memang tidak ada di dokumen:
+    - string -> "null"
+    - number -> 0
 
 OUTPUT SCHEMA:
 {schema_json}
 
-FAILED ROWS YANG HARUS DICEK ULANG:
+ROWS YANG HARUS DICEK ULANG:
 {rows_json}
 """
 
@@ -7332,13 +7728,36 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         allowed_fields = _normalize_recheck_field_list(
             row.get("_recheck_fields") or []
         )
-        allowed_fields = _normalize_recheck_field_list(row.get("_recheck_fields") or [])
+
         if not allowed_fields:
             continue
 
+        changed_fields = []
+
         for key in allowed_fields:
-            if key in repaired:
-                row[key] = repaired.get(key)
+            if key not in repaired:
+                continue
+
+            old_value = row.get(key)
+            new_value = repaired.get(key)
+
+            if not _same_recheck_value(old_value, new_value, key):
+                changed_fields.append(key)
+
+            row[key] = new_value
+
+        # Internal marker untuk final confidence.
+        # Tidak diekspor.
+        if changed_fields:
+            existing = row.get("_gemini_recheck_changed_fields")
+            if not isinstance(existing, list):
+                existing = []
+
+            for field in changed_fields:
+                if field not in existing:
+                    existing.append(field)
+
+            row["_gemini_recheck_changed_fields"] = existing
 
     return rows
 
@@ -7782,6 +8201,11 @@ def run_ocr(
         for row in all_rows:
             if isinstance(row, dict):
                 row.pop("_expected_index", None)
+
+                # internal recheck keys, jangan diekspor
+                row.pop("_recheck_fields", None)
+                row.pop("_recheck_original_values", None)
+                row.pop("_gemini_recheck_changed_fields", None)
 
         # =========================
         # FINAL RESULT OBJECT
