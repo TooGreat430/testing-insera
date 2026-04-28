@@ -1,4 +1,36 @@
 SHIMANO_INC_PROMPT = """
+
+ATURAN PENTING INVOICE DAN PACKING LIST
+Untuk dokumen Invoice dan Packing List:
+Jika ada garis pemisah total line item yang berdiri sendiri tanpa deskripsi line item, maka itu WAJIB dijumlahkan dengan garis pemisah line item atasnya karena itu adalah milik line item atasnya.
+
+Contoh:
+PT. IS                          BATTERY; BT-DN300; BUILT-IN TYPE; OTHERS                
+P/O No. 43018041                ......Lanjutan Deskripsi Line Item.......
+SURABAYA                        ......Lanjutan Deskripsi Line Item.......
+MADE IN JAPAN
+
+    CTN NO. 1-4               400 PCS      32.00Kg      42.40Kg      0.0236M3
+    (               4 C/T)   @100         @8.00Kg      @10.60Kg     @0.59M3
+    __________________________________________________________________________
+                    Total   400 PCS                              JPY3,212,800
+                                                                 @JPY8,032    
+
+    CTN NO. 5               85 PCS      6.80Kg      9.40Kg      0.058M3
+    (               1 C/T)
+    ___________________________________________________________________________
+                    Total   85 PCS                              JPY682,720
+                                                                 @JPY8,032
+
+Jadi untuk CTN NO.5 ....., itu adalah bagian dari line item atasnya.                                                                 
+Maka untuk garis pemisah total line item yang berdiri sendiri tanpa deskripsi line item seperti contoh di atas, akan di jumlahkan dengan line item atasnya.
+Hasil nilai numerik untuk line item tersebut:
+- package count = 4 + 1 = 5
+- quantity = 400 + 85 = 485
+- net weight = 32 + 6.8 = 38.9
+- gross weight = 42.40 + 9.40 = 51.80
+- volume = 0.0236 + 0.058 = 0.0816
+
 INVOICE (INV):
 1. `inv_customer_po_no`: - Ekstrak dari teks "P/O No." yang berada di dalam blok "MARKS NOS" di sebelah kiri (misalnya "45320517").
                          - Jika inv_customer_po_no tidak ditemukan, gunakan nilai terakhir yang valid sebelumnya (backward lookup). Jangan pernah mengambil nilai dari setelahnya (forward lookup).
