@@ -8156,6 +8156,13 @@ def run_ocr(
             columns=["pl_volume_unit"],
         )
 
+        _postprocess_null_fields_for_vendor(
+            rows=all_rows,
+            current_vendor_id=vendor_id,
+            target_vendor_ids="suntour_vietnam",
+            columns=["pl_volume_unit"],
+        )
+
         all_rows = _validate_po(all_rows)
 
         _validate_invoice_rows(all_rows)
