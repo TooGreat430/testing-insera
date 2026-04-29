@@ -5809,7 +5809,6 @@ def _postprocess_coo_item_mapping(rows: list):
 
         if not _coo_item_matches_row(row):
             _nullify_coo_item_fields(row)
-
 COO_PO_BACKFILL_TARGET_FIELDS = [
     "coo_description",
     "coo_hs_code",
@@ -5885,16 +5884,12 @@ def _build_invoice_mode_map(rows: list, field_name: str) -> dict:
 
     return mode_map
 
-def _postprocess_coo_po_only_rows_from_invoice(rows: list):
-    """
-    Backfill COO item fields untuk kasus:
-    - coo_customer_po_no ada
-    - semua field COO item utama kosong
+def _postprocess_coo_po_only_rows_from_invoice(rows: list, vendor_id: str = "default"):
+    current_vendor_id = normalize_vendor_id(vendor_id)
 
-    Field COO item diambil dari invoice row yang sama.
-    coo_criteria dan coo_origin_country diambil dari value terbanyak
-    per invoice number.
-    """
+    if current_vendor_id != "shimano_inc":
+        return
+
     criteria_by_invoice = _build_invoice_mode_map(rows, "coo_criteria")
     origin_country_by_invoice = _build_invoice_mode_map(rows, "coo_origin_country")
 
@@ -5910,22 +5905,18 @@ def _postprocess_coo_po_only_rows_from_invoice(rows: list):
         if not isinstance(row, dict):
             continue
 
-        # trigger hanya kalau PO COO ada
         if _is_null(row.get("coo_customer_po_no")):
             continue
 
-        # hanya backfill kalau semua target COO masih kosong
         if not all(_is_null(row.get(k)) for k in COO_PO_BACKFILL_TARGET_FIELDS):
             continue
 
-        # ambil dari invoice row yang sama
         for coo_key, inv_key in source_map.items():
             inv_value = row.get(inv_key)
             row[coo_key] = "null" if _is_null(inv_value) else inv_value
 
         invoice_group = _get_detail_total_group_key(row, idx)
 
-        # ambil value terbanyak per invoice no
         criteria_value = criteria_by_invoice.get(invoice_group)
         if criteria_value is not None:
             row["coo_criteria"] = criteria_value
@@ -5937,6 +5928,7 @@ def _postprocess_coo_po_only_rows_from_invoice(rows: list):
         print(
             f"[COO_PO_ONLY_BACKFILL] "
             f"invoice_no={invoice_group} "
+            f"vendor_id={current_vendor_id} "
             f"coo_customer_po_no='{row.get('coo_customer_po_no')}' "
             f"criteria='{row.get('coo_criteria')}' "
             f"origin_country='{row.get('coo_origin_country')}'"
@@ -8633,7 +8625,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_coo_description(rows)
 
     _postprocess_coo_item_mapping(rows)
-    _postprocess_coo_po_only_rows_from_invoice(rows)
+    _postprocess_coo_po_only_rows_from_invoice(rows, vendor_id=vendor_id)
     _postprocess_coo_no_and_seq(rows)
 
     _postprocess_bl_description(rows)
@@ -9671,7 +9663,7 @@ def run_ocr(
         _postprocess_coo_item_mapping(all_rows)
 
         # Backfill row COO yang cuma punya PO sebelum coo_seq dinomori
-        _postprocess_coo_po_only_rows_from_invoice(all_rows)
+        _postprocess_coo_po_only_rows_from_invoice(all_rows, vendor_id=vendor_id)
 
         # NEW: hitung coo_seq hanya untuk row COO yang masih valid/matched
         _postprocess_coo_no_and_seq(all_rows)
