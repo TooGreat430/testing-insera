@@ -9993,6 +9993,7 @@ def run_ocr(
             "inv_messrs_address",
             "inv_gw",
             "inv_gw_unit",
+            "inv_hs_code",
             "confidence_logprob",
             "confidence_margin",
             "confidence_predicted_label",
