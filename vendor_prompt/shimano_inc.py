@@ -12,7 +12,6 @@ INVOICE (INV):
 7. `inv_unit_price`: Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris bawah yang diawali dengan simbol "@" (misalnya dari "@JPY75", ekstrak 75).
 8. `inv_amount`: 
 - Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris atas yang tidak memiliki simbol "@" (misalnya dari "JPY69,600", ekstrak 69600).
-9. `inv_hs_code`: Ekstrak nilai setelah kata "HS#" di dalam blok deskripsi (misalnya "HS# 8507.60" maka inv_hs_code = 8507.60).
 
 PACKING LIST (PL):
 1. `pl_customer_po_no`: Ekstrak dari teks "P/O No." yang berada di dalam blok "MARKS NOS".

@@ -97,10 +97,10 @@ PACKING LIST (PL)
        --------------------------------
        maka:
        - Row 1 → pl_volume = 13.5
-       - Row 2 → pl_volume = 0
-       - Row 3 → pl_volume = 0
-       - Row 4 → pl_volume = 0
-       Jadi untuk kasus merge cell ini 13.5000 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0.
+       - Row 2 → pl_volume = 0 (BUKAN 13.5)
+       - Row 3 → pl_volume = 0 (BUKAN 13.5)
+       - Row 4 → pl_volume = 0 (BUKAN 13.5)
+       Jadi untuk kasus merge cell ini 13.5000 hanya di ekstrak untuk row pertama, sedangkan untuk row lainnya dalam merge cell ini diisi dengan 0 (BUKAN 13.5).
    - Jangan membagi / mengarang volume per item
 
 BILL OF LADING (BL)
