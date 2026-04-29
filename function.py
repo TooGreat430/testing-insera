@@ -1,46 +1,45 @@
-import io 
-import json 
-import re 
-import tempfile 
-import os 
-import csv 
-import subprocess 
-import ijson 
-from urllib.parse import urlparse 
-from google.cloud import storage 
-from PyPDF2 import PdfMerger, PdfReader, PdfWriter
-from google import genai 
-from google.genai import types 
-import time
+import csv
+import json
+import os
 import random
-import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import * 
-from total import TOTAL_SYSTEM_INSTRUCTION 
-from container import CONTAINER_SYSTEM_INSTRUCTION
-from pathlib import Path
+import re
 import shutil
-from detail import (
-    build_index_prompt,
-    build_header_prompt,
-    build_detail_prompt_from_index,
-    HEADER_SCHEMA_TEXT as HEADER_FIELDS,      # header keys
-    DETAIL_LINE_SCHEMA_TEXT,
-    DETAIL_LINE_FIELDS,
-    DETAIL_LINE_NUM_FIELDS,
-    DETAIL_CSV_FIELD_ORDER_FINAL
-)
-from row import ROW_SYSTEM_INSTRUCTION 
+import subprocess
+import tempfile
+import time
 import uuid
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+from pathlib import Path
+from urllib.parse import urlparse
+
+import ijson
 import pymupdf as fitz
+from google import genai
+from google.cloud import storage
+from google.genai import types
+from openpyxl import Workbook
+from openpyxl.styles import Alignment
+from PyPDF2 import PdfMerger, PdfReader, PdfWriter
+
+from config import *
+from container import CONTAINER_SYSTEM_INSTRUCTION
+from detail import (
+    build_detail_prompt_from_index,
+    build_header_prompt,
+    build_index_prompt,
+    DETAIL_CSV_FIELD_ORDER_FINAL,
+    DETAIL_LINE_FIELDS,
+    DETAIL_LINE_NUM_FIELDS,
+    HEADER_SCHEMA_TEXT as HEADER_FIELDS,
+)
+from row import ROW_SYSTEM_INSTRUCTION
 from vendor_detection import (
     load_vendor_prompt_text,
     normalize_vendor_id,
 )
-
-DETAIL_GEMINI_RECHECK_BATCH_SIZE=5
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
@@ -2470,11 +2469,6 @@ def _first_text(rows: list, key: str, default="null"):
     v = _first_non_null(rows, key)
     return default if _is_null(v) else v
 
-def _first_number(rows: list, key: str, default=0):
-    v = _first_non_null_nonzero(rows, key)
-    n = _to_float(v)
-    return default if n is None else n
-
 def _ensure_total_keys(total_obj: dict):
     for k in TOTAL_OUTPUT_FIELDS:
         if k in total_obj and total_obj[k] is not None:
@@ -2619,127 +2613,6 @@ DETAIL_ROW_DEDUP_NUM_FIELDS = {
     "pl_gw",
     "pl_volume",
 }
-
-
-def _get_detail_dedup_raw_value(row: dict, field: str):
-    if not isinstance(row, dict):
-        return None
-
-    # alias karena di codebase saat ini field packing item = pl_item_no
-    if field == "pl_spart_item_no":
-        if "pl_spart_item_no" in row:
-            return row.get("pl_spart_item_no")
-        return row.get("pl_item_no")
-
-    return row.get(field)
-
-
-def _normalize_detail_dedup_numeric(value):
-    if _is_null(value):
-        return "null"
-
-    raw = str(value).strip().replace(",", "")
-    if raw == "":
-        return "null"
-
-    try:
-        d = Decimal(raw)
-    except Exception:
-        try:
-            return str(float(raw))
-        except Exception:
-            return raw
-
-    # samakan 10, 10.0, 10.000 -> "10"
-    normalized = format(d.normalize(), "f")
-    if "." in normalized:
-        normalized = normalized.rstrip("0").rstrip(".")
-    return normalized or "0"
-
-
-def _normalize_detail_dedup_text(value):
-    if _is_null(value):
-        return "null"
-
-    s = str(value).strip().upper()
-    if s == "":
-        return "null"
-
-    # supaya "A  B" == "A B"
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-
-def _normalize_detail_dedup_value(field: str, value):
-    if field in DETAIL_ROW_DEDUP_NUM_FIELDS:
-        return _normalize_detail_dedup_numeric(value)
-
-    return _normalize_detail_dedup_text(value)
-
-
-def _build_detail_dedup_key(row: dict):
-    return tuple(
-        _normalize_detail_dedup_value(
-            field,
-            _get_detail_dedup_raw_value(row, field)
-        )
-        for field in DETAIL_ROW_DEDUP_COMPARE_FIELDS
-    )
-
-def _should_deduplicate_detail_rows(vendor_id: str) -> bool:
-    return normalize_vendor_id(vendor_id) in {
-        "bafang_motor",
-        "jht_carbon",
-        "tangsan_jinhengtong",
-        "kunshan_landon",
-        "ningbo_fordario"
-    }
-
-def _deduplicate_detail_rows_before_validation(rows: list, vendor_id: str = "default"):
-    if not isinstance(rows, list):
-        return rows
-
-    normalized_vendor_id = normalize_vendor_id(vendor_id)
-
-    if not _should_deduplicate_detail_rows(normalized_vendor_id):
-        print(
-            f"[DETAIL_DEDUP][SKIP] vendor_id={vendor_id} "
-            f"normalized_vendor_id={normalized_vendor_id}"
-        )
-        return rows
-
-    deduped = []
-    seen = set()
-    removed = 0
-
-    for idx, row in enumerate(rows or [], start=1):
-        if not isinstance(row, dict):
-            deduped.append(row)
-            continue
-
-        key = _build_detail_dedup_key(row)
-
-        # fail-safe: jangan collapse row yang semua key pembandingnya kosong/null
-        if all(v == "null" for v in key):
-            deduped.append(row)
-            continue
-
-        if key in seen:
-            removed += 1
-            print(
-                f"[DETAIL_DEDUP][DROP] vendor_id={normalized_vendor_id} "
-                f"row_no={idx} key={key}"
-            )
-            continue
-
-        seen.add(key)
-        deduped.append(row)
-
-    print(
-        f"[DETAIL_DEDUP] vendor_id={normalized_vendor_id} "
-        f"before={len(rows)} after={len(deduped)} removed={removed}"
-    )
-    return deduped
 
 def _validate_total_rows(total_data, detail_rows: list):
     if total_data is None:
@@ -3431,16 +3304,6 @@ def _compress_pdf_if_needed(input_path, max_mb=45):
 
     return compressed_path
 
-import csv
-import os
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
-from openpyxl import Workbook
-from openpyxl.styles import Alignment
-from PyPDF2 import PdfReader
-
 RAW_MARKUP_MARKERS = [
     "content-type:",
     "multipart/mixed",
@@ -3629,71 +3492,6 @@ def _extract_text_from_gemini_response(response):
         pass
 
     return ""
-
-
-def _get_obj_value(obj, *names, default=None):
-    for name in names:
-        if isinstance(obj, dict) and name in obj:
-            return obj.get(name)
-        if hasattr(obj, name):
-            return getattr(obj, name)
-    return default
-
-
-def _clamp(value, low, high):
-    return max(low, min(high, value))
-
-def _is_nonempty_issue_text(value) -> bool:
-    if value is None:
-        return False
-
-    s = str(value).strip().lower()
-    return s not in {"", "null", "none"}
-
-
-def _row_has_hard_issue(row: dict) -> bool:
-    """
-    Hard issue = bukti keras row bermasalah.
-    """
-    if not isinstance(row, dict):
-        return False
-
-    match_score = str(row.get("match_score", "")).strip().lower()
-    match_description = row.get("match_description")
-
-    if match_score == "false":
-        return True
-
-    if _is_nonempty_issue_text(match_description):
-        return True
-
-    return False
-
-
-def _has_total_issue(total_data) -> bool:
-    if total_data is None:
-        return False
-
-    if isinstance(total_data, dict):
-        total_data = [total_data]
-
-    if not isinstance(total_data, list) or not total_data:
-        return False
-
-    total_row = total_data[0]
-    if not isinstance(total_row, dict):
-        return False
-
-    match_score = str(total_row.get("match_score", "")).strip().lower()
-    match_description = total_row.get("match_description")
-
-    if match_score == "false":
-        return True
-
-    if _is_nonempty_issue_text(match_description):
-        return True
-
-    return False
 
 def _split_match_description_messages(value):
     if value is None:
@@ -4080,141 +3878,6 @@ def _force_min_one_negative_for_total_issue(rows: list, total_attribution=None):
     return rows
 
 
-def _normalize_confidence_band(value: str) -> str:
-    s = str(value or "").strip().upper()
-    if s in DETAIL_CONFIDENCE_ENUM_VALUES:
-        return s
-    m = re.search(r"[1-5]", s)
-    return m.group(0) if m else ""
-
-
-def _extract_confidence_logprob_from_response(response):
-    candidates = _get_obj_value(response, "candidates", default=[]) or []
-    if not candidates:
-        return None
-
-    first_candidate = candidates[0]
-    logprobs_result = _get_obj_value(first_candidate, "logprobs_result", "logprobsResult")
-
-    chosen_candidates = _get_obj_value(
-        logprobs_result,
-        "chosen_candidates",
-        "chosenCandidates",
-        default=[]
-    ) or []
-
-    for chosen in chosen_candidates:
-        token = _get_obj_value(chosen, "token", default="")
-        logprob = _get_obj_value(chosen, "log_probability", "logProbability")
-        if logprob is None:
-            continue
-        if str(token).strip() == "":
-            continue
-        try:
-            return float(logprob)
-        except Exception:
-            continue
-
-    avg_logprobs = _get_obj_value(first_candidate, "avg_logprobs", "avgLogprobs")
-    if avg_logprobs is not None:
-        try:
-            return float(avg_logprobs)
-        except Exception:
-            pass
-
-    return None
-
-
-def _fallback_confidence_score(row: dict) -> int:
-    return 78 if str(row.get("match_score", "")).strip().lower() == "true" else 35
-
-
-def _confidence_score_from_band_and_logprob(band: str, chosen_logprob, match_score: str):
-    band = _normalize_confidence_band(band)
-    if not band:
-        return 0
-
-    low, high = DETAIL_CONFIDENCE_SCORE_RANGES.get(band, (0, 0))
-
-    probability = 0.5
-    if chosen_logprob is not None:
-        try:
-            probability = math.exp(float(chosen_logprob))
-        except Exception:
-            probability = 0.5
-
-    probability = _clamp(probability, 0.0, 1.0)
-    score = int(round(low + ((high - low) * probability)))
-    score = _clamp(score, 1, 100)
-
-    if str(match_score or "").strip().lower() == "false":
-        score = min(score, 49)
-
-    return score
-
-
-def _build_detail_confidence_row_payload(row: dict) -> dict:
-    excluded_fields = {"confidence_score", "confidence_band", "confidence_logprob"}
-
-    preferred_order = [
-        "_detail_row_no",
-        "match_score",
-        "match_description",
-        "inv_invoice_no",
-        "pl_invoice_no",
-        "coo_invoice_no",
-    ] + [k for k in DETAIL_LINE_FIELDS if k not in excluded_fields]
-
-    payload = {}
-    seen = set()
-
-    for key in preferred_order:
-        if key in seen:
-            continue
-        seen.add(key)
-
-        if key not in row:
-            continue
-
-        value = row.get(key)
-
-        if key in DETAIL_LINE_NUM_FIELDS:
-            if value is None:
-                value = 0
-        else:
-            if value is None:
-                value = "null"
-
-        payload[key] = value
-
-    return payload
-
-
-def _build_detail_confidence_prompt(row: dict) -> str:
-    row_payload = _build_detail_confidence_row_payload(row)
-    row_json = json.dumps(row_payload, ensure_ascii=False, indent=2)
-
-    return f"""
-ROLE:
-Anda adalah AI reviewer untuk menilai 1 line item hasil ekstraksi.
-PDF pada request ini adalah source of truth utama.
-
-TUGAS:
-Klasifikasikan row ini menjadi:
-- positive = row ini benar / cocok secara keseluruhan terhadap PDF
-- negative = row ini tidak cukup yakin, salah mapping, salah angka, salah pasangan row, atau gagal validasi
-
-ATURAN:
-- Nilai confidence adalah untuk KESELURUHAN row, bukan per-field.
-- Missing value boleh tetap positive jika memang value itu tidak ada di dokumen.
-- Jika match_score=false atau match_description berisi error validasi, negative lebih tepat kecuali bukti PDF sangat kuat.
-- Output HARUS hanya salah satu enum ini: positive / negative
-
-ROW JSON:
-{row_json}
-""".strip()
-
-
 def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, return_response: bool = False):
     parts = [
         types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
@@ -4265,34 +3928,6 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
         return text_output, response
 
     return text_output
-
-def _call_gemini_response_uri(file_uri: str, prompt: str, extra_config: dict = None):
-    parts = [
-        types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
-        types.Part.from_text(text=prompt),
-    ]
-
-    config_kwargs = {
-        "temperature": 0,
-        "top_p": 0,
-        "seed": 42,
-        "candidate_count": 1,
-        "max_output_tokens": 65535,
-    }
-    if extra_config:
-        config_kwargs.update(extra_config)
-
-    response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[types.Content(role="user", parts=parts)],
-        config=types.GenerateContentConfig(**config_kwargs),
-    )
-
-    if not response:
-        raise Exception("Empty response from Gemini")
-
-    print(f"(Gemini Run ID: {response.response_id})")
-    return response
 
 def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3):
     """
@@ -4625,17 +4260,6 @@ def _save_batch_tmp(run_prefix: str, batch_no: int, json_array: list):
         content_type="application/json"
     )
 
-def _save_run_meta(run_prefix: str, invoice_name: str, with_total_container: bool):
-    bucket = storage_client.bucket(BUCKET_NAME)
-    payload = {
-        "invoice_name": invoice_name,
-        "with_total_container": bool(with_total_container),
-    }
-    bucket.blob(f"{run_prefix}/meta.json").upload_from_string(
-        json.dumps(payload),
-        content_type="application/json"
-    )
-
 # ==============================
 # GET PO JSON URI (DIRECT FROM GCS)
 # ==============================
@@ -4902,299 +4526,6 @@ for group in ITEM_CODE_CONFUSABLE_GROUPS:
         ITEM_CODE_CANONICAL_MAP[ch] = canonical
 
 MAX_ITEM_CODE_VARIANTS = 128
-
-
-def _norm_item_code_signature(x):
-    s = _norm_key(x)
-    if not s:
-        return ""
-
-    out = []
-    for ch in s:
-        out.append(ITEM_CODE_CANONICAL_MAP.get(ch, ch))
-    return "".join(out)
-
-
-def _generate_confusable_item_code_variants(value, max_variants=MAX_ITEM_CODE_VARIANTS):
-    s = _norm_key(value)
-    if not s:
-        return []
-
-    char_options = []
-    for ch in s:
-        options = ITEM_CODE_CONFUSABLE_MAP.get(ch, [ch])
-
-        dedup = []
-        seen = set()
-        for opt in options:
-            if opt not in seen:
-                seen.add(opt)
-                dedup.append(opt)
-
-        char_options.append(dedup)
-
-    variants = []
-    current = []
-
-    def dfs(idx):
-        if len(variants) >= max_variants:
-            return
-
-        if idx >= len(char_options):
-            variants.append("".join(current))
-            return
-
-        for opt in char_options[idx]:
-            current.append(opt)
-            dfs(idx + 1)
-            current.pop()
-
-            if len(variants) >= max_variants:
-                return
-
-    dfs(0)
-
-    exact = _norm_key(value)
-    ordered = []
-    seen = set()
-
-    if exact:
-        ordered.append(exact)
-        seen.add(exact)
-
-    for v in variants:
-        if not v or v in seen:
-            continue
-        ordered.append(v)
-        seen.add(v)
-
-    return ordered
-
-
-def _item_code_similarity(left, right):
-    l_exact = _norm_key(left)
-    r_exact = _norm_key(right)
-
-    if not l_exact or not r_exact:
-        return 0.0
-
-    if l_exact == r_exact:
-        return 1.0
-
-    l_sig = _norm_item_code_signature(left)
-    r_sig = _norm_item_code_signature(right)
-
-    if l_sig and r_sig and l_sig == r_sig:
-        return 0.98
-
-    return SequenceMatcher(None, l_exact, r_exact).ratio()
-
-
-def _extract_po_item_no_entries(line: dict):
-    entries = []
-    seen_exact = set()
-
-    if not isinstance(line, dict):
-        return entries
-
-    for field in PO_ITEM_NO_FIELDS:
-        raw = line.get(field)
-        exact = _norm_key(raw)
-        if not exact:
-            continue
-        if exact in seen_exact:
-            continue
-
-        seen_exact.add(exact)
-
-        entries.append({
-            "field": field,
-            "raw_item_no": str(raw).strip(),
-            "exact_key": exact,
-            "signature_key": _norm_item_code_signature(raw),
-        })
-
-    return entries
-
-
-def _get_primary_po_item_no(line: dict):
-    for field in PO_ITEM_NO_FIELDS:
-        raw = line.get(field) if isinstance(line, dict) else None
-        if not _is_null(raw):
-            return str(raw).strip()
-    return "null"
-
-
-def _dedup_po_candidate_entries(entries):
-    deduped = []
-    seen = set()
-
-    for entry in entries or []:
-        if not isinstance(entry, dict):
-            continue
-
-        key = (
-            entry.get("idx"),
-            entry.get("matched_field"),
-            entry.get("raw_item_no"),
-            _norm_po_number(entry.get("line", {}).get("po_no")) if isinstance(entry.get("line"), dict) else "",
-            str(entry.get("line", {}).get("po_line")) if isinstance(entry.get("line"), dict) else "",
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        deduped.append(entry)
-
-    return deduped
-
-
-def _build_po_item_indexes(po_lines):
-    po_article_exact_index = {}
-    po_article_signature_index = {}
-    po_desc_index = {}
-
-    for idx, line in enumerate(po_lines or []):
-        po_no_norm = _norm_po_number(line.get("po_no"))
-        if not po_no_norm:
-            continue
-
-        for item_entry in _extract_po_item_no_entries(line):
-            entry = {
-                "idx": idx,
-                "line": dict(line),
-                "matched_field": item_entry["field"],
-                "raw_item_no": item_entry["raw_item_no"],
-                "exact_key": item_entry["exact_key"],
-                "signature_key": item_entry["signature_key"],
-            }
-
-            po_article_exact_index.setdefault(
-                (po_no_norm, item_entry["exact_key"]), []
-            ).append(entry)
-
-            if item_entry["signature_key"]:
-                po_article_signature_index.setdefault(
-                    (po_no_norm, item_entry["signature_key"]), []
-                ).append(entry)
-
-        d_norm = _norm_desc(line.get("po_text"))
-        if d_norm:
-            po_desc_index.setdefault((po_no_norm, d_norm), []).append({
-                "idx": idx,
-                "line": dict(line),
-                "matched_field": "po_text",
-                "raw_item_no": _get_primary_po_item_no(line),
-                "exact_key": _norm_key(_get_primary_po_item_no(line)),
-                "signature_key": _norm_item_code_signature(_get_primary_po_item_no(line)),
-            })
-
-    return po_article_exact_index, po_article_signature_index, po_desc_index
-
-
-def _lookup_po_candidates_by_item_code(
-    po_no_norm: str,
-    raw_item_code,
-    po_article_exact_index,
-    po_article_signature_index,
-):
-    exact_key = _norm_key(raw_item_code)
-    signature_key = _norm_item_code_signature(raw_item_code)
-
-    candidates = []
-
-    if exact_key:
-        candidates.extend(
-            po_article_exact_index.get((po_no_norm, exact_key), [])
-        )
-
-    for variant in _generate_confusable_item_code_variants(raw_item_code):
-        if not variant or variant == exact_key:
-            continue
-
-        candidates.extend(
-            po_article_exact_index.get((po_no_norm, variant), [])
-        )
-
-    if signature_key:
-        candidates.extend(
-            po_article_signature_index.get((po_no_norm, signature_key), [])
-        )
-
-    return _dedup_po_candidate_entries(candidates)
-
-
-def _group_candidates_by_raw_item_no(candidates):
-    grouped = {}
-    for entry in candidates or []:
-        raw_item_no = entry.get("raw_item_no") or "null"
-        grouped.setdefault(raw_item_no, []).append(entry)
-    return grouped
-
-
-def _resolve_confusable_candidates(candidates, source_item_code, inv_desc_norm, extracted_qty):
-    candidates = _dedup_po_candidate_entries(candidates)
-    if not candidates:
-        return []
-
-    grouped = _group_candidates_by_raw_item_no(candidates)
-
-    if len(grouped) == 1:
-        return candidates
-
-    if inv_desc_norm:
-        desc_hits = [
-            c for c in candidates
-            if _norm_desc(c.get("line", {}).get("po_text")) == inv_desc_norm
-        ]
-        desc_grouped = _group_candidates_by_raw_item_no(desc_hits)
-        if desc_hits and len(desc_grouped) == 1:
-            return desc_hits
-
-    if extracted_qty is not None:
-        qty_hits = []
-        for c in candidates:
-            po_qty = _to_float(c.get("line", {}).get("po_quantity"))
-            if po_qty is None:
-                continue
-            if abs(po_qty - extracted_qty) <= 1e-9:
-                qty_hits.append(c)
-
-        qty_grouped = _group_candidates_by_raw_item_no(qty_hits)
-        if qty_hits and len(qty_grouped) == 1:
-            return qty_hits
-
-    ranked = []
-    for raw_item_no, group in grouped.items():
-        sim = _item_code_similarity(source_item_code, raw_item_no)
-        ranked.append((sim, raw_item_no, group))
-
-    ranked = sorted(ranked, key=lambda x: x[0], reverse=True)
-
-    if ranked:
-        top = ranked[0]
-        second = ranked[1] if len(ranked) > 1 else None
-
-        if top[0] >= 0.92 and (second is None or (top[0] - second[0]) >= 0.03):
-            return top[2]
-
-    return []
-
-
-def _copy_po_line_with_allocated_qty(po_line: dict, allocated_qty):
-    copied = dict(po_line or {})
-
-    if allocated_qty is None:
-        copied["po_quantity"] = po_line.get("po_quantity", "null") if isinstance(po_line, dict) else "null"
-        return copied
-
-    if abs(allocated_qty - round(allocated_qty)) <= 1e-9:
-        copied["po_quantity"] = int(round(allocated_qty))
-    else:
-        copied["po_quantity"] = allocated_qty
-
-    return copied
 
 def _get_best_po_article_value(po_line: dict):
     if not isinstance(po_line, dict):
@@ -5615,11 +4946,6 @@ def _to_float(v):
         return float(str(v).strip().replace(",", ""))
     except:
         return None
-
-def _nearly_equal(a, b, eps=1e-6):
-    if a is None or b is None:
-        return False
-    return abs(a - b) <= eps
 
 def _first_non_null(rows: list, key: str):
     for r in rows:
@@ -6254,9 +5580,6 @@ def _apply_header_to_rows(rows: list, header_obj: dict):
 def _has_text_value(v) -> bool:
     return not _is_null(v)
 
-def _has_num_value(v) -> bool:
-    return _to_float(v) is not None
-
 def _compare_text_values(row: dict, left_value, right_value, err_msg: str, normalize_fn=None):
     """
     Rule:
@@ -6864,82 +6187,6 @@ def _append_total_error(total_obj, msg):
     else:
         total_obj["match_description"] = prev + "; " + msg
 
-def _map_po_to_total(total_data, po_lines, po_numbers_from_detail):
-    """
-    total_data bisa dict atau list[dict]
-    Kita isi/validasi field PO di TOTAL berdasarkan po_lines yang relevan.
-    """
-    if total_data is None:
-        return None
-
-    # normalize dict -> list
-    if isinstance(total_data, dict):
-        total_data = [total_data]
-
-    if not isinstance(total_data, list) or not total_data or not isinstance(total_data[0], dict):
-        return total_data
-
-    total_obj = total_data[0]
-    total_obj.setdefault("match_score", "true")
-    total_obj.setdefault("match_description", "null")
-
-    po_numbers = {
-        _norm_po_number(p)
-        for p in po_numbers_from_detail
-        if p is not None and _norm_po_number(p)
-    }
-    if not po_numbers:
-        _append_total_error(total_obj, "PO number tidak ditemukan pada output detail")
-        return total_data
-
-    lines = [
-        l for l in po_lines
-        if _norm_po_number(l.get("po_no")) in po_numbers
-    ]
-    if not lines:
-        _append_total_error(total_obj, "PO lines tidak ditemukan di master PO JSON")
-        return total_data
-
-    # contoh isi: total po_quantity = sum
-    qty_sum = 0.0
-    qty_found = False
-    for l in lines:
-        q = l.get("po_quantity")
-        if q is None:
-            continue
-        try:
-            qty_sum += float(str(q).strip())
-            qty_found = True
-        except:
-            pass
-
-    # contoh isi: po_price harus unik
-    price_set = set()
-    for l in lines:
-        p = l.get("po_price")
-        if p is None:
-            continue
-        try:
-            price_set.add(float(str(p).strip()))
-        except:
-            pass
-
-    expected_price = None
-    if len(price_set) == 1:
-        expected_price = list(price_set)[0]
-    elif len(price_set) > 1:
-        _append_total_error(total_obj, "PO memiliki lebih dari 1 po_price (ambiguous untuk total)")
-
-    # fill kalau kosong/null
-    if total_obj.get("po_quantity") in (None, "", "null") and qty_found:
-        total_obj["po_quantity"] = qty_sum
-
-    if total_obj.get("po_price") in (None, "", "null") and expected_price is not None:
-        total_obj["po_price"] = expected_price
-
-    return total_data
-
-
 def _rename_final_fields(rows: list):
     for row in rows:
         if not isinstance(row, dict):
@@ -7005,32 +6252,6 @@ def _convert_to_csv_path(blob_path, rows, field_order=None):
             writer.writerow(r if isinstance(r, dict) else {})
 
     bucket = storage_client.bucket(BUCKET_NAME)
-    bucket.blob(blob_path).upload_from_filename(tmp_file.name)
-
-    return f"gs://{BUCKET_NAME}/{blob_path}"
-
-
-# =========================================================
-# CONVERT TO CSV
-# =========================================================
-
-def _convert_to_csv(invoice_name, rows):
-
-    if not rows:
-        raise Exception("Tidak ada data untuk CSV")
-
-    keys = rows[0].keys()
-
-    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-
-    with open(tmp_file.name, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    bucket = storage_client.bucket(BUCKET_NAME)
-    blob_path = f"output/{invoice_name}.csv"
-
     bucket.blob(blob_path).upload_from_filename(tmp_file.name)
 
     return f"gs://{BUCKET_NAME}/{blob_path}"
@@ -7649,16 +6870,6 @@ def _infer_recheck_fields_from_match_description(match_description: str):
 # =========================================================
 # CANDIDATE-BASED GEMINI RECHECK FOR TOTAL MISMATCH
 # =========================================================
-
-DETAIL_RECHECK_ADDITIVE_NUM_FIELDS = {
-    "inv_quantity",
-    "inv_amount",
-    "pl_quantity",
-    "pl_package_count",
-    "pl_nw",
-    "pl_gw",
-    "pl_volume",
-}
 
 DETAIL_RECHECK_CONTEXT_FIELDS = [
     "_detail_row_no",
