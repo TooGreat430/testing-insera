@@ -188,11 +188,12 @@ TOTAL_NUM_FIELDS = {
 # ==============================
 
 UNIT_CONVERSION_MAP = {
-    "PCS": "PC",
-    "PCE": "PC",
-    "PIECE": "PC",
-    "PIECES": "PC",
-    "H87": "PC",
+    "PCS": "PCS",
+    "PC": "PCS",
+    "PCE": "PCS",
+    "PIECE": "PCS",
+    "PIECES": "PCS",
+    "H87": "PCS",
 
     "SETS": "SET",
 
