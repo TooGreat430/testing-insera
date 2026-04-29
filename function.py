@@ -4662,6 +4662,7 @@ PO_SPLIT_ZERO_FIELDS = [
     # Invoice additive fields
     "inv_quantity",
     "inv_amount",
+    "inv_unit_price",
 
     # Packing List additive fields
     "pl_quantity",
