@@ -6274,7 +6274,7 @@ def _validate_invoice_rows(rows: list):
         for k in required_num:
             # Untuk secondary PO split, inv_quantity dan inv_amount sengaja dibuat 0
             # supaya tidak overcount. Jangan dianggap missing.
-            if _is_secondary_po_split_row(r) and k in {"inv_quantity", "inv_amount"}:
+            if _is_secondary_po_split_row(r) and k in {"inv_quantity", "inv_amount", "inv_unit_price"}:
                 continue
 
             if _is_missing_num(r.get(k)):
