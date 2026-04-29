@@ -3806,20 +3806,73 @@ def _row_has_total_issue_only(row: dict) -> bool:
 
     return all(_is_total_issue_message(msg) for msg in meaningful_messages)
 
+def _row_has_any_total_issue(row: dict) -> bool:
+    """
+    Return True kalau row FALSE memiliki minimal 1 total issue,
+    walaupun match_description juga berisi issue lain seperti missing/mismatch.
+
+    Contoh:
+    - "PackingList: total_volume mismatch; pl_description mismatch" -> True
+    - "PackingList: total_gw mismatch; missing pl_item_no" -> True
+    - "pl_description mismatch" -> False
+    """
+    if not isinstance(row, dict):
+        return False
+
+    match_score = str(row.get("match_score", "")).strip().lower()
+    match_description = row.get("match_description")
+
+    if match_score != "false":
+        return False
+
+    messages = _split_match_description_messages(match_description)
+    if not messages:
+        return False
+
+    ignored_total_metadata_prefixes = (
+        "suspected_row_contribution=",
+        "reason=",
+        "row_value=",
+        "root_cause=",
+    )
+
+    meaningful_messages = []
+
+    for msg in messages:
+        s = str(msg or "").strip().lower()
+        if not s:
+            continue
+
+        if s.startswith(ignored_total_metadata_prefixes):
+            continue
+
+        meaningful_messages.append(msg)
+
+    if not meaningful_messages:
+        return False
+
+    return any(_is_total_issue_message(msg) for msg in meaningful_messages)
+
 
 def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     """
     Final confidence rule:
 
     HARD RULE:
-    - match_score TRUE tidak boleh negative.
     - match_score TRUE selalu positive.
+    - TRUE tidak boleh negative.
 
-    Untuk match_score FALSE:
-    - Jika Gemini recheck accepted dan field berubah -> negative.
-    - Jika ada non-total issue -> negative.
-    - Jika hanya total issue tapi tidak ada accepted changed field -> positive.
-      Artinya row ini ikut terdampak total mismatch, tapi belum terbukti sebagai row yang salah.
+    TOTAL-FIRST RULE:
+    - Jika dalam invoice group ada minimal 1 row FALSE yang punya total issue,
+      maka labelling group tersebut mengikuti total logic.
+    - Artinya issue lain seperti mismatch/missing tidak otomatis membuat row negative.
+    - Negative hanya diberikan jika:
+        1. Gemini recheck accepted dan field berubah, atau
+        2. safety fallback _force_min_one_negative_for_total_issue memilih 1 row.
+
+    NON-TOTAL GROUP:
+    - Kalau group tidak punya FALSE total issue,
+      maka non-total issue tetap negative seperti biasa.
     """
     if not isinstance(rows, list):
         return rows
@@ -3827,31 +3880,79 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     total_attribution = total_attribution or {}
     total_issue_groups = set(total_attribution.get("total_issue_groups", []))
 
+    grouped_rows = _group_rows_by_invoice_no(rows)
+
+    # =====================================================
+    # Cari group yang benar-benar punya FALSE total issue.
+    # Ini syarat utama agar total labelling override aktif.
+    # =====================================================
+    groups_with_false_total_issue = set()
+
+    for invoice_group, group_rows in grouped_rows.items():
+        has_false_total_issue = any(
+            _row_has_any_total_issue(row)
+            for row in group_rows
+            if isinstance(row, dict)
+        )
+
+        if has_false_total_issue:
+            groups_with_false_total_issue.add(invoice_group)
+
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
         match_score = str(row.get("match_score", "")).strip().lower()
+        invoice_group = _get_detail_total_group_key(row, idx)
 
+        # =====================================================
+        # HARD RULE:
+        # TRUE tidak boleh negative.
+        # =====================================================
         if match_score == "true":
             row["confidence_label"] = "positive"
             continue
-        invoice_group = _get_detail_total_group_key(row, idx)
 
-        # Default untuk FALSE adalah positive dulu,
-        # kecuali terbukti changed / non-total issue.
+        # Default untuk FALSE adalah positive dulu.
         row["confidence_label"] = "positive"
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
+
+        # =====================================================
+        # Kalau Gemini / accepted recheck benar-benar mengubah field,
+        # row ini tetap negative.
+        # Ini tetap lebih kuat dari total override.
+        # =====================================================
         if isinstance(changed_fields, list) and changed_fields:
             row["confidence_label"] = "negative"
             continue
 
+        # =====================================================
+        # TOTAL-FIRST OVERRIDE:
+        # Jika group punya FALSE total issue, maka non-total mismatch/missing
+        # tidak otomatis negative.
+        #
+        # Jadi row yang punya:
+        # - total mismatch + missing
+        # - total mismatch + field mismatch
+        # - non-total mismatch di group yang sama
+        #
+        # tetap boleh positive, nanti safety fallback akan memastikan
+        # minimal 1 FALSE total row menjadi negative.
+        # =====================================================
+        if invoice_group in groups_with_false_total_issue:
+            row["confidence_label"] = "positive"
+            continue
+
+        # =====================================================
+        # Kalau tidak ada FALSE total issue dalam group,
+        # pakai logic lama: non-total issue = negative.
+        # =====================================================
         if _row_has_non_total_issue(row):
             row["confidence_label"] = "negative"
             continue
 
-        # Total issue tanpa accepted change tidak boleh auto-negative.
+        # Total issue tanpa accepted change tetap positive.
         if invoice_group in total_issue_groups:
             row["confidence_label"] = "positive"
             continue
