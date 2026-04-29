@@ -64,10 +64,18 @@ DETAIL_RECHECK_NUM_FIELDS = {
     if str(v).strip().lower() == "number"
 }
 
-FINAL_DETAIL_CSV_FIELD_ORDER = [
-    k for k in DETAIL_CSV_FIELD_ORDER_FINAL
-    if k != "inv_hs_code"
-]
+def _is_shimano_inc_vendor(vendor_id: str = "default") -> bool:
+    return normalize_vendor_id(vendor_id) == "shimano_inc"
+
+
+def _get_detail_csv_field_order(vendor_id: str = "default"):
+    if _is_shimano_inc_vendor(vendor_id):
+        return list(DETAIL_CSV_FIELD_ORDER_FINAL)
+
+    return [
+        k for k in DETAIL_CSV_FIELD_ORDER_FINAL
+        if k != "inv_hs_code"
+    ]
 
 CBM_TO_CUFT = 35.3147
 
@@ -7301,7 +7309,7 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             merged_detail_rows,
-            field_order=DETAIL_CSV_FIELD_ORDER_FINAL
+            field_order=_get_detail_csv_field_order(forced_vendor_id)
         )
 
         total_csv_uri = None
@@ -8602,6 +8610,246 @@ ROWS YANG HARUS DICEK ULANG:
 {rows_json}
 """
 
+SHIMANO_HS_CODE_EXTRACTION_BATCH_SIZE = int(
+    os.getenv("SHIMANO_HS_CODE_EXTRACTION_BATCH_SIZE", "10")
+)
+
+SHIMANO_HS_CODE_CONTEXT_FIELDS = [
+    "_expected_index",
+    "_detail_row_no",
+
+    "inv_invoice_no",
+    "inv_item_no",
+    "inv_vendor_article_no",
+    "inv_customer_po_no",
+    "inv_description",
+
+    "pl_invoice_no",
+    "pl_item_no",
+    "pl_vendor_article_no",
+    "pl_customer_po_no",
+    "pl_description",
+
+    "inv_hs_code",
+]
+
+
+def _normalize_inv_hs_code(value):
+    if _is_null(value):
+        return "null"
+
+    s = str(value or "").strip()
+    if not s or s.lower() == "null":
+        return "null"
+
+    s = re.sub(r"(?i)^\s*HS\s*#?\s*:?\s*", "", s).strip()
+    s = s.strip(".,;:()[]{} ")
+
+    # Preserve dotted HS format, contoh: 8507.60 / 8507.60.90
+    m = re.search(r"\b(\d{4}(?:\.\d{1,4}){1,4}|\d{6,12})\b", s)
+    if not m:
+        return "null"
+
+    return m.group(1).strip(".,;: ")
+
+
+def _build_shimano_hs_code_rows_payload(rows: list):
+    payload = []
+
+    for idx, row in enumerate(rows or [], start=1):
+        if not isinstance(row, dict):
+            continue
+
+        item = {}
+
+        for key in SHIMANO_HS_CODE_CONTEXT_FIELDS:
+            if key in row:
+                item[key] = row.get(key)
+
+        if "_detail_row_no" not in item or _is_null(item.get("_detail_row_no")):
+            item["_detail_row_no"] = _safe_row_no_int(row) or idx
+
+        payload.append(item)
+
+    return payload
+
+
+def _build_shimano_hs_code_prompt(rows_payload: list) -> str:
+    rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
+
+    return f"""
+ROLE:
+Anda adalah AI extractor khusus untuk vendor shimano_inc.
+
+SOURCE OF TRUTH:
+- PDF visual pada request ini adalah sumber kebenaran utama.
+- ROWS adalah hasil ekstraksi detail sebelumnya dan harus dipakai sebagai anchor row.
+
+TUGAS:
+Untuk setiap row, ekstrak field tambahan:
+inv_hs_code
+
+ATURAN KHUSUS inv_hs_code:
+- Cari nilai setelah kata "HS#" di dalam blok deskripsi invoice / description block.
+- Contoh:
+  "HS# 8507.60" => inv_hs_code = "8507.60"
+- Jika tertulis "HS#8507.60", hasil tetap "8507.60".
+- Jika value HS# wrap ke line bawah tetapi masih dalam description block row yang sama, gabungkan.
+- Ambil hanya kode HS, tanpa kata "HS#", tanpa koma/titik/semicolon di akhir.
+- Pertahankan format titik jika terlihat di PDF, misalnya "8507.60" atau "8507.60.90".
+- Jangan ambil coo_hs_code.
+- Jangan ambil HS code dari header, COO, summary, footer, atau row lain.
+- Jangan mengarang.
+- Jika "HS#" tidak ditemukan untuk row tersebut, isi "null".
+
+ATURAN OUTPUT:
+1. Output HANYA JSON ARRAY valid.
+2. Jumlah row output HARUS sama persis dengan jumlah ROWS input.
+3. Urutan row output HARUS sama persis dengan input.
+4. WAJIB pertahankan "_detail_row_no".
+5. Output hanya field:
+   - _detail_row_no
+   - inv_hs_code
+
+OUTPUT SCHEMA:
+[
+  {{
+    "_detail_row_no": "number",
+    "inv_hs_code": "string"
+  }}
+]
+
+ROWS:
+{rows_json}
+""".strip()
+
+
+def _call_gemini_shimano_hs_code_once(file_uri: str, rows: list, vendor_id: str = "default"):
+    if not _is_shimano_inc_vendor(vendor_id):
+        return []
+
+    rows_payload = _build_shimano_hs_code_rows_payload(rows)
+
+    if not rows_payload:
+        return []
+
+    try:
+        configured_batch_size = int(SHIMANO_HS_CODE_EXTRACTION_BATCH_SIZE)
+    except Exception:
+        configured_batch_size = 10
+
+    batch_size = max(1, min(configured_batch_size, 10))
+    extracted_rows = []
+
+    def _call_hs_batch(batch: list, label: str):
+        result = _call_gemini_json_uri(
+            file_uri,
+            _build_shimano_hs_code_prompt(batch),
+            expect_array=True,
+            retries=3,
+        )
+
+        if not isinstance(result, list):
+            raise Exception(f"Shimano HS code output bukan array ({label})")
+
+        if len(result) != len(batch):
+            raise Exception(
+                f"Shimano HS code count mismatch ({label}). "
+                f"expected={len(batch)} got={len(result)}"
+            )
+
+        return result
+
+    for start in range(0, len(rows_payload), batch_size):
+        batch = rows_payload[start:start + batch_size]
+
+        try:
+            extracted_rows.extend(
+                _call_hs_batch(batch, label=f"batch_start={start + 1}")
+            )
+            continue
+
+        except Exception as batch_error:
+            print(
+                f"[SHIMANO_HS_CODE_BATCH_WARN] "
+                f"start={start + 1} size={len(batch)} "
+                f"error={batch_error}; fallback single-row"
+            )
+
+        for item in batch:
+            row_no = item.get("_detail_row_no") if isinstance(item, dict) else None
+
+            try:
+                extracted_rows.extend(
+                    _call_hs_batch([item], label=f"row_no={row_no}")
+                )
+            except Exception as single_error:
+                print(
+                    f"[SHIMANO_HS_CODE_ROW_SKIP] "
+                    f"row_no={row_no} error={single_error}"
+                )
+
+    return extracted_rows
+
+
+def _apply_shimano_hs_code_result(rows: list, hs_rows: list):
+    hs_by_row_no = {}
+
+    for item in hs_rows or []:
+        if not isinstance(item, dict):
+            continue
+
+        row_no = item.get("_detail_row_no")
+        if row_no is None:
+            continue
+
+        try:
+            hs_by_row_no[int(row_no)] = _normalize_inv_hs_code(
+                item.get("inv_hs_code")
+            )
+        except Exception:
+            continue
+
+    for idx, row in enumerate(rows or [], start=1):
+        if not isinstance(row, dict):
+            continue
+
+        row_no = _safe_row_no_int(row) or idx
+
+        if row_no in hs_by_row_no:
+            row["inv_hs_code"] = hs_by_row_no[row_no]
+        elif "inv_hs_code" not in row or _is_null(row.get("inv_hs_code")):
+            row["inv_hs_code"] = "null"
+        else:
+            row["inv_hs_code"] = _normalize_inv_hs_code(row.get("inv_hs_code"))
+
+    return rows
+
+
+def _run_shimano_hs_code_pass(file_uri: str, rows: list, vendor_id: str = "default"):
+    if not _is_shimano_inc_vendor(vendor_id):
+        return rows
+
+    try:
+        hs_rows = _call_gemini_shimano_hs_code_once(
+            file_uri=file_uri,
+            rows=rows,
+            vendor_id=vendor_id,
+        )
+
+        rows = _apply_shimano_hs_code_result(rows, hs_rows)
+
+        print(
+            f"[SHIMANO_HS_CODE_PASS] "
+            f"rows={len(rows or [])} extracted={len(hs_rows or [])}"
+        )
+
+    except Exception as e:
+        # Jangan gagalkan OCR utama hanya karena pass tambahan gagal.
+        print(f"[SHIMANO_HS_CODE_PASS][WARN] skipped: {e}")
+
+    return rows
+
 def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "default"):
     _ensure_all_detail_keys(rows)
 
@@ -9578,6 +9826,21 @@ def run_ocr(
                 f"Detail row count changed after recheck. "
                 f"expected={total_row}, actual={len(all_rows)}"
             )
+
+        # =========================================
+        # SHIMANO INC ONLY: HS# extraction
+        # Tidak grouping ulang.
+        # Jalan per invoice group karena run_grouped_ocr()
+        # memanggil run_ocr() per group.
+        #
+        # Pakai base_detail_input_uri = INV + PL only,
+        # supaya tidak salah ambil HS code dari COO/BL.
+        # =========================================
+        all_rows = _run_shimano_hs_code_pass(
+            file_uri=base_detail_input_uri,
+            rows=all_rows,
+            vendor_id=vendor_id,
+        )
         
         # =========================================
         # PASS 2: OPTIONAL FULL DOC OCR
@@ -9725,19 +9988,23 @@ def run_ocr(
 
         _finalize_match_fields(all_rows)
 
-        _drop_columns(all_rows, [
+        drop_detail_columns = [
             "inv_messrs",
             "inv_messrs_address",
             "inv_gw",
             "inv_gw_unit",
-            "inv_hs_code",
             "confidence_logprob",
             "confidence_margin",
             "confidence_predicted_label",
             "confidence_source",
             "audit_candidate",
             "audit_rank",
-        ])
+        ]
+
+        if not _is_shimano_inc_vendor(vendor_id):
+            drop_detail_columns.append("inv_hs_code")
+
+        _drop_columns(all_rows, drop_detail_columns)
 
         if with_total_container:
             total_data = _build_total_from_detail_and_container(all_rows, container_data)
@@ -9790,7 +10057,7 @@ def run_ocr(
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             result["detail_rows"],
-            field_order=DETAIL_CSV_FIELD_ORDER_FINAL
+            field_order=_get_detail_csv_field_order(vendor_id)
         )
 
         total_csv_uri = None
