@@ -4658,6 +4658,53 @@ def _copy_po_line_with_allocated_qty(po_line: dict, allocated_qty):
 
     return copied
 
+PO_SPLIT_ZERO_FIELDS = [
+    # Invoice additive fields
+    "inv_quantity",
+    "inv_amount",
+
+    # Packing List additive fields
+    "pl_quantity",
+    "pl_package_count",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+
+    # COO additive fields
+    "coo_quantity",
+    "coo_amount",
+    "coo_gw",
+    "coo_package_count",
+]
+
+
+def _zero_po_split_secondary_total_fields(row: dict):
+    """
+    Untuk row hasil split PO non-primary:
+    - PO data tetap hidup
+    - field additive invoice/PL/COO dibuat 0 agar tidak overcount
+    """
+    if not isinstance(row, dict):
+        return row
+
+    for field in PO_SPLIT_ZERO_FIELDS:
+        if field in row:
+            row[field] = 0
+
+    return row
+
+
+def _is_secondary_po_split_row(row: dict) -> bool:
+    """
+    Row hasil split PO selain row pertama.
+    Dipakai agar validation required numeric tidak menganggap 0 sebagai missing.
+    """
+    return (
+        isinstance(row, dict)
+        and int(row.get("_po_split_count") or 0) > 1
+        and row.get("_po_split_primary") is False
+    )
+
 
 def _pick_closest_remaining_candidate(candidates, target_qty):
     """
@@ -5287,11 +5334,28 @@ def _map_single_detail_row_to_po(
     row_matches = sorted(row_matches, key=lambda x: _po_line_sort_key(x[0]))
 
     mapped_rows = []
+    split_count = len(row_matches)
 
-    for matched_line, alloc_qty in row_matches:
+    for split_index, (matched_line, alloc_qty) in enumerate(row_matches):
         new_row = dict(row)
+
+        is_primary_split = split_index == 0
+
         new_row["_po_mapped"] = True
         new_row["_po_data"] = _copy_po_line_with_allocated_qty(matched_line, alloc_qty)
+
+        # metadata internal untuk membedakan row utama vs row split tambahan
+        new_row["_po_split_count"] = split_count
+        new_row["_po_split_index"] = split_index + 1
+        new_row["_po_split_primary"] = is_primary_split
+        new_row["_po_allocated_qty"] = alloc_qty
+
+        # IMPORTANT:
+        # Kalau 1 detail row di-split ke multiple PO,
+        # hanya row pertama yang membawa nilai additive.
+        # Row kedua dst. dibuat 0 agar tidak overcount total invoice/packing.
+        if split_count > 1 and not is_primary_split:
+            _zero_po_split_secondary_total_fields(new_row)
 
         # selalu pakai item no asli dari PO JSON
         po_article_value = _get_best_po_article_value(matched_line)
@@ -6130,6 +6194,11 @@ def _validate_po(detail_rows):
             _append_err(row, "PO item tidak ditemukan")
             row.pop("_po_data", None)
             row.pop("_po_mapped", None)
+            # metadata internal split PO, jangan ikut output final
+            row.pop("_po_split_count", None)
+            row.pop("_po_split_index", None)
+            row.pop("_po_split_primary", None)
+            row.pop("_po_allocated_qty", None)
             continue
 
         po_data = row.get("_po_data") or {}
@@ -6202,18 +6271,27 @@ def _validate_invoice_rows(rows: list):
                 _append_err(r, f"Invoice: missing {k}")
 
         for k in required_num:
+            # Untuk secondary PO split, inv_quantity dan inv_amount sengaja dibuat 0
+            # supaya tidak overcount. Jangan dianggap missing.
+            if _is_secondary_po_split_row(r) and k in {"inv_quantity", "inv_amount"}:
+                continue
+
             if _is_missing_num(r.get(k)):
                 _append_err(r, f"Invoice: missing {k}")
 
         # aritmatika: amount = qty * unit_price
-        qty = _to_float(r.get("inv_quantity"))
-        up  = _to_float(r.get("inv_unit_price"))
-        amt = _to_float(r.get("inv_amount"))
-        if qty is not None and up is not None and amt is not None:
-            expected = qty * up
-            # toleransi 0.01 untuk rounding
-            if abs(expected - amt) > 0.01:
-                _append_err(r, f"Invoice: inv_amount != inv_quantity*inv_unit_price (exp {expected}, got {amt})")
+        # aritmatika: amount = qty * unit_price
+        # Untuk secondary PO split, inv_quantity dan inv_amount sengaja 0,
+        # jadi skip formula check agar tidak false error.
+        if not _is_secondary_po_split_row(r):
+            qty = _to_float(r.get("inv_quantity"))
+            up  = _to_float(r.get("inv_unit_price"))
+            amt = _to_float(r.get("inv_amount"))
+            if qty is not None and up is not None and amt is not None:
+                expected = qty * up
+                # toleransi 0.01 untuk rounding
+                if abs(expected - amt) > 0.01:
+                    _append_err(r, f"Invoice: inv_amount != inv_quantity*inv_unit_price (exp {expected}, got {amt})")
 
     # validasi total (pakai declared total di dokumen yang diekstrak Gemini)
     declared_qty = _to_float(_first_non_null_nonzero(rows, "inv_total_quantity"))
@@ -6320,6 +6398,17 @@ def _validate_packing_rows(rows: list):
                 _append_err(r, f"PackingList: missing {k}")
 
         for k in required_num:
+            # Untuk secondary PO split, field PL additive sengaja dibuat 0
+            # supaya tidak overcount total packing.
+            if _is_secondary_po_split_row(r) and k in {
+                "pl_quantity",
+                "pl_package_count",
+                "pl_nw",
+                "pl_gw",
+                "pl_volume",
+            }:
+                continue
+
             if _is_missing_num(r.get(k)):
                 _append_err(r, f"PackingList: missing {k}")
 
@@ -9940,7 +10029,7 @@ def run_ocr(
         _postprocess_bl_coo_zero_to_null(all_rows)
         _postprocess_invoice_no_consensus(all_rows)
 
-        all_rows = _deduplicate_detail_rows_before_validation(all_rows, vendor_id=vendor_id)
+        # all_rows = _deduplicate_detail_rows_before_validation(all_rows, vendor_id=vendor_id)
 
         _assign_detail_row_numbers(all_rows)
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
