@@ -40,7 +40,6 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_score",
     "match_description",
     "confidence_label",
-    "confidence_logprob",
     "inv_invoice_no",
     "inv_invoice_date",
     "inv_customer_po_no",
@@ -68,7 +67,6 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "inv_total_gw",
     "inv_total_volume",
     "inv_total_package",
-    "inv_hs_code",
 
     "pl_invoice_no",
     "pl_invoice_date",
@@ -194,7 +192,6 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "inv_quantity_unit": "string",
   "inv_unit_price": "number",
   "inv_amount": "number",
-  "inv_hs_code": "string",
 
   "pl_customer_po_no": "string",
   "pl_item_no": "string",
@@ -227,7 +224,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 DETAIL_LINE_FIELDS = [
     "inv_customer_po_no","inv_seq","inv_spart_item_no","inv_description","inv_gw","inv_gw_unit",
     "inv_quantity","inv_quantity_unit","inv_unit_price","inv_price_unit","inv_amount","inv_amount_unit",
-    "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package", "inv_hs_code",
+    "inv_total_quantity","inv_total_amount","inv_total_nw","inv_total_gw","inv_total_volume","inv_total_package",
 
     "pl_customer_po_no", "pl_item_no","pl_description","pl_quantity","pl_package_unit", "pl_package_count","pl_nw","pl_gw",
     "pl_volume","pl_total_quantity","pl_total_amount","pl_total_nw","pl_total_gw","pl_total_volume","pl_total_package",
