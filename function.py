@@ -64,6 +64,11 @@ DETAIL_RECHECK_NUM_FIELDS = {
     if str(v).strip().lower() == "number"
 }
 
+FINAL_DETAIL_CSV_FIELD_ORDER = [
+    k for k in DETAIL_CSV_FIELD_ORDER_FINAL
+    if k != "inv_hs_code"
+]
+
 CBM_TO_CUFT = 35.3147
 
 storage_client = storage.Client() 
@@ -5805,6 +5810,138 @@ def _postprocess_coo_item_mapping(rows: list):
         if not _coo_item_matches_row(row):
             _nullify_coo_item_fields(row)
 
+COO_PO_BACKFILL_TARGET_FIELDS = [
+    "coo_description",
+    "coo_hs_code",
+    "coo_quantity",
+    "coo_unit",
+    "coo_amount",
+    "coo_criteria",
+    "coo_origin_country",
+]
+
+def _normalize_mode_value_key(value) -> str:
+    if _is_null(value):
+        return ""
+
+    return re.sub(r"\s+", " ", str(value).strip().upper())
+
+def _pick_most_common_non_null_value(values):
+    """
+    Ambil value non-null yang paling sering muncul.
+    Tie-breaker: value yang pertama kali muncul di group.
+    """
+    counts = {}
+    first_seen = {}
+    originals = {}
+
+    for idx, value in enumerate(values or []):
+        if _is_null(value):
+            continue
+
+        key = _normalize_mode_value_key(value)
+        if not key:
+            continue
+
+        counts[key] = counts.get(key, 0) + 1
+
+        if key not in first_seen:
+            first_seen[key] = idx
+            originals[key] = value
+
+    if not counts:
+        return None
+
+    best_key = sorted(
+        counts.keys(),
+        key=lambda k: (-counts[k], first_seen[k])
+    )[0]
+
+    return originals.get(best_key)
+
+def _build_invoice_mode_map(rows: list, field_name: str) -> dict:
+    """
+    Group by invoice number, lalu ambil value field yang paling sering muncul
+    di masing-masing invoice group.
+    """
+    grouped_values = {}
+
+    for idx, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            continue
+
+        invoice_group = _get_detail_total_group_key(row, idx)
+        if not invoice_group:
+            continue
+
+        grouped_values.setdefault(invoice_group, []).append(row.get(field_name))
+
+    mode_map = {}
+
+    for invoice_group, values in grouped_values.items():
+        mode_value = _pick_most_common_non_null_value(values)
+        if mode_value is not None:
+            mode_map[invoice_group] = mode_value
+
+    return mode_map
+
+def _postprocess_coo_po_only_rows_from_invoice(rows: list):
+    """
+    Backfill COO item fields untuk kasus:
+    - coo_customer_po_no ada
+    - semua field COO item utama kosong
+
+    Field COO item diambil dari invoice row yang sama.
+    coo_criteria dan coo_origin_country diambil dari value terbanyak
+    per invoice number.
+    """
+    criteria_by_invoice = _build_invoice_mode_map(rows, "coo_criteria")
+    origin_country_by_invoice = _build_invoice_mode_map(rows, "coo_origin_country")
+
+    source_map = {
+        "coo_description": "inv_description",
+        "coo_hs_code": "inv_hs_code",
+        "coo_quantity": "inv_quantity",
+        "coo_unit": "inv_quantity_unit",
+        "coo_amount": "inv_amount",
+    }
+
+    for idx, row in enumerate(rows or []):
+        if not isinstance(row, dict):
+            continue
+
+        # trigger hanya kalau PO COO ada
+        if _is_null(row.get("coo_customer_po_no")):
+            continue
+
+        # hanya backfill kalau semua target COO masih kosong
+        if not all(_is_null(row.get(k)) for k in COO_PO_BACKFILL_TARGET_FIELDS):
+            continue
+
+        # ambil dari invoice row yang sama
+        for coo_key, inv_key in source_map.items():
+            inv_value = row.get(inv_key)
+            row[coo_key] = "null" if _is_null(inv_value) else inv_value
+
+        invoice_group = _get_detail_total_group_key(row, idx)
+
+        # ambil value terbanyak per invoice no
+        criteria_value = criteria_by_invoice.get(invoice_group)
+        if criteria_value is not None:
+            row["coo_criteria"] = criteria_value
+
+        origin_country_value = origin_country_by_invoice.get(invoice_group)
+        if origin_country_value is not None:
+            row["coo_origin_country"] = origin_country_value
+
+        print(
+            f"[COO_PO_ONLY_BACKFILL] "
+            f"invoice_no={invoice_group} "
+            f"coo_customer_po_no='{row.get('coo_customer_po_no')}' "
+            f"criteria='{row.get('coo_criteria')}' "
+            f"origin_country='{row.get('coo_origin_country')}'"
+        )
+
 def _has_all_required_coo_seq_fields(row: dict) -> bool:
     if not isinstance(row, dict):
         return False
@@ -8496,6 +8633,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_coo_description(rows)
 
     _postprocess_coo_item_mapping(rows)
+    _postprocess_coo_po_only_rows_from_invoice(rows)
     _postprocess_coo_no_and_seq(rows)
 
     _postprocess_bl_description(rows)
@@ -9532,6 +9670,9 @@ def run_ocr(
         # NEW: null-kan COO item yang tidak match ke row detail
         _postprocess_coo_item_mapping(all_rows)
 
+        # Backfill row COO yang cuma punya PO sebelum coo_seq dinomori
+        _postprocess_coo_po_only_rows_from_invoice(all_rows)
+
         # NEW: hitung coo_seq hanya untuk row COO yang masih valid/matched
         _postprocess_coo_no_and_seq(all_rows)
 
@@ -9548,6 +9689,7 @@ def run_ocr(
 
         _assign_detail_row_numbers(all_rows)
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
+        _postprocess_coo_po_only_rows_from_invoice(all_rows)
         _postprocess_coo_no_and_seq(all_rows)
         
         _postprocess_null_fields_for_vendor(
@@ -9596,6 +9738,7 @@ def run_ocr(
             "inv_messrs_address",
             "inv_gw",
             "inv_gw_unit",
+            "inv_hs_code",
             "confidence_logprob",
             "confidence_margin",
             "confidence_predicted_label",
