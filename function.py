@@ -43,7 +43,7 @@ from vendor_detection import (
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
-test_number = 1
+test_number = 2
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
