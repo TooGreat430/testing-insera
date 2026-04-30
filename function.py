@@ -286,6 +286,7 @@ def _inherit_match_description_for_zero_continuation_rows(rows: list):
         return rows
 
     parent_match_description = None
+    parent_inv_seq = None
     parent_row_no = None
     changed_count = 0
 
@@ -296,6 +297,7 @@ def _inherit_match_description_for_zero_continuation_rows(rows: list):
         if _is_zero_continuation_row(row):
             if not _is_null(parent_match_description):
                 row["match_description"] = parent_match_description
+                row["inv_seq"] = parent_inv_seq
                 changed_count += 1
 
                 print(
@@ -307,12 +309,16 @@ def _inherit_match_description_for_zero_continuation_rows(rows: list):
 
         # Row bukan nol menjadi parent baru.
         current_match_description = row.get("match_description")
+        current_sequence = row.get("inv_sequence")
 
         if not _is_null(current_match_description):
             parent_match_description = current_match_description
+            parent_inv_seq = current_sequence
+
             parent_row_no = idx + 1
         else:
             parent_match_description = None
+            parent_inv_seq = None
             parent_row_no = idx + 1
 
     print(
