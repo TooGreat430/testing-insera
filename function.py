@@ -3727,6 +3727,15 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             continue
 
         # =====================================================
+        # TOTAL ISSUE:
+        # Kalau Gemini sendiri memilih row ini sebagai negative,
+        # jangan dioverride jadi positive oleh total-first logic.
+        # =====================================================
+        if row.get("_gemini_total_issue_negative") is True:
+            row["confidence_label"] = "negative"
+            continue
+
+        # =====================================================
         # TOTAL-FIRST OVERRIDE:
         # Jika group punya FALSE total issue, maka non-total mismatch/missing
         # tidak otomatis negative.
@@ -3764,117 +3773,17 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
 
 def _force_min_one_negative_for_total_issue(rows: list, total_attribution=None):
     """
-    HARD GUARANTEE:
-    - match_score TRUE selalu positive.
-    - Untuk setiap invoice group yang punya total issue,
-      kalau semua row FALSE total issue masih positive,
-      paksa 1 row FALSE total issue menjadi negative.
+    DISABLED BY DESIGN.
 
-    Catatan:
-    - Function ini hanya mengubah confidence_label.
-    - Tidak mengubah value numeric hasil ekstraksi.
-    - Tidak menambah kolom output final.
+    Negative untuk TOTAL issue harus datang dari Gemini recheck:
+    - confidence_label="negative"
+    - atau changed_fields / accepted field repair
+
+    Python tidak boleh lagi memilih row negative sendiri,
+    karena itu bisa berubah menjadi "asal ambil candidate".
+    Jika Gemini return semua positive untuk total issue, itu sudah
+    ditangkap oleh _validate_total_issue_gemini_batch_result().
     """
-    if not isinstance(rows, list):
-        return rows
-
-    total_attribution = total_attribution or {}
-    total_issue_groups = set(total_attribution.get("total_issue_groups", []))
-
-    grouped_rows = _group_rows_by_invoice_no(rows)
-
-    for invoice_group, group_rows in grouped_rows.items():
-        # Group dianggap total issue kalau:
-        # 1. ada di total_attribution.total_issue_groups, atau
-        # 2. ada row FALSE total issue di group tersebut.
-        group_has_total_issue = invoice_group in total_issue_groups
-
-        if not group_has_total_issue:
-            group_has_total_issue = any(
-                _is_false_total_issue_row(row)
-                for row in group_rows
-                if isinstance(row, dict)
-            )
-
-        if not group_has_total_issue:
-            continue
-
-        false_total_rows = []
-
-        for row in group_rows:
-            if not isinstance(row, dict):
-                continue
-
-            match_score = str(row.get("match_score", "")).strip().lower()
-
-            # HARD RULE: TRUE tidak boleh disentuh.
-            if match_score == "true":
-                row["confidence_label"] = "positive"
-                continue
-
-            if _is_false_total_issue_row(row):
-                false_total_rows.append(row)
-
-        if not false_total_rows:
-            continue
-
-        already_has_negative = any(
-            str(row.get("confidence_label", "")).strip().lower() == "negative"
-            for row in false_total_rows
-        )
-
-        if already_has_negative:
-            continue
-
-        # Pilih row terbaik untuk dipaksa negative.
-        # Priority:
-        # 1. row yang sudah ditandai _force_total_issue_candidate
-        # 2. row dengan score paling tinggi dari _score_primary_force_candidate
-        # 3. fallback: FALSE total row pertama
-        selected = None
-
-        for row in false_total_rows:
-            if row.get("_force_total_issue_candidate"):
-                selected = row
-                break
-
-        if selected is None:
-            best_score = -1.0
-            for row in false_total_rows:
-                recheck_fields = row.get("_recheck_fields")
-                if not isinstance(recheck_fields, list):
-                    recheck_fields = []
-
-                field_meta_map = row.get("_recheck_field_meta")
-                if not isinstance(field_meta_map, dict):
-                    field_meta_map = {}
-
-                try:
-                    score = _score_primary_force_candidate(
-                        row=row,
-                        recheck_fields=recheck_fields,
-                        field_meta_map=field_meta_map,
-                    )
-                except Exception:
-                    score = 0.0
-
-                if selected is None or score > best_score:
-                    selected = row
-                    best_score = score
-
-        if selected is None:
-            selected = false_total_rows[0]
-
-        selected["confidence_label"] = "negative"
-        selected["_forced_total_issue_negative"] = True
-
-        print(
-            f"[FORCE_MIN_ONE_NEGATIVE] "
-            f"invoice_group={invoice_group} "
-            f"row_no={selected.get('_detail_row_no')} "
-            f"reason=total_issue_all_positive"
-        )
-
     return rows
 
 
@@ -7424,14 +7333,193 @@ def _build_force_one_negative_context(row: dict, recheck_fields: list, plan_item
     return {
         "is_primary_candidate": bool(is_primary),
         "expected_candidates_by_field": expected_map,
-        "instruction": (
-            "Jika total_issue_context tidak kosong dan semua row dalam batch ini terlihat unchanged/positive, "
-            "maka hanya row dengan is_primary_candidate=true yang boleh dipaksa dicek ulang paling detail. "
-            "Jika expected_candidate pada row primary terlihat plausible secara visual/layout PDF, "
-            "return expected_candidate untuk minimal satu field dalam _recheck_fields. "
-            "Jika is_primary_candidate=false, jangan paksa row ini menjadi salah."
+        "hard_rule": (
+            "Jika batch_total_issue_contract.total_issue_mode=true, Gemini WAJIB memilih "
+            "minimal satu row sebagai confidence_label='negative'. Tidak boleh semua row positive."
+        ),
+        "layout_anchor_rule": (
+            "Gunakan anchor kiri/atas seperti spare part, item no, PO number, vendor article no, "
+            "atau description untuk menemukan line item. Setelah row ditemukan, baca numeric value "
+            "di kanan atau bawah anchor sesuai layout visual PDF."
+        ),
+        "expected_candidate_rule": (
+            "Untuk row candidate, bandingkan extracted_value vs expected_candidate. "
+            "Jika expected_candidate cocok dengan angka visual PDF, return expected_candidate "
+            "pada field terkait dan set confidence_label='negative'."
         ),
     }
+
+def _is_total_issue_payload_item(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+
+    total_issue_context = item.get("total_issue_context")
+    if isinstance(total_issue_context, list) and total_issue_context:
+        return True
+
+    text = str(item.get("match_description") or "").lower()
+    total_keywords = [
+        "total_quantity mismatch",
+        "total_amount mismatch",
+        "total_package mismatch",
+        "total_nw mismatch",
+        "total_gw mismatch",
+        "total_volume mismatch",
+    ]
+
+    return any(k in text for k in total_keywords)
+
+
+def _payload_item_group_key(item: dict) -> str:
+    if not isinstance(item, dict):
+        return "__UNKNOWN__"
+
+    for key in [
+        "_recheck_group_key",
+        "inv_invoice_no",
+        "pl_invoice_no",
+        "coo_invoice_no",
+        "coo_no",
+    ]:
+        value = item.get(key)
+        normalized = _preprocess_invoice_no_for_grouping(value)
+        if normalized:
+            return normalized
+
+    return "__UNKNOWN__"
+
+
+def _build_batch_total_issue_contract(batch: list) -> dict:
+    total_items = [
+        item for item in batch or []
+        if _is_total_issue_payload_item(item)
+    ]
+
+    primary_items = [
+        item for item in total_items
+        if (
+            isinstance(item.get("force_one_negative_context"), dict)
+            and item["force_one_negative_context"].get("is_primary_candidate") is True
+        )
+    ]
+
+    return {
+        "total_issue_mode": bool(total_items),
+        "min_negative_required": 1 if total_items else 0,
+        "forbidden_output": (
+            "Jika total_issue_mode=true, output semua row positive/unchanged adalah INVALID."
+        ),
+        "candidate_row_nos": [
+            item.get("_detail_row_no") for item in total_items
+        ],
+        "primary_candidate_row_nos": [
+            item.get("_detail_row_no") for item in primary_items
+        ],
+        "decision_rule": (
+            "Gemini harus membedakan line item mana yang salah berdasarkan visual PDF. "
+            "Jangan pilih berdasarkan urutan row. Gunakan anchor line item dan expected_candidate."
+        ),
+        "layout_rule": (
+            "Jika layout horizontal, anchor item/PO/part berada di kiri dan numeric target berada di kanan. "
+            "Jika layout vertical/wrapped, anchor bisa di atas dan numeric target bisa berada di bawahnya."
+        ),
+    }
+
+
+def _batch_requires_total_negative(batch: list) -> bool:
+    contract = _build_batch_total_issue_contract(batch)
+    return bool(contract.get("total_issue_mode")) and int(contract.get("min_negative_required") or 0) > 0
+
+
+def _repaired_row_has_allowed_change(input_item: dict, repaired_item: dict) -> bool:
+    if not isinstance(input_item, dict) or not isinstance(repaired_item, dict):
+        return False
+
+    allowed_fields = _normalize_recheck_field_list(
+        input_item.get("_recheck_fields") or []
+    )
+
+    for field in allowed_fields:
+        if field not in repaired_item:
+            continue
+
+        old_value = input_item.get(field)
+        new_value = repaired_item.get(field)
+
+        if not _same_recheck_value(old_value, new_value, field):
+            return True
+
+    return False
+
+
+def _validate_total_issue_gemini_batch_result(batch: list, repaired_batch: list, label: str = ""):
+    """
+    Hard validator:
+    Kalau batch punya total issue, Gemini tidak boleh return semua positive/unchanged.
+    Harus ada minimal 1 row:
+    - confidence_label == negative, ATAU
+    - ada value field recheck yang berubah dari input.
+    """
+    if not _batch_requires_total_negative(batch):
+        return
+
+    if not isinstance(repaired_batch, list):
+        raise Exception(f"Invalid Gemini result for total issue batch {label}: output bukan list")
+
+    input_by_no = {}
+    for item in batch or []:
+        if not isinstance(item, dict):
+            continue
+
+        row_no = item.get("_detail_row_no")
+        if row_no is None:
+            continue
+
+        try:
+            input_by_no[int(row_no)] = item
+        except Exception:
+            continue
+
+    has_negative = False
+
+    for repaired in repaired_batch:
+        if not isinstance(repaired, dict):
+            continue
+
+        row_no = repaired.get("_detail_row_no")
+        if row_no is None:
+            continue
+
+        try:
+            input_item = input_by_no.get(int(row_no))
+        except Exception:
+            input_item = None
+
+        confidence_label = str(
+            repaired.get("confidence_label") or repaired.get("_gemini_recheck_decision") or ""
+        ).strip().lower()
+
+        changed_fields = repaired.get("changed_fields")
+        if not isinstance(changed_fields, list):
+            changed_fields = repaired.get("_gemini_changed_fields")
+
+        if confidence_label == "negative":
+            has_negative = True
+            break
+
+        if isinstance(changed_fields, list) and changed_fields:
+            has_negative = True
+            break
+
+        if input_item and _repaired_row_has_allowed_change(input_item, repaired):
+            has_negative = True
+            break
+
+    if not has_negative:
+        raise Exception(
+            f"Invalid Gemini result for total issue batch {label}: "
+            f"total_issue_mode=true tapi Gemini return zero negative / zero changed field."
+        )
 
 def _build_recheck_payload_item(
     row: dict,
@@ -7464,10 +7552,18 @@ def _build_recheck_payload_item(
     item = {
         "_detail_row_no": row.get("_detail_row_no"),
         "_recheck_fields": list(recheck_fields),
+        "_recheck_group_key": (
+            row.get("_recheck_group_key")
+            or group_plan_item.get("group_key")
+            or _get_detail_total_group_key(row, 0)
+        ),
 
-        # Context dari validasi
         "match_description": row.get("match_description", "null"),
         "total_issue_context": group_plan_item.get("issues", []),
+        "batch_total_issue_hint": {
+            "total_issue_mode": bool(group_plan_item.get("issues")),
+            "gemini_must_return_min_one_negative_in_group": bool(group_plan_item.get("issues")),
+        },
         "document_audit_context": _build_document_audit_context(
             recheck_fields=recheck_fields,
             group_plan_item=group_plan_item,
@@ -7856,136 +7952,94 @@ def _build_detail_line_recheck_schema():
     return schema
 
 
-def _build_detail_line_recheck_prompt(rows_payload: list) -> str:
-    schema_json = json.dumps(_build_detail_line_recheck_schema(), ensure_ascii=False, indent=2)
+def _build_detail_line_recheck_prompt(rows_payload: list, strict_total_retry: bool = False) -> str:
+    schema = {
+        "_detail_row_no": "number",
+        "_recheck_fields": ["string"],
+
+        # Internal decision fields untuk audit.
+        # Tidak perlu masuk CSV final.
+        "confidence_label": "positive|negative",
+        "changed_fields": ["string"],
+        "visual_reason": "string",
+
+        **DETAIL_RECHECK_SCHEMA,
+    }
+
+    schema_json = json.dumps(schema, ensure_ascii=False, indent=2)
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
+    batch_contract = _build_batch_total_issue_contract(rows_payload)
+    batch_contract_json = json.dumps(batch_contract, ensure_ascii=False, indent=2)
+
+    strict_text = ""
+    if strict_total_retry:
+        strict_text = """
+STRICT RETRY MODE:
+Response sebelumnya INVALID karena total_issue_mode=true tetapi tidak ada negative.
+Pada retry ini Anda WAJIB memilih minimal 1 row sebagai confidence_label="negative".
+Jika tetap semua positive, output dianggap gagal.
+"""
 
     return f"""
 ROLE:
-Anda adalah AI LAYOUT-AWARE VERIFIER untuk hasil ekstraksi detail OCR.
+Anda adalah auditor detail line item berbasis visual PDF.
 
 SOURCE OF TRUTH:
 - PDF visual pada request ini adalah sumber kebenaran utama.
-- JSON input adalah hasil ekstraksi awal + kandidat audit.
-- audit_expected_candidate / gap_adjust_candidate BUKAN jawaban pasti.
-- Tugas Anda adalah membaca layout visual PDF dan menentukan value target cell yang benar.
+- ROWS adalah hasil ekstraksi sebelumnya.
+- Tugas Anda bukan sekadar copy ROWS, tapi memverifikasi ulang nilai pada PDF.
 
-TUGAS UTAMA:
-Untuk setiap row:
-1. Baca "_recheck_fields".
-2. HANYA field dalam "_recheck_fields" yang boleh dikoreksi.
-3. Untuk setiap field target, bandingkan:
-   - extracted_value
-   - audit_expected_candidate
-   - candidate_values[field]
-   - value yang benar-benar terlihat pada PDF visual
-4. Pilih value yang didukung oleh visual PDF.
-5. Jika PDF menunjukkan value lain yang tidak ada dalam kandidat, return value yang terlihat di PDF.
-6. Jika tidak yakin dan tidak ada bukti visual yang jelas, pertahankan extracted_value.
+BATCH TOTAL ISSUE CONTRACT:
+{batch_contract_json}
 
-KONTEKS AUDIT:
-- document_audit_context menjelaskan total mismatch.
-- field_comparison menjelaskan extracted_value vs audit_expected_candidate.
-- candidate_values adalah opsi bantu.
-- row_context berisi current_row, previous_row, next_row untuk membantu menemukan row target.
+{strict_text}
 
-PENTING TENTANG EXPECTED / CANDIDATE:
-- audit_expected_candidate dibuat dari audit matematis total mismatch.
-- Jangan otomatis memilih audit_expected_candidate.
-- Jangan otomatis mempertahankan extracted_value.
-- Pilih berdasarkan layout PDF.
-- Jika audit_expected_candidate terlihat pada target cell PDF, pilih candidate tersebut.
-- Jika extracted_value terlihat pada target cell PDF, pilih extracted_value.
-- Jika target cell kosong karena merged-cell continuation, return 0 untuk field additive numeric.
-
-WAJIB PERIKSA KEMUNGKINAN ERROR LAYOUT:
-1. VALUE LANJUT KE BAWAH KARENA CELL KECIL
-   - Jika angka terpotong ke beberapa line tetapi masih dalam cell yang sama, gabungkan.
-   - Contoh: "0." pada line pertama dan "325" pada line bawah dapat berarti 0.325.
-   - Jangan anggap line bawah sebagai row baru jika masih dalam cell yang sama.
-
-2. PAGE BREAK
-   - Jika row terpotong di akhir halaman dan lanjut di halaman berikutnya, gunakan item_no, description,
-     previous_row, dan next_row untuk memastikan apakah itu masih row yang sama.
-   - Jangan membuat row baru.
-   - Jangan memindahkan value ke row salah karena page break.
-
-3. MERGE CELL
-   - Jika numeric cell terlihat merged / span beberapa item row:
-     owner row mendapat value asli.
-     continuation row harus return 0 untuk field additive numeric.
-   - Field additive numeric:
-     inv_quantity, inv_amount, pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
-   - Jangan duplikasikan value merged cell ke semua row.
-
-4. SALAH KOLOM
-   - Pastikan angka berasal dari target column.
-   - Jika target field adalah pl_volume:
-     baca hanya kolom Volume / CBM / Measurement / M3.
-     Jangan ambil NW, GW, Package, Quantity.
-   - Jika target field adalah pl_gw:
-     baca hanya kolom GW / Gross Weight.
-     Jangan ambil NW atau Volume.
-   - Jika target field adalah pl_nw:
-     baca hanya kolom NW / Net Weight.
-     Jangan ambil GW atau Volume.
-   - Jika target field adalah pl_package_count:
-     baca hanya kolom Package / Carton / CTN / PKGS.
-
-5. ROW SHIFT
-   - Gunakan previous_row dan next_row untuk membedakan row target.
-   - Jangan ambil value dari row sebelum/sesudah hanya karena posisinya dekat.
-   - Jika description atau item_no membungkus ke line berikutnya, tetap identifikasi row target secara visual.
-
-6. DECIMAL CONFUSION
-   - Periksa digit decimal dengan hati-hati.
-   - Contoh:
-     0.325 bisa salah terbaca 0.35
-     3.170 bisa salah terbaca 3.110
-   - Jangan membulatkan angka kecuali PDF memang menampilkan angka bulat.
+TUGAS:
+Untuk setiap row dalam ROWS:
+1. Temukan line item yang benar di PDF.
+2. Gunakan anchor kiri/atas:
+   - spare part
+   - item no
+   - PO number
+   - vendor article no
+   - description
+3. Setelah line item ditemukan, baca target numeric field:
+   - jika layout horizontal: numeric value biasanya di kanan anchor
+   - jika layout vertical/wrapped: numeric value bisa berada di bawah anchor
+4. Bandingkan:
+   - extracted_value dari ROWS
+   - expected_candidate dari field_comparison / force_one_negative_context
+   - angka visual di PDF
 
 ATURAN KHUSUS TOTAL MISMATCH:
+- Jika batch_total_issue_contract.total_issue_mode = true:
+  1. Anda WAJIB return minimal 1 row dengan confidence_label = "negative".
+  2. Anda DILARANG return semua row sebagai "positive".
+  3. Pilih row negative berdasarkan bukti visual PDF, bukan urutan row.
+  4. Gunakan expected_candidate sebagai kandidat nilai benar.
+  5. Jika expected_candidate cocok dengan angka visual PDF, return expected_candidate pada field terkait.
+  6. Isi changed_fields dengan field yang dikoreksi.
+  7. Jelaskan alasan singkat di visual_reason.
+
+ATURAN FIELD:
 - Jika total_issue_context berisi total_volume mismatch, fokus ke pl_volume.
 - Jika total_issue_context berisi total_gw mismatch, fokus ke pl_gw.
 - Jika total_issue_context berisi total_nw mismatch, fokus ke pl_nw.
 - Jika total_issue_context berisi total_package mismatch, fokus ke pl_package_count.
-- Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount.
+- Jika total_issue_context berisi total_quantity mismatch, fokus ke inv_quantity atau pl_quantity sesuai context.
+- Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount, inv_quantity, inv_unit_price.
 - Jangan mengoreksi field lain di luar "_recheck_fields".
 
-ATURAN FORCE-ONE-CANDIDATE UNTUK TOTAL MISMATCH:
-- Aturan ini hanya berlaku jika total_issue_context tidak kosong.
-- Jika setelah mengecek semua row dalam batch, semua row tampak unchanged / positive,
-  JANGAN langsung return semuanya unchanged.
+ATURAN POSITIVE:
+- Jika row benar-benar cocok dengan PDF, set confidence_label = "positive".
+- changed_fields harus [].
+- Copy nilai input apa adanya.
 
-- Cari row dengan:
-  force_one_negative_context.is_primary_candidate = true
-
-- Jika TIDAK ADA row primary_candidate=true dalam batch ini:
-  jangan memaksa row mana pun dalam batch ini.
-  Return berdasarkan visual PDF seperti biasa.
-
-- Jika ADA row primary_candidate=true:
-  cek row tersebut paling detail dibanding row lain.
-  Gunakan:
-  1. force_one_negative_context.expected_candidates_by_field
-  2. field_comparison
-  3. candidate_values
-  4. row_context previous/current/next
-  5. visual PDF
-
-- Untuk primary candidate, periksa kemungkinan:
-  1. angka turun ke baris bawah karena cell kecil
-  2. angka tertukar kolom
-  3. merged cell / span beberapa row
-  4. page break
-  5. row shift dari previous/next row
-  6. decimal digit confusion
-
-- Jika expected_candidate pada primary candidate terlihat plausible secara visual/layout PDF,
-  WAJIB return expected_candidate untuk minimal satu field dalam _recheck_fields.
-
-- Jangan pernah mengubah row dengan match_score TRUE.
-- Jangan paksa row non-primary menjadi salah hanya untuk memenuhi aturan ini.
+ATURAN NEGATIVE:
+- Jika row salah, set confidence_label = "negative".
+- changed_fields wajib berisi minimal 1 field.
+- Field yang salah harus dikembalikan dengan nilai benar dari PDF.
+- Jika expected_candidate cocok dengan PDF, pakai expected_candidate.
 
 ATURAN OUTPUT:
 1. Output HANYA JSON ARRAY valid, tanpa teks lain.
@@ -7993,18 +8047,22 @@ ATURAN OUTPUT:
 3. Urutan row output HARUS sama persis dengan input.
 4. WAJIB pertahankan _detail_row_no.
 5. WAJIB pertahankan _recheck_fields persis seperti input.
-6. Jangan return candidate_values.
-7. Jangan return row_context.
-8. Jangan return field_comparison.
-9. Jangan return document_audit_context.
-10. Jangan return total_issue_context.
-11. Jangan return field header.
-12. Jangan return field po_*.
-13. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
-14. Jika value memang tidak ada di dokumen:
+6. WAJIB isi confidence_label.
+7. WAJIB isi changed_fields.
+8. WAJIB isi visual_reason.
+9. Jangan return candidate_values.
+10. Jangan return row_context.
+11. Jangan return field_comparison.
+12. Jangan return document_audit_context.
+13. Jangan return total_issue_context.
+14. Jangan return force_one_negative_context.
+15. Jangan return batch_total_issue_hint.
+16. Jangan return field header.
+17. Jangan return field po_*.
+18. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
+19. Jika value memang tidak ada di dokumen:
     - string -> "null"
     - number -> 0
-15. Jangan return force_one_negative_context.
 
 OUTPUT SCHEMA:
 {schema_json}
@@ -8293,6 +8351,36 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _finalize_match_fields(rows)
     return rows
 
+def _build_detail_recheck_batches(rows_payload: list, normal_batch_size: int):
+    """
+    Untuk total issue, jangan potong sembarang per 5 row.
+    Semua row dalam invoice group total issue harus dikirim bareng
+    supaya Gemini bisa membedakan row mana yang salah.
+    """
+    total_groups = {}
+    normal_items = []
+
+    for item in rows_payload or []:
+        if not isinstance(item, dict):
+            continue
+
+        if _is_total_issue_payload_item(item):
+            group_key = _payload_item_group_key(item)
+            total_groups.setdefault(group_key, []).append(item)
+        else:
+            normal_items.append(item)
+
+    batches = []
+
+    # Total issue batch: per invoice group.
+    for _, group_items in total_groups.items():
+        batches.append(group_items)
+
+    # Non-total batch: tetap pakai chunk biasa.
+    for i in range(0, len(normal_items), normal_batch_size):
+        batches.append(normal_items[i:i + normal_batch_size])
+
+    return batches
 
 def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
     rows_payload = _build_detail_line_recheck_rows_payload(rows)
@@ -8307,16 +8395,19 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
     except Exception:
         configured_batch_size = 1
 
-    # Jangan terlalu besar. Recheck bukan extraction utama.
-    # Batch besar sering bikin Gemini collapse jadi 1 object.
+    # Untuk non-total issue saja.
+    # Total issue akan dibatch per invoice group oleh _build_detail_recheck_batches().
     batch_size = max(1, min(configured_batch_size, 5))
 
-    def _call_recheck_batch(batch: list, label: str):
+    def _call_recheck_batch(batch: list, label: str, strict_total_retry: bool = False):
         repaired_batch = _call_gemini_json_uri(
             file_uri,
-            _build_detail_line_recheck_prompt(batch),
+            _build_detail_line_recheck_prompt(
+                batch,
+                strict_total_retry=strict_total_retry,
+            ),
             expect_array=True,
-            retries=3
+            retries=3,
         )
 
         if not isinstance(repaired_batch, list):
@@ -8327,18 +8418,33 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
         if len(repaired_batch) != len(batch):
             raise Exception(
                 f"Gemini detail line recheck count mismatch ({label}). "
-                f"expected={len(batch)} got={len(repaired_batch)}"
+                f"expected={len(batch)} actual={len(repaired_batch)}"
             )
+
+        _validate_total_issue_gemini_batch_result(
+            batch=batch,
+            repaired_batch=repaired_batch,
+            label=label,
+        )
 
         return repaired_batch
 
-    for start in range(0, len(rows_payload), batch_size):
-        batch = rows_payload[start:start + batch_size]
+    # PENTING:
+    # Total issue jangan dipotong per 5 row biasa.
+    # Harus dikirim per invoice group supaya Gemini bisa memilih row negative.
+    batches = _build_detail_recheck_batches(
+        rows_payload=rows_payload,
+        normal_batch_size=batch_size,
+    )
+
+    for batch_index, batch in enumerate(batches, start=1):
+        label = f"batch={batch_index}"
 
         try:
             repaired_batch = _call_recheck_batch(
                 batch,
-                label=f"batch_start={start + 1}"
+                label=label,
+                strict_total_retry=False,
             )
             repaired_rows.extend(repaired_batch)
             continue
@@ -8346,34 +8452,55 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
         except Exception as batch_error:
             print(
                 f"[DETAIL_RECHECK_BATCH_WARN] "
-                f"start={start + 1} "
-                f"size={len(batch)} "
-                f"error={batch_error}; fallback single-row"
+                f"{label} size={len(batch)} error={batch_error}"
             )
 
-        # Fallback: recheck satu per satu.
-        for item in batch:
-            row_no = None
-            if isinstance(item, dict):
-                row_no = item.get("_detail_row_no")
-
-            try:
-                single_repaired = _call_recheck_batch(
-                    [item],
-                    label=f"row_no={row_no}"
-                )
-
-                repaired_rows.extend(single_repaired)
-
-            except Exception as single_error:
-                # Recheck sifatnya optional repair.
-                # Jangan gagalkan OCR utama hanya karena recheck gagal.
+            # =====================================================
+            # TOTAL ISSUE:
+            # Jangan fallback single-row.
+            # Kalau single-row, Gemini tidak bisa compare 5 line item.
+            # Retry batch penuh dengan strict_total_retry=True.
+            # =====================================================
+            if _batch_requires_total_negative(batch):
                 print(
-                    f"[DETAIL_RECHECK_ROW_SKIP] "
-                    f"row_no={row_no} "
-                    f"error={single_error}"
+                    f"[DETAIL_RECHECK_TOTAL_STRICT_RETRY] "
+                    f"{label} size={len(batch)}"
                 )
+
+                repaired_batch = _call_recheck_batch(
+                    batch,
+                    label=f"{label}/strict_total_retry",
+                    strict_total_retry=True,
+                )
+
+                repaired_rows.extend(repaired_batch)
                 continue
+
+            # =====================================================
+            # NON-TOTAL ISSUE:
+            # Boleh fallback single-row karena tidak butuh compare group.
+            # =====================================================
+            for item in batch:
+                row_no = None
+                if isinstance(item, dict):
+                    row_no = item.get("_detail_row_no")
+
+                try:
+                    single_repaired = _call_recheck_batch(
+                        [item],
+                        label=f"row_no={row_no}",
+                        strict_total_retry=False,
+                    )
+
+                    repaired_rows.extend(single_repaired)
+
+                except Exception as single_error:
+                    print(
+                        f"[DETAIL_RECHECK_ROW_SKIP] "
+                        f"row_no={row_no} "
+                        f"error={single_error}"
+                    )
+                    continue
 
     return repaired_rows
 
@@ -8434,6 +8561,32 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
 
         if not allowed_fields:
             continue
+
+        # =====================================================
+        # Simpan keputusan label dari Gemini.
+        # Ini penting untuk kasus TOTAL:
+        # Gemini bisa memilih row negative meskipun numeric change
+        # nanti tidak masuk proposals / direject oleh greedy gate.
+        # =====================================================
+        gemini_label = str(
+            repaired.get("confidence_label")
+            or repaired.get("_gemini_recheck_decision")
+            or ""
+        ).strip().lower()
+
+        if gemini_label == "negative":
+            row["_gemini_total_issue_negative"] = True
+            row["_gemini_total_issue_negative_reason"] = (
+                repaired.get("visual_reason")
+                or "Gemini marked this row negative during total issue recheck."
+            )
+
+            gemini_changed_fields = repaired.get("changed_fields")
+            if isinstance(gemini_changed_fields, list):
+                row["_gemini_declared_changed_fields"] = [
+                    f for f in gemini_changed_fields
+                    if f in allowed_fields
+                ]
 
         for field in allowed_fields:
             if field not in repaired:
@@ -9445,6 +9598,10 @@ def run_ocr(
                 row.pop("_recheck_field_meta", None)
                 row.pop("_force_total_issue_candidate", None)
                 row.pop("_forced_total_issue_negative", None)
+
+                row.pop("_gemini_total_issue_negative", None)
+                row.pop("_gemini_total_issue_negative_reason", None)
+                row.pop("_gemini_declared_changed_fields", None)
 
         # =========================
         # FINAL RESULT OBJECT
