@@ -9696,6 +9696,10 @@ def run_ocr(
                 row.pop("_recheck_field_meta", None)
                 row.pop("_force_total_issue_candidate", None)
                 row.pop("_forced_total_issue_negative", None)
+                
+                row.pop("_gemini_total_issue_negative", None)
+                row.pop("_gemini_total_issue_negative_reason", None)
+                row.pop("_gemini_declared_changed_fields", None)
 
         # =========================
         # FINAL RESULT OBJECT
