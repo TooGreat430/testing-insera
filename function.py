@@ -43,6 +43,7 @@ from vendor_detection import (
 
 BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
+test_number = 1
 
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
@@ -9696,7 +9697,7 @@ def run_ocr(
                 row.pop("_recheck_field_meta", None)
                 row.pop("_force_total_issue_candidate", None)
                 row.pop("_forced_total_issue_negative", None)
-                
+
                 row.pop("_gemini_total_issue_negative", None)
                 row.pop("_gemini_total_issue_negative_reason", None)
                 row.pop("_gemini_declared_changed_fields", None)
