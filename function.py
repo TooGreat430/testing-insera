@@ -230,6 +230,98 @@ TOTAL_DETAIL_AGG_FIELDS = [
     "pl_total_package",
 ]
 
+# FUNCTION MATCH DESCRIPTION ROW CONTINUATION
+
+ZERO_CONTINUATION_MATCH_DESCRIPTION_FIELDS = [
+    "inv_quantity",
+    "inv_unit_price",
+    "inv_amount",
+    "pl_quantity",
+    "pl_nw",
+    "pl_gw",
+    "pl_volume",
+]
+
+def _is_zero_continuation_row(row: dict) -> bool:
+    """
+    True hanya jika SEMUA field numeric utama bernilai 0.
+
+    Field yang dicek:
+    - inv_quantity
+    - inv_unit_price
+    - inv_amount
+    - pl_quantity
+    - pl_nw
+    - pl_gw
+    - pl_volume
+
+    Catatan:
+    - null / kosong tidak dianggap 0.
+    - String "0", "0.0", angka 0, Decimal(0) dianggap 0.
+    """
+    if not isinstance(row, dict):
+        return False
+
+    for field in ZERO_CONTINUATION_MATCH_DESCRIPTION_FIELDS:
+        value = _to_float(row.get(field))
+
+        if value is None:
+            return False
+
+        if abs(value) > 1e-9:
+            return False
+
+    return True
+
+
+def _inherit_match_description_for_zero_continuation_rows(rows: list):
+    """
+    Approach 2:
+    Single-pass.
+
+    Simpan match_description dari row parent terakhir yang BUKAN row nol.
+    Jika row saat ini adalah row nol, copy match_description dari parent terakhir.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    parent_match_description = None
+    parent_row_no = None
+    changed_count = 0
+
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+
+        if _is_zero_continuation_row(row):
+            if not _is_null(parent_match_description):
+                row["match_description"] = parent_match_description
+                changed_count += 1
+
+                print(
+                    f"[ZERO_CONTINUATION_MATCH_DESCRIPTION] "
+                    f"row={idx + 1} inherited_from_parent_row={parent_row_no}"
+                )
+
+            continue
+
+        # Row bukan nol menjadi parent baru.
+        current_match_description = row.get("match_description")
+
+        if not _is_null(current_match_description):
+            parent_match_description = current_match_description
+            parent_row_no = idx + 1
+        else:
+            parent_match_description = None
+            parent_row_no = idx + 1
+
+    print(
+        f"[ZERO_CONTINUATION_MATCH_DESCRIPTION] "
+        f"changed_rows={changed_count}"
+    )
+
+    return rows
+
 def _get_detail_total_group_key(row: dict, row_index: int) -> str:
     """
     Group key untuk agregasi total per invoice.
@@ -9446,6 +9538,9 @@ def run_ocr(
                 row.pop("_force_total_issue_candidate", None)
                 row.pop("_forced_total_issue_negative", None)
 
+        # POSTPROCESS: ZERO CONTINUATION ROWS
+        all_rows = _inherit_match_description_for_zero_continuation_rows(all_rows)
+        
         # =========================
         # FINAL RESULT OBJECT
         # =========================
