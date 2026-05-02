@@ -4929,6 +4929,99 @@ def _is_null(v) -> bool:
     s = str(v).strip()
     return s == "" or s.lower() == "null"
 
+def _nullify_prefix_fields_in_rows(rows: list, prefixes: tuple):
+    """
+    Paksa semua kolom dengan prefix tertentu menjadi 'null'.
+    Dipakai agar field BL/COO tidak berisi value kalau dokumennya tidak diupload.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    prefixes = tuple(prefixes or ())
+    if not prefixes:
+        return rows
+
+    changed_count = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for key in list(row.keys()):
+            if str(key).startswith(prefixes):
+                if row.get(key) != "null":
+                    changed_count += 1
+                row[key] = "null"
+
+    print(
+        f"[OPTIONAL_DOC_GUARD] "
+        f"prefixes={prefixes} "
+        f"changed_fields={changed_count}"
+    )
+
+    return rows
+
+
+def _nullify_prefix_fields_in_dict(obj: dict, prefixes: tuple):
+    if not isinstance(obj, dict):
+        return obj
+
+    prefixes = tuple(prefixes or ())
+    if not prefixes:
+        return obj
+
+    for key in list(obj.keys()):
+        if str(key).startswith(prefixes):
+            obj[key] = "null"
+
+    return obj
+
+
+def _enforce_absent_optional_docs_empty(
+    rows: list = None,
+    *,
+    header_obj: dict = None,
+    total_rows: list = None,
+    container_rows: list = None,
+    has_bl_doc: bool = True,
+    has_coo_doc: bool = True,
+):
+    """
+    Jika BL / COO tidak diupload, semua kolom terkait wajib kosong/null.
+
+    Rule:
+    - has_bl_doc=False  -> semua bl_* = 'null'
+    - has_coo_doc=False -> semua coo_* = 'null'
+    - jika BL tidak ada, container_rows juga dikosongkan
+    """
+    prefixes = []
+
+    if not has_bl_doc:
+        prefixes.append("bl_")
+
+    if not has_coo_doc:
+        prefixes.append("coo_")
+
+    prefixes = tuple(prefixes)
+
+    if not prefixes:
+        return
+
+    _nullify_prefix_fields_in_rows(rows or [], prefixes)
+    _nullify_prefix_fields_in_rows(total_rows or [], prefixes)
+    _nullify_prefix_fields_in_dict(header_obj or {}, prefixes)
+
+    # Container berasal dari BL. Kalau BL tidak diupload, jangan ada container output.
+    if not has_bl_doc and isinstance(container_rows, list):
+        container_rows.clear()
+
+    print(
+        f"[OPTIONAL_DOC_GUARD] "
+        f"has_bl_doc={has_bl_doc} "
+        f"has_coo_doc={has_coo_doc} "
+        f"forced_null_prefixes={prefixes}"
+    )
+
 def _append_err(row: dict, msg: str):
     """Append error ke match_description pakai '; ' dan set match_score=false."""
     if not isinstance(row, dict):
@@ -6708,6 +6801,8 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     persist_output=False,
                     manage_markers=False,
                     forced_vendor_id=forced_vendor_id,
+                    has_bl_doc=bool(bl_path),
+                    has_coo_doc=bool(grp["coo_paths"]),
                 )
 
                 merged_detail_rows.extend(result.get("detail_rows") or [])
@@ -9210,12 +9305,34 @@ def run_ocr(
     persist_output=True,
     manage_markers=True,
     forced_vendor_id=None,
+    has_bl_doc=None,
+    has_coo_doc=None,
 ):
+    uploaded_pdf_paths = uploaded_pdf_paths or []
 
-    # Guard backend supaya COO tidak pernah diproses tanpa Bill of Lading.
-    # Kontrak dari UI: jika ada 3 file tetapi with_total_container=False,
-    # maka file ke-3 adalah COO tanpa BL dan harus ditolak.
-    if len(uploaded_pdf_paths) == 3 and not with_total_container:
+    explicit_has_bl_doc = has_bl_doc is not None
+    explicit_has_coo_doc = has_coo_doc is not None
+
+    # Infer default untuk flow lama:
+    # urutan file legacy diasumsikan: invoice, packing, BL, COO
+    if has_bl_doc is None:
+        has_bl_doc = bool(with_total_container and len(uploaded_pdf_paths) >= 3)
+
+    if has_coo_doc is None:
+        has_coo_doc = bool(len(uploaded_pdf_paths) >= 4)
+
+    # Preserve guard lama hanya untuk flow legacy/non-explicit.
+    # Kalau caller explicit bilang file ke-3 adalah BL, jangan direject.
+    if (
+        not explicit_has_bl_doc
+        and not explicit_has_coo_doc
+        and len(uploaded_pdf_paths) == 3
+        and not with_total_container
+    ):
+        raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
+
+    # Guard eksplisit: COO tidak boleh tanpa BL.
+    if has_coo_doc and not has_bl_doc:
         raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
 
     normalized_pdf_paths = []
@@ -9287,7 +9404,10 @@ def run_ocr(
         # FULL:
         # invoice + packing pakai hasil preprocess
         # BL / COO / dokumen lain tetap original
-        has_extra_docs = len(normalized_pdf_paths) > 2
+        has_extra_docs = (
+            len(normalized_pdf_paths) > 2
+            and (has_bl_doc or has_coo_doc)
+        )
         if has_extra_docs:
             full_input_paths = [
                 invoice_onepage_pdf,
@@ -9344,6 +9464,12 @@ def run_ocr(
         header_obj = _merge_optional_header_into_base_header(
             base_header_obj=base_header_obj,
             optional_header_obj=optional_header_obj,
+        )
+
+        _enforce_absent_optional_docs_empty(
+            header_obj=header_obj,
+            has_bl_doc=has_bl_doc,
+            has_coo_doc=has_coo_doc,
         )
 
         # GET TOTAL ROW FROM GEMINI
@@ -9530,6 +9656,13 @@ def run_ocr(
             except Exception as e:
                 # Optional docs tidak boleh menghancurkan hasil INV/PL.
                 print(f"[OPTIONAL_PASS][WARN] optional BL/COO enrichment skipped: {e}")
+            
+        _enforce_absent_optional_docs_empty(
+            rows=all_rows,
+            header_obj=header_obj,
+            has_bl_doc=has_bl_doc,
+            has_coo_doc=has_coo_doc,
+        )
 
         # =========================
         # OPTIONAL: total/container
@@ -9575,19 +9708,28 @@ def run_ocr(
         _postprocess_inv_description(all_rows)
         _postprocess_item_no_fields(all_rows)
         _postprocess_unit_fields(all_rows)
-        _postprocess_coo_description(all_rows)
+        if has_coo_doc:
+            _postprocess_coo_description(all_rows)
 
-        # NEW: null-kan COO item yang tidak match ke row detail
-        _postprocess_coo_item_mapping(all_rows)
+            # NEW: null-kan COO item yang tidak match ke row detail
+            _postprocess_coo_item_mapping(all_rows)
 
-        # Backfill row COO yang cuma punya PO sebelum coo_seq dinomori
-        _postprocess_coo_po_only_rows_from_invoice(all_rows, vendor_id=vendor_id)
+            # Backfill row COO yang cuma punya PO sebelum coo_seq dinomori
+            _postprocess_coo_po_only_rows_from_invoice(all_rows, vendor_id=vendor_id)
 
-        # NEW: hitung coo_seq hanya untuk row COO yang masih valid/matched
-        _postprocess_coo_no_and_seq(all_rows)
+            # NEW: hitung coo_seq hanya untuk row COO yang masih valid/matched
+            _postprocess_coo_no_and_seq(all_rows)
 
-        _postprocess_bl_description(all_rows)
-        _postprocess_bl_seller_name_similarity(all_rows)
+        if has_bl_doc:
+            _postprocess_bl_description(all_rows)
+            _postprocess_bl_seller_name_similarity(all_rows)
+
+        _enforce_absent_optional_docs_empty(
+            rows=all_rows,
+            header_obj=header_obj,
+            has_bl_doc=has_bl_doc,
+            has_coo_doc=has_coo_doc,
+        )
 
         all_rows = _map_po_to_details(po_lines, all_rows)
         all_rows = _generate_inv_amount_before_validation(all_rows)
@@ -9599,8 +9741,16 @@ def run_ocr(
 
         _assign_detail_row_numbers(all_rows)
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
-        _postprocess_coo_po_only_rows_from_invoice(all_rows)
-        _postprocess_coo_no_and_seq(all_rows)
+        if has_coo_doc:
+            _postprocess_coo_po_only_rows_from_invoice(all_rows)
+            _postprocess_coo_no_and_seq(all_rows)
+
+        _enforce_absent_optional_docs_empty(
+            rows=all_rows,
+            header_obj=header_obj,
+            has_bl_doc=has_bl_doc,
+            has_coo_doc=has_coo_doc,
+        )
         
         _postprocess_null_fields_for_vendor(
             rows=all_rows,
@@ -9636,8 +9786,11 @@ def run_ocr(
         _validate_packing_rows(all_rows)
         _validate_invoice_vs_packing_extra(all_rows)
 
-        _validate_bl_rows(all_rows)
-        _validate_coo_rows(all_rows)
+        if has_bl_doc:
+            _validate_bl_rows(all_rows)
+
+        if has_coo_doc:
+            _validate_coo_rows(all_rows)
 
         total_attribution = _apply_total_contribution_scoring(all_rows)
 
@@ -9665,6 +9818,15 @@ def run_ocr(
         if with_total_container:
             total_data = _build_total_from_detail_and_container(all_rows, container_data)
             total_data = _validate_total_rows(total_data, all_rows)
+
+        _enforce_absent_optional_docs_empty(
+            rows=all_rows,
+            header_obj=header_obj,
+            total_rows=total_data,
+            container_rows=container_data,
+            has_bl_doc=has_bl_doc,
+            has_coo_doc=has_coo_doc,
+        )
 
         all_rows = _finalize_audit_confidence_labels(
             all_rows,
