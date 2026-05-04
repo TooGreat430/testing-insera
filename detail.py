@@ -472,6 +472,11 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      contoh: Di dokumen seperti ini JI VETERAN maka perlu di convert menjadi "JL VETERAN" karena konteksnua adalah JALAN
 
 7. inv_total_quantity:
+   - Ambil nilai numerik dari total quantity invoice yang merepresentasikan jumlah quantity keseluruhan, bukan jumlah quantity line item. 
+   - Dapat muncul dalam berbagai bentuk dan tidak selalu punya label eksplisit seperti "total quantity".
+   - Biasanya muncul di bagian akhir dokumen atau bagian ringkasan, satu baris bersama total amount atau informasi ringkasan lainnya.
+      Contoh: 7,290 PCS
+      maka, inv_total_quantity = 7290
    - Jika tidak tersedia secara eksplisit dan jelas dari dokumen invoice, maka isi dengan "null".
    - JANGAN menghitung, menjumlahkan, mengarang, atau mengambil dari dokumen lain jika value total quantity tidak tersedia.
 
