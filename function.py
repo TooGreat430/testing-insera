@@ -4471,6 +4471,51 @@ def _is_secondary_po_split_row(row: dict) -> bool:
         and row.get("_po_split_primary") is False
     )
 
+def _inherit_inv_seq_for_secondary_po_split_rows(rows: list):
+    """
+    Untuk child row hasil split PO:
+    - inv_seq harus mengikuti parent PO split.
+    - Jangan membuat numbering baru untuk child.
+    - Parent = row split pertama dengan _po_split_primary=True.
+    - Child = row split berikutnya dengan _po_split_primary=False.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    last_parent_inv_seq_by_invoice = {}
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        invoice_key = _preprocess_invoice_no_for_grouping(
+            row.get("inv_invoice_no")
+        ) or "__NO_INVOICE__"
+
+        split_count = 1
+        try:
+            split_count = int(row.get("_po_split_count") or 1)
+        except Exception:
+            split_count = 1
+
+        is_primary = row.get("_po_split_primary") is True
+        is_secondary = _is_secondary_po_split_row(row)
+
+        # Parent PO split: simpan inv_seq parent.
+        if split_count > 1 and is_primary:
+            parent_inv_seq = row.get("inv_seq")
+            if not _is_null(parent_inv_seq):
+                last_parent_inv_seq_by_invoice[invoice_key] = parent_inv_seq
+            continue
+
+        # Child PO split: copy inv_seq dari parent PO split terakhir.
+        if is_secondary:
+            parent_inv_seq = last_parent_inv_seq_by_invoice.get(invoice_key)
+            if not _is_null(parent_inv_seq):
+                row["inv_seq"] = parent_inv_seq
+
+    return rows
+
 
 def _pick_closest_remaining_candidate(candidates, target_qty):
     """
@@ -9836,6 +9881,9 @@ def run_ocr(
 
         _assign_detail_row_numbers(all_rows)
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
+
+        all_rows = _inherit_inv_seq_for_secondary_po_split_rows(all_rows)
+
         if has_coo_doc:
             _postprocess_coo_po_only_rows_from_invoice(all_rows)
             _postprocess_coo_no_and_seq(all_rows)
@@ -9890,6 +9938,8 @@ def run_ocr(
         total_attribution = _apply_total_contribution_scoring(all_rows)
 
         all_rows = _force_secondary_po_split_rows_true(all_rows)
+
+        all_rows = _inherit_inv_seq_for_secondary_po_split_rows(all_rows)
 
         _finalize_match_fields(all_rows)
 
