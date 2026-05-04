@@ -4473,46 +4473,70 @@ def _is_secondary_po_split_row(row: dict) -> bool:
 
 def _inherit_inv_seq_for_secondary_po_split_rows(rows: list):
     """
-    Untuk child row hasil split PO:
-    - inv_seq harus mengikuti parent PO split.
-    - Jangan membuat numbering baru untuk child.
-    - Parent = row split pertama dengan _po_split_primary=True.
-    - Child = row split berikutnya dengan _po_split_primary=False.
+    Recompute inv_seq khusus PO split.
+
+    Rule:
+    - Row normal dihitung sebagai 1 sequence.
+    - Parent PO split (_po_split_primary=True) dihitung sebagai 1 sequence.
+    - Child PO split (_po_split_primary=False) TIDAK dihitung sebagai sequence baru.
+    - Child PO split duplicate inv_seq dari parent PO split terakhir.
+    
+    Contoh:
+    Sebelum:
+      parent item 1 = 1
+      child item 1  = 1
+      child item 1  = 1
+      parent item 2 = 4
+      child item 2  = 4
+
+    Sesudah:
+      parent item 1 = 1
+      child item 1  = 1
+      child item 1  = 1
+      parent item 2 = 2
+      child item 2  = 2
     """
     if not isinstance(rows, list):
         return rows
 
-    last_parent_inv_seq_by_invoice = {}
+    seq_by_invoice = {}
+    last_parent_seq_by_invoice = {}
 
-    for row in rows:
+    for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
         invoice_key = _preprocess_invoice_no_for_grouping(
             row.get("inv_invoice_no")
-        ) or "__NO_INVOICE__"
+        )
 
-        split_count = 1
-        try:
-            split_count = int(row.get("_po_split_count") or 1)
-        except Exception:
-            split_count = 1
+        if not invoice_key:
+            invoice_key = f"__NO_INVOICE__{idx + 1}"
 
-        is_primary = row.get("_po_split_primary") is True
         is_secondary = _is_secondary_po_split_row(row)
 
-        # Parent PO split: simpan inv_seq parent.
-        if split_count > 1 and is_primary:
-            parent_inv_seq = row.get("inv_seq")
-            if not _is_null(parent_inv_seq):
-                last_parent_inv_seq_by_invoice[invoice_key] = parent_inv_seq
+        # =====================================================
+        # Child PO split:
+        # jangan increment sequence.
+        # Ikuti parent PO split terakhir di invoice yang sama.
+        # =====================================================
+        if is_secondary:
+            parent_seq = last_parent_seq_by_invoice.get(invoice_key)
+
+            if not _is_null(parent_seq):
+                row["inv_seq"] = parent_seq
+
             continue
 
-        # Child PO split: copy inv_seq dari parent PO split terakhir.
-        if is_secondary:
-            parent_inv_seq = last_parent_inv_seq_by_invoice.get(invoice_key)
-            if not _is_null(parent_inv_seq):
-                row["inv_seq"] = parent_inv_seq
+        # =====================================================
+        # Row normal / parent PO split:
+        # increment sequence.
+        # =====================================================
+        next_seq = int(seq_by_invoice.get(invoice_key, 0)) + 1
+        seq_by_invoice[invoice_key] = next_seq
+
+        row["inv_seq"] = next_seq
+        last_parent_seq_by_invoice[invoice_key] = next_seq
 
     return rows
 
