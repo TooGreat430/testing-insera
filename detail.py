@@ -515,24 +515,33 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
     Total Packages: 4 PLT (108 CTN) & 95 CTN
     Maka pl_total_package = 4 PLT + 95 CTN = 99 karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (PLT karena satu PLT bisa berisi beberapa CTN, sedangkan CTN tidak bisa berisi PLT).
 
-11. LC Logic pada Bill of Lading (BL):
+11. 11. pl_total_volume:
+   - Ambil nilai numerik dari total volume packing list yang merepresentasikan jumlah volume keseluruhan, bukan jumlah volume line item.
+   - Dapat muncul dalam berbagai bentuk dan tidak selalu punya label eksplisit seperti "total volume".
+   - Biasanya muncul di bagian akhir dokumen atau bagian ringkasan total, satu baris bersama total nw, total gw, total package atau informasi ringkasan lainnya.
+      Contoh: 13.500
+      maka, inv_total_quantity = 13.5
+   - Jika tidak tersedia secara eksplisit dan jelas dari dokumen packing list, maka isi dengan "null".
+   - JANGAN menghitung, menjumlahkan, mengarang, atau mengambil dari dokumen lain jika value total volume tidak tersedia.
+
+12. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.
 
-12. Jika pada dokumen Bill of Lading (BL) bertipe LC:
+13. Jika pada dokumen Bill of Lading (BL) bertipe LC:
     - bl_consignee_name diambil dari notify party
     - bl_consignee_address diambil dari notify party
 
-13. inv_coo_commodity_origin
+14. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-14. pl_volume_unit
+15. pl_volume_unit
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
   - JIKA PADA DOKUMEN TIDAK TERTERA VOLUME UNIT DARI Packing List Volume Unit, maka biarkan "null".
 
-15. coo_gw_unit:
+16. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -546,9 +555,9 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-16. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
+17. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 
-17. bl_shipper dan bl_seller
+18. bl_shipper dan bl_seller
    - Penempatan bl_shipper selalu diatas dari bl_seller
    - Jika bingung, terdapat tulisan "O/B" Untuk memisahkan antara bl_shipper dan bl_seller
      contoh:
@@ -560,18 +569,18 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
 
    Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
 
-18. bl_voyage_no:
+19. bl_voyage_no:
    - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
    - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode. Tugas anda ambil setelah V nya
      Contoh:
      V.S018
      Berarti value tersebut adalah S018
 
-19. inv_invoice_no, pl_invoice_no & coo_invoice_no:
+20. inv_invoice_no, pl_invoice_no & coo_invoice_no:
     - PADA SETIAP DOKUMEN INVOICE, PACKING LIST DAN COO, PASTI ADA INVOICE NO JADI TOLONG CARI DENGAN TELITI.
     - inv_invoice_no, pl_invoice_no & coo_invoice_no TIDAK BERSIFAT NULLABLE, JADI TOLONG PERHATIKAN DENGAN TELITI
 
-20. coo_invoice_no:
+21. coo_invoice_no:
     - Merepresentasikan invoice number yang direferensikan pada dokumen COO.
     - Biasanya memiliki kolom sendiri
     - Biasanya kolom ditaruh di paling kanan dari dokumen.
@@ -586,15 +595,15 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
 
         Maka, coo_invoice_no: SHXM22-2512000393
 
-21. bl_mark_number:
+22. bl_mark_number:
     - bl_mark_number hanya di ekstrak apa bila label "SHIPPING MARKS",
       apabila tidak ada label "SHIPPING MARKS" maka bl_mark_number = "null"
 
-22. coo_no
+23. coo_no
     - coo_no merupakan nomor certificate dari dokumen
     - Biasanya di labelkan dengan "Certificate No:..."
 
-23. coo_form_type:
+24. coo_form_type:
    - Ekstrak jenis form Certificate of Origin (COO) dari dokumen.
    - Prioritaskan mapping ke salah satu dari pilihan berikut:
      - RCEP / Regional Comprehensive Economic Partnership Agreement → "RCEP"
