@@ -5748,11 +5748,23 @@ def _compare_num_values(row: dict, left_value, right_value, err_msg: str, eps=0.
 
 def _validate_po(detail_rows):
     for row in detail_rows:
+        is_po_child = _is_secondary_po_split_row(row)
+
+        # =====================================================
+        # Kalau child PO split tidak mapped, jangan validasi.
+        # Child hanya row turunan dari parent PO, bukan row utama.
+        # =====================================================
         if not row.get("_po_mapped"):
+            if is_po_child:
+                row["match_score"] = "true"
+                row["match_description"] = "null"
+                row.pop("_po_data", None)
+                row.pop("_po_mapped", None)
+                continue
+
             _append_err(row, "PO item tidak ditemukan")
             row.pop("_po_data", None)
             row.pop("_po_mapped", None)
-            # metadata internal split PO, jangan ikut output final
             row.pop("_po_split_count", None)
             row.pop("_po_split_index", None)
             row.pop("_po_split_primary", None)
@@ -5777,6 +5789,18 @@ def _validate_po(detail_rows):
         row["po_info_record_price"] = po_data.get("po_info_record_price", "null")
         row["po_info_record_currency"] = po_data.get("po_info_record_currency", "null")
 
+        # =====================================================
+        # IMPORTANT:
+        # Child PO split tidak divalidasi PO price/currency/unit.
+        # Hanya parent yang boleh divalidasi.
+        # =====================================================
+        if is_po_child:
+            row["match_score"] = "true"
+            row["match_description"] = "null"
+            row.pop("_po_data", None)
+            row.pop("_po_mapped", None)
+            continue
+
         inv_price = _to_num(row.get("inv_unit_price"))
         po_price  = _to_num(po_data.get("po_price"))
 
@@ -5789,7 +5813,6 @@ def _validate_po(detail_rows):
         if inv_currency and po_currency and inv_currency != po_currency:
             _append_err(row, f"po_currency mismatch (inv: {inv_currency}, po: {po_currency})")
 
-        # validasi unit quantity invoice vs unit PO
         inv_qty_unit = _convert_unit_value(row.get("inv_quantity_unit"))
         po_unit = _convert_unit_value(po_data.get("po_unit"))
 
@@ -5804,6 +5827,47 @@ def _validate_po(detail_rows):
         row.pop("_po_mapped", None)
 
     return detail_rows
+
+def _force_secondary_po_split_rows_true(rows: list):
+    """
+    Child row hasil split PO tidak boleh ikut validasi parent.
+
+    Rule:
+    - Child PO split selalu TRUE.
+    - match_description dikosongkan/null.
+    - confidence_label jadi positive.
+    - Metadata PO split tetap boleh dipakai sampai tahap final cleanup.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        if not _is_secondary_po_split_row(row):
+            continue
+
+        row["match_score"] = "true"
+        row["match_description"] = "null"
+        row["confidence_label"] = "positive"
+
+        # Bersihkan kemungkinan marker internal error kalau ada.
+        for key in [
+            "_errors",
+            "_error",
+            "_validation_errors",
+            "_match_errors",
+            "_recheck_fields",
+            "_recheck_original_values",
+            "_gemini_recheck_changed_fields",
+            "_gemini_total_issue_negative",
+            "_force_total_issue_candidate",
+            "_forced_total_issue_negative",
+        ]:
+            row.pop(key, None)
+
+    return rows
 
 def _validate_invoice_rows(rows: list):
     required = [
@@ -9824,6 +9888,8 @@ def run_ocr(
             _validate_coo_rows(all_rows)
 
         total_attribution = _apply_total_contribution_scoring(all_rows)
+
+        all_rows = _force_secondary_po_split_rows_true(all_rows)
 
         _finalize_match_fields(all_rows)
 
