@@ -604,13 +604,27 @@ def _append_total_contribution_error(
     reason: str,
     row_value,
 ):
-    row_value_text = "null" if row_value is None else row_value
-    _append_err(
-        row,
-        f"{label} for invoice_no={invoice_group} "
-        f"(sum {actual_sum}, doc {declared_total}, gap {gap}); "
-        f"suspected_row_contribution={round(contribution_ratio, 4)} "
-        f"reason={reason} row_value={row_value_text}"
+    # User-facing / CSV-facing message dibuat clean.
+    # Tetap simpan label total_xxx mismatch karena dipakai untuk total issue detection.
+    _append_err(row, label)
+
+    # Detail teknis disimpan internal saja.
+    row["_total_issue_debug"] = {
+        "invoice_no": invoice_group,
+        "actual_sum": actual_sum,
+        "declared_total": declared_total,
+        "gap": gap,
+        "suspected_row_contribution": round(contribution_ratio, 4),
+        "reason": reason,
+        "row_value": None if row_value is None else row_value,
+    }
+
+    print(
+        f"[TOTAL_ATTRIBUTION][CANDIDATE] "
+        f"label='{label}' invoice_no={invoice_group} "
+        f"sum={actual_sum} doc={declared_total} gap={gap} "
+        f"ratio={round(contribution_ratio, 4)} "
+        f"reason={reason} row_value={row_value}"
     )
 
 
@@ -7201,28 +7215,118 @@ def _infer_recheck_fields_from_match_description(match_description: str):
 
 DETAIL_RECHECK_CONTEXT_FIELDS = [
     "_detail_row_no",
+
+    # invoice/group anchors
     "inv_invoice_no",
     "pl_invoice_no",
     "coo_invoice_no",
+    "coo_no",
 
+    # sequence anchors
+    "inv_seq",
+    "pl_seq",
+    "coo_seq",
+
+    # PO anchors
+    "inv_customer_po_no",
+    "pl_customer_po_no",
+    "coo_customer_po_no",
+
+    # item/article anchors
+    "inv_spart_item_no",
     "inv_item_no",
     "pl_item_no",
     "coo_item_no",
 
+    # description anchors
     "inv_description",
     "pl_description",
     "coo_description",
 
+    # optional code anchors
+    "inv_hs_code",
+    "coo_hs_code",
+    "bl_hs_code",
+    "bl_description",
+
+    # invoice numeric fields
     "inv_quantity",
+    "inv_quantity_unit",
     "inv_unit_price",
     "inv_amount",
 
+    # packing numeric fields
     "pl_quantity",
     "pl_package_count",
     "pl_nw",
     "pl_gw",
     "pl_volume",
+    "pl_weight_unit",
+    "pl_volume_unit",
 ]
+
+def _clean_anchor_value(value):
+    if _is_null(value):
+        return "null"
+    return str(value).strip()
+
+
+def _build_line_item_anchor_context(row: dict) -> dict:
+    """
+    Anchor utama agar Gemini menemukan line item yang sama di PDF
+    sebelum memutuskan numeric value benar/salah.
+    """
+    if not isinstance(row, dict):
+        return {}
+
+    return {
+        "anchor_priority": [
+            "invoice_no",
+            "customer_po_no",
+            "item_or_article_no",
+            "description",
+            "hs_code",
+            "sequence",
+        ],
+        "invoice_anchors": {
+            "inv_invoice_no": _clean_anchor_value(row.get("inv_invoice_no")),
+            "pl_invoice_no": _clean_anchor_value(row.get("pl_invoice_no")),
+            "coo_invoice_no": _clean_anchor_value(row.get("coo_invoice_no")),
+            "coo_no": _clean_anchor_value(row.get("coo_no")),
+        },
+        "po_anchors": {
+            "inv_customer_po_no": _clean_anchor_value(row.get("inv_customer_po_no")),
+            "pl_customer_po_no": _clean_anchor_value(row.get("pl_customer_po_no")),
+            "coo_customer_po_no": _clean_anchor_value(row.get("coo_customer_po_no")),
+        },
+        "item_anchors": {
+            "inv_spart_item_no": _clean_anchor_value(row.get("inv_spart_item_no")),
+            "inv_item_no": _clean_anchor_value(row.get("inv_item_no")),
+            "pl_item_no": _clean_anchor_value(row.get("pl_item_no")),
+            "coo_item_no": _clean_anchor_value(row.get("coo_item_no")),
+        },
+        "description_anchors": {
+            "inv_description": _clean_anchor_value(row.get("inv_description")),
+            "pl_description": _clean_anchor_value(row.get("pl_description")),
+            "coo_description": _clean_anchor_value(row.get("coo_description")),
+        },
+        "code_anchors": {
+            "inv_hs_code": _clean_anchor_value(row.get("inv_hs_code")),
+            "coo_hs_code": _clean_anchor_value(row.get("coo_hs_code")),
+            "bl_hs_code": _clean_anchor_value(row.get("bl_hs_code")),
+        },
+        "sequence_anchors": {
+            "inv_seq": _clean_anchor_value(row.get("inv_seq")),
+            "pl_seq": _clean_anchor_value(row.get("pl_seq")),
+            "coo_seq": _clean_anchor_value(row.get("coo_seq")),
+            "_detail_row_no": _clean_anchor_value(row.get("_detail_row_no")),
+        },
+        "rule": (
+            "Cari target line item di PDF menggunakan kombinasi invoice_no + PO + item/article. "
+            "Jika item/article kosong, gunakan description/HS/sequence sebagai fallback. "
+            "Jangan koreksi numeric field jika anchor line item tidak jelas."
+        ),
+    }
 
 
 def _round_recheck_candidate(value, ndigits: int = 6):
@@ -7753,18 +7857,20 @@ def _build_force_one_negative_context(row: dict, recheck_fields: list, plan_item
         "is_primary_candidate": bool(is_primary),
         "expected_candidates_by_field": expected_map,
         "hard_rule": (
-            "Jika batch_total_issue_contract.total_issue_mode=true, Gemini WAJIB memilih "
-            "minimal satu row sebagai confidence_label='negative'. Tidak boleh semua row positive."
+            "Row ini hanya boleh negative jika is_primary_candidate=true DAN "
+            "angka visual PDF pada anchored line item berbeda dari extracted_value. "
+            "Jika anchor tidak jelas atau angka visual cocok dengan extracted_value, "
+            "set confidence_label='positive'."
         ),
         "layout_anchor_rule": (
-            "Gunakan anchor kiri/atas seperti spare part, item no, PO number, vendor article no, "
-            "atau description untuk menemukan line item. Setelah row ditemukan, baca numeric value "
-            "di kanan atau bawah anchor sesuai layout visual PDF."
+            "Gunakan anchor_context: invoice_no + customer_po_no + item/article no. "
+            "Jika item/article kosong, gunakan description/HS/sequence sebagai fallback. "
+            "Jangan koreksi numeric field jika anchored line item tidak jelas."
         ),
         "expected_candidate_rule": (
-            "Untuk row candidate, bandingkan extracted_value vs expected_candidate. "
-            "Jika expected_candidate cocok dengan angka visual PDF, return expected_candidate "
-            "pada field terkait dan set confidence_label='negative'."
+            "expected_candidate hanya kandidat audit, bukan source of truth. "
+            "Gunakan expected_candidate hanya jika angka tersebut terlihat jelas di PDF "
+            "pada target cell dari anchored line item."
         ),
     }
 
@@ -7824,9 +7930,11 @@ def _build_batch_total_issue_contract(batch: list) -> dict:
 
     return {
         "total_issue_mode": bool(total_items),
-        "min_negative_required": 1 if total_items else 0,
+        "min_negative_required": 1 if primary_items else 0,
         "forbidden_output": (
-            "Jika total_issue_mode=true, output semua row positive/unchanged adalah INVALID."
+            "Jika total_issue_mode=true dan primary_candidate_row_nos tidak kosong, "
+            "minimal satu primary candidate harus negative/changed jika bukti visual PDF mendukung. "
+            "Jika tidak ada bukti visual pada anchored line item, semua row boleh positive/unchanged."
         ),
         "candidate_row_nos": [
             item.get("_detail_row_no") for item in total_items
@@ -7981,7 +8089,12 @@ def _build_recheck_payload_item(
         "total_issue_context": group_plan_item.get("issues", []),
         "batch_total_issue_hint": {
             "total_issue_mode": bool(group_plan_item.get("issues")),
-            "gemini_must_return_min_one_negative_in_group": bool(group_plan_item.get("issues")),
+            "primary_candidate": bool(force_primary_candidate),
+            "gemini_must_return_min_one_negative_in_group": bool(force_primary_candidate),
+            "rule": (
+                "Jika primary_candidate=false, total issue hanya audit context. "
+                "Jangan paksa negative. Semua row boleh positive jika angka visual PDF cocok."
+            ),
         },
         "document_audit_context": _build_document_audit_context(
             recheck_fields=recheck_fields,
@@ -8007,6 +8120,8 @@ def _build_recheck_payload_item(
             plan_item=group_plan_item,
             is_primary=force_primary_candidate,
         ),
+
+        "anchor_context": _build_line_item_anchor_context(row),
     }
 
     # Current values untuk semua field recheck schema
@@ -8370,8 +8485,51 @@ def _build_detail_line_recheck_schema():
     schema.update(DETAIL_RECHECK_SCHEMA)
     return schema
 
+def _build_vendor_reference_block_for_recheck(
+    vendor_id: str = "default",
+    vendor_prompt_text: str = "",
+) -> str:
+    vendor_id = normalize_vendor_id(vendor_id)
+    text = str(vendor_prompt_text or "").strip()
 
-def _build_detail_line_recheck_prompt(rows_payload: list, strict_total_retry: bool = False) -> str:
+    if not text:
+        return ""
+
+    max_chars = int(os.getenv(
+        "DETAIL_RECHECK_VENDOR_REFERENCE_MAX_CHARS",
+        "6000"
+    ))
+
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[truncated for recheck reference]"
+
+    return f"""
+VENDOR REFERENCE ONLY:
+Vendor ID: {vendor_id}
+
+Gunakan reference vendor ini hanya untuk memahami layout dokumen:
+- posisi kolom
+- alias nama field
+- cara baca line item
+- pola invoice / packing list / COO
+- unit, quantity, amount, NW, GW, volume, package
+
+REFERENCE:
+{text}
+
+BATASAN:
+- PDF visual tetap source of truth.
+- Vendor reference tidak boleh override angka yang terlihat jelas di PDF.
+- expected_candidate / gap_adjust_candidate hanya kandidat audit.
+- Jangan set confidence_label="negative" hanya karena vendor rule atau total gap.
+""".strip()
+
+def _build_detail_line_recheck_prompt(
+    rows_payload: list,
+    strict_total_retry: bool = False,
+    vendor_id: str = "default",
+    vendor_prompt_text: str = "",
+) -> str:
     schema = {
         "_detail_row_no": "number",
         "_recheck_fields": ["string"],
@@ -8390,14 +8548,25 @@ def _build_detail_line_recheck_prompt(rows_payload: list, strict_total_retry: bo
     batch_contract = _build_batch_total_issue_contract(rows_payload)
     batch_contract_json = json.dumps(batch_contract, ensure_ascii=False, indent=2)
 
+    vendor_reference_block = _build_vendor_reference_block_for_recheck(
+        vendor_id=vendor_id,
+        vendor_prompt_text=vendor_prompt_text,
+    )
+
     strict_text = ""
     if strict_total_retry:
         strict_text = """
-STRICT RETRY MODE:
-Response sebelumnya INVALID karena total_issue_mode=true tetapi tidak ada negative.
-Pada retry ini Anda WAJIB memilih minimal 1 row sebagai confidence_label="negative".
-Jika tetap semua positive, output dianggap gagal.
-"""
+    STRICT RETRY MODE:
+    Response sebelumnya invalid karena batch memiliki primary candidate total issue,
+    tetapi tidak ada row negative/changed.
+
+    Pada retry ini:
+    - Evaluasi primary_candidate_row_nos terlebih dahulu.
+    - Set confidence_label="negative" hanya jika anchored line item jelas
+    dan angka visual PDF berbeda dari extracted_value.
+    - Jika tidak ada bukti visual pada anchored line item, boleh tetap positive,
+    tetapi visual_reason wajib menjelaskan bahwa bukti visual tidak cukup.
+    """
 
     return f"""
 ROLE:
@@ -8407,6 +8576,8 @@ SOURCE OF TRUTH:
 - PDF visual pada request ini adalah sumber kebenaran utama.
 - ROWS adalah hasil ekstraksi sebelumnya.
 - Tugas Anda bukan sekadar copy ROWS, tapi memverifikasi ulang nilai pada PDF.
+
+{vendor_reference_block}
 
 BATCH TOTAL ISSUE CONTRACT:
 {batch_contract_json}
@@ -8430,15 +8601,31 @@ Untuk setiap row dalam ROWS:
    - expected_candidate dari field_comparison / force_one_negative_context
    - angka visual di PDF
 
+STRICT LINE ITEM ANCHOR RULE:
+- Untuk setiap row, cari line item di PDF menggunakan anchor_context.
+- Prioritas anchor:
+  1) invoice_no
+  2) customer_po_no
+  3) inv_spart_item_no / pl_item_no / item/article no
+  4) description / HS code
+  5) sequence / neighboring rows
+- Jangan verifikasi numeric field sebelum menemukan line item yang sama.
+- Jika anchor ambigu atau ada lebih dari satu kandidat line item, return unchanged dan confidence_label="positive".
+- Jika target field tidak terlihat jelas pada anchored line item, return unchanged dan confidence_label="positive".
+- visual_reason wajib menyebut anchor yang dipakai dan angka visual PDF yang dibaca.
+
 ATURAN KHUSUS TOTAL MISMATCH:
-- Jika batch_total_issue_contract.total_issue_mode = true:
-  1. Anda WAJIB return minimal 1 row dengan confidence_label = "negative".
-  2. Anda DILARANG return semua row sebagai "positive".
-  3. Pilih row negative berdasarkan bukti visual PDF, bukan urutan row.
-  4. Gunakan expected_candidate sebagai kandidat nilai benar.
-  5. Jika expected_candidate cocok dengan angka visual PDF, return expected_candidate pada field terkait.
-  6. Isi changed_fields dengan field yang dikoreksi.
-  7. Jelaskan alasan singkat di visual_reason.
+- total_issue_mode hanya trigger audit, bukan bukti otomatis row salah.
+- Jangan set confidence_label="negative" hanya karena total gap.
+- Gunakan batch_total_issue_contract.primary_candidate_row_nos sebagai prioritas investigasi.
+- Jika primary_candidate_row_nos kosong, semua row boleh positive/unchanged.
+- Jika primary_candidate_row_nos tidak kosong, cek primary candidate terlebih dahulu.
+- Row boleh negative hanya jika:
+  1) anchored line item jelas,
+  2) target cell terlihat jelas di PDF,
+  3) angka visual PDF berbeda dari extracted_value.
+- expected_candidate hanya boleh dipakai jika angka itu terlihat jelas di PDF pada target cell.
+- Jika extracted_value sama dengan angka visual PDF, row HARUS positive walaupun total group masih mismatch.
 
 ATURAN FIELD:
 - Jika total_issue_context berisi total_volume mismatch, fokus ke pl_volume.
@@ -8801,7 +8988,12 @@ def _build_detail_recheck_batches(rows_payload: list, normal_batch_size: int):
 
     return batches
 
-def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
+def _call_gemini_detail_line_recheck_once(
+    file_uri: str,
+    rows: list,
+    vendor_id: str = "default",
+    vendor_prompt_text: str = "",
+):
     rows_payload = _build_detail_line_recheck_rows_payload(rows)
 
     if not rows_payload:
@@ -8824,6 +9016,8 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list):
             _build_detail_line_recheck_prompt(
                 batch,
                 strict_total_retry=strict_total_retry,
+                vendor_id=vendor_id,
+                vendor_prompt_text=vendor_prompt_text,
             ),
             expect_array=True,
             retries=3,
@@ -9816,7 +10010,9 @@ def run_ocr(
         # =========================================
         repaired_rows = _call_gemini_detail_line_recheck_once(
             base_detail_input_uri,
-            all_rows
+            all_rows,
+            vendor_id=vendor_id,
+            vendor_prompt_text=vendor_prompt_text,
         )
 
         if repaired_rows:
