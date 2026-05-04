@@ -2807,6 +2807,44 @@ def _validate_total_rows(total_data, detail_rows: list):
             f"aggregated_detail[{field}]"
         )
 
+    # =========================
+    # VALIDASI LINE SUM VS DECLARED TOTAL
+    # Ini yang sebelumnya belum ada.
+    # Contoh:
+    # pl_nw harus sama dengan pl_total_nw
+    # pl_gw harus sama dengan pl_total_gw
+    # dst.
+    # =========================
+    def _cmp_num_if_declared(left_key: str, right_key: str, eps=0.01):
+        left_value = _to_float(total_obj.get(left_key))
+        right_value = _to_float(total_obj.get(right_key))
+
+        if left_value is None or right_value is None:
+            return
+
+        # Kalau declared total kosong/0 karena memang tidak ada di dokumen,
+        # jangan paksa false dari default 0.
+        if abs(right_value) <= eps:
+            return
+
+        if abs(left_value - right_value) > eps:
+            _append_total_error(
+                total_obj,
+                f"Total: {left_key} != {right_key} ({left_value} vs {right_value})"
+            )
+
+    _cmp_num_if_declared("inv_quantity", "inv_total_quantity")
+    _cmp_num_if_declared("inv_amount", "inv_total_amount")
+
+    _cmp_num_if_declared("pl_quantity", "pl_total_quantity")
+    _cmp_num_if_declared("pl_package_count", "pl_total_package")
+    _cmp_num_if_declared("pl_nw", "pl_total_nw")
+    _cmp_num_if_declared("pl_gw", "pl_total_gw")
+
+    pl_total_volume = _to_float(total_obj.get("pl_total_volume"))
+    if pl_total_volume is not None and abs(pl_total_volume) > 0.01:
+        _cmp_volume_num_with_unit_fallback("pl_volume", "pl_total_volume")
+
     # existing checks
     _cmp_num("bl_package_count", "pl_package_count")
 
@@ -3756,21 +3794,20 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     """
     Final confidence rule:
 
-    HARD RULE:
-    - match_score TRUE selalu positive.
-    - TRUE tidak boleh negative.
+    RULE UTAMA:
+    - Confidence negative/positive hanya mulai dihitung kalau ada masalah total.
+    - Kalau tidak ada masalah total, semua row pure positive.
+    - Non-total mismatch/missing tidak boleh membuat confidence_label menjadi negative.
 
-    TOTAL-FIRST RULE:
-    - Jika dalam invoice group ada minimal 1 row FALSE yang punya total issue,
-      maka labelling group tersebut mengikuti total logic.
-    - Artinya issue lain seperti mismatch/missing tidak otomatis membuat row negative.
-    - Negative hanya diberikan jika:
-        1. Gemini recheck accepted dan field berubah, atau
-        2. safety fallback _force_min_one_negative_for_total_issue memilih 1 row.
+    TOTAL ISSUE GROUP:
+    - match_score TRUE selalu positive.
+    - Row menjadi negative hanya kalau:
+        1. Gemini total recheck accepted dan ada changed_fields, atau
+        2. Gemini menandai row sebagai _gemini_total_issue_negative=True.
+    - Selain itu positive.
 
     NON-TOTAL GROUP:
-    - Kalau group tidak punya FALSE total issue,
-      maka non-total issue tetap negative seperti biasa.
+    - Semua row positive.
     """
     if not isinstance(rows, list):
         return rows
@@ -3781,8 +3818,10 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
     grouped_rows = _group_rows_by_invoice_no(rows)
 
     # =====================================================
-    # Cari group yang benar-benar punya FALSE total issue.
-    # Ini syarat utama agar total labelling override aktif.
+    # Cari group yang benar-benar punya masalah total.
+    # Sumber:
+    # 1. total_issue_groups dari _apply_total_contribution_scoring
+    # 2. row FALSE yang match_description-nya mengandung total mismatch
     # =====================================================
     groups_with_false_total_issue = set()
 
@@ -3796,12 +3835,38 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         if has_false_total_issue:
             groups_with_false_total_issue.add(invoice_group)
 
+    confidence_total_groups = set(total_issue_groups) | set(groups_with_false_total_issue)
+
+    # =====================================================
+    # Kalau tidak ada masalah total sama sekali:
+    # semua row PURE POSITIVE.
+    # =====================================================
+    if not confidence_total_groups:
+        for row in rows:
+            if isinstance(row, dict):
+                row["confidence_label"] = "positive"
+        return rows
+
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
         match_score = str(row.get("match_score", "")).strip().lower()
         invoice_group = _get_detail_total_group_key(row, idx)
+
+        row_has_total_issue = (
+            _row_has_any_total_issue(row)
+            or _row_has_total_issue_only(row)
+            or invoice_group in confidence_total_groups
+        )
+
+        # =====================================================
+        # Group/row yang tidak terkait total issue tetap positive.
+        # Non-total mismatch/missing tidak boleh jadi negative.
+        # =====================================================
+        if not row_has_total_issue:
+            row["confidence_label"] = "positive"
+            continue
 
         # =====================================================
         # HARD RULE:
@@ -3811,62 +3876,28 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             row["confidence_label"] = "positive"
             continue
 
-        # Default untuk FALSE adalah positive dulu.
+        # Default untuk row total issue adalah positive dulu.
         row["confidence_label"] = "positive"
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
 
         # =====================================================
-        # Kalau Gemini / accepted recheck benar-benar mengubah field,
-        # row ini tetap negative.
-        # Ini tetap lebih kuat dari total override.
+        # Negative hanya untuk hasil recheck total yang benar-benar
+        # mengubah field.
         # =====================================================
         if isinstance(changed_fields, list) and changed_fields:
             row["confidence_label"] = "negative"
             continue
 
         # =====================================================
-        # TOTAL ISSUE:
-        # Kalau Gemini sendiri memilih row ini sebagai negative,
-        # jangan dioverride jadi positive oleh total-first logic.
+        # Negative jika Gemini total issue memilih row ini.
         # =====================================================
         if row.get("_gemini_total_issue_negative") is True:
             row["confidence_label"] = "negative"
             continue
 
-        # =====================================================
-        # TOTAL-FIRST OVERRIDE:
-        # Jika group punya FALSE total issue, maka non-total mismatch/missing
-        # tidak otomatis negative.
-        #
-        # Jadi row yang punya:
-        # - total mismatch + missing
-        # - total mismatch + field mismatch
-        # - non-total mismatch di group yang sama
-        #
-        # tetap boleh positive, nanti safety fallback akan memastikan
-        # minimal 1 FALSE total row menjadi negative.
-        # =====================================================
-        if invoice_group in groups_with_false_total_issue:
-            row["confidence_label"] = "positive"
-            continue
-
-        # =====================================================
-        # Kalau tidak ada FALSE total issue dalam group,
-        # pakai logic lama: non-total issue = negative.
-        # =====================================================
-        if _row_has_non_total_issue(row):
-            row["confidence_label"] = "negative"
-            continue
-
-        # Total issue tanpa accepted change tetap positive.
-        if invoice_group in total_issue_groups:
-            row["confidence_label"] = "positive"
-            continue
-
-        if _row_has_total_issue_only(row):
-            row["confidence_label"] = "positive"
-            continue
+        # Selain itu tetap positive.
+        row["confidence_label"] = "positive"
 
     return rows
 
