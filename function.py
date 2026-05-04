@@ -4540,6 +4540,67 @@ def _inherit_inv_seq_for_secondary_po_split_rows(rows: list):
 
     return rows
 
+def _compact_inv_seq_gaps_after_po_split(rows: list):
+    """
+    Rapikan inv_seq setelah child PO split duplicate dari parent.
+
+    Tujuan:
+    - Tidak mengubah konsep child ikut parent.
+    - Hanya menghilangkan gap numbering.
+    - Kalau hasil lama 1,1,1,4,4,4,7,7,7 => jadi 1,1,1,2,2,2,3,3,3.
+    - Kalau mulai dari 5: 5,5,5,8,8,8 => jadi 5,5,5,6,6,6.
+
+    Rule:
+    - Per invoice_no.
+    - Setiap nilai inv_seq lama yang berbeda dianggap group item baru.
+    - Group pertama mempertahankan angka pertama.
+    - Group berikutnya lanjut +1.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    state_by_invoice = {}
+
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+
+        invoice_key = _preprocess_invoice_no_for_grouping(
+            row.get("inv_invoice_no")
+        )
+
+        if not invoice_key:
+            invoice_key = f"__NO_INVOICE__{idx + 1}"
+
+        old_seq_raw = row.get("inv_seq")
+
+        try:
+            old_seq_key = int(old_seq_raw)
+        except Exception:
+            old_seq_key = str(old_seq_raw or "").strip()
+
+        if invoice_key not in state_by_invoice:
+            try:
+                first_seq = int(old_seq_raw)
+            except Exception:
+                first_seq = 1
+
+            state_by_invoice[invoice_key] = {
+                "seq_map": {},
+                "next_seq": first_seq,
+            }
+
+        state = state_by_invoice[invoice_key]
+        seq_map = state["seq_map"]
+
+        if old_seq_key not in seq_map:
+            seq_map[old_seq_key] = state["next_seq"]
+            state["next_seq"] += 1
+
+        row["inv_seq"] = seq_map[old_seq_key]
+
+    return rows
+
 
 def _pick_closest_remaining_candidate(candidates, target_qty):
     """
@@ -9908,6 +9969,9 @@ def run_ocr(
 
         all_rows = _inherit_inv_seq_for_secondary_po_split_rows(all_rows)
 
+        # New logic: rapikan gap 1,1,1 -> 4,4,4 menjadi 1,1,1 -> 2,2,2.
+        all_rows = _compact_inv_seq_gaps_after_po_split(all_rows)
+
         if has_coo_doc:
             _postprocess_coo_po_only_rows_from_invoice(all_rows)
             _postprocess_coo_no_and_seq(all_rows)
@@ -9964,6 +10028,7 @@ def run_ocr(
         all_rows = _force_secondary_po_split_rows_true(all_rows)
 
         all_rows = _inherit_inv_seq_for_secondary_po_split_rows(all_rows)
+        all_rows = _compact_inv_seq_gaps_after_po_split(all_rows)
 
         _finalize_match_fields(all_rows)
 
