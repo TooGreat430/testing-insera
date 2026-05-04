@@ -593,6 +593,20 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
 22. coo_no
     - coo_no merupakan nomor certificate dari dokumen
     - Biasanya di labelkan dengan "Certificate No:..."
+
+23. coo_form_type:
+   - Ekstrak jenis form Certificate of Origin (COO) dari dokumen.
+   - Prioritaskan mapping ke salah satu dari pilihan berikut:
+     - RCEP / Regional Comprehensive Economic Partnership Agreement → "RCEP"
+     - "ATIGA" / "FORM D"
+     - "AWSC"
+     - "FORM AJ"
+     - "JIEPA"
+  - Jika ditemukan jenis form COO yang jelas dan eksplisit tetapi TIDAK termasuk dalam daftar di atas:
+     → isi dengan nilai asli tersebut (tanpa mengubah makna).
+  - Jika tidak ditemukan indikasi jenis COO secara eksplisit atau tidak cukup jelas:
+     → isi dengan "null".
+  - Jangan mengarang atau menebak.
 """
 
 def build_detail_prompt_from_index(
