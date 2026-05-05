@@ -502,19 +502,24 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      contoh: pada dokumen terlampir total dari quantity seperti ini 2139PCE/150SET. Maka sum kedua value tersebut adalah 2289 (2139 + 150 = 2289)
 
 10. pl_total_package:
-   - Untuk total package yang digunakan, liat secara detail berapa package secara total. Jika secara eksplisit dikatakan totalnya, langsung ambil valuenya.
-   - Jika tidak secara eksplisit, contoh:
-     Total Number of Packages: 1,   Package Detail: 1 PLT(S)  Number of Carton: 9
-     Maka pl_total_package adalah 9 karena secara detail, ada 9 total package.
-   - Jika pada dokumen terdapat dua value dengan UNIT yang beda yang tergabung dalam satu UNIT dengan satuan yang lebih besar, seperti:
-    Total
-    2P/T	<	32C/T &		83C/T
-    Maka total package adalah 85 (2 + 83 = 85) karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (P/T karena satu P/T bisa berisi beberapa C/T, sedangkan C/T tidak bisa berisi P/T).
-
-    Atau seperti ini:
-    Total Packages: 4 PLT (108 CTN) & 95 CTN
-    Maka pl_total_package = 4 PLT + 95 CTN = 99 karena yang dijumlahkan adalah value dari package count dengan hierarki terbesar (PLT karena satu PLT bisa berisi beberapa CTN, sedangkan CTN tidak bisa berisi PLT).
-
+   - Ambil nilai numerik dari total kemasan fisik terluar (outermost packaging) yang dikirim.
+   - ATURAN TANDA KURUNG (SANGAT PENTING): Jika ada angka di dalam tanda kurung ( ) atau kurung siku < >, ABAIKAN ANGKA TERSEBUT SEPENUHNYA. Angka di dalam kurung hanya menjelaskan isi dari kemasan luar, bukan total kemasan fisik.
+   - Aturan Hierarki: Jika terdapat gabungan unit besar (contoh: Pallet/PLT/PT/Skid) dan unit kecil yang lepas/loose (contoh: Carton/CTN/CT), JUMLAHKAN HANYA UNIT TERBESAR DENGAN UNIT KECIL YANG LEPAS.
+   
+   CONTOH KASUS PENJUMLAHAN:
+   - "TOTAL PACKAGES : 1 PLT (16 CTN) & 55 CTN"
+     Maka pl_total_package = 56.
+     (Cara hitung: 1 PLT + 55 CTN. Angka 16 CTN di dalam kurung DIABAIKAN).
+   - "2P/T  < 32C/T > &   83C/T"
+     Maka pl_total_package = 85.
+     (Cara hitung: 2 P/T + 83 C/T. Angka 32 C/T di dalam tanda < > DIABAIKAN).
+   - "Total Packages: 4 PLT (108 CTN) & 95 CTN"
+     Maka pl_total_package = 99.
+     (Cara hitung: 4 PLT + 95 CTN. Angka 108 CTN DIABAIKAN).
+   
+   - Jika dokumen secara eksplisit menyebutkan 1 total detail tanpa hirarki campuran, ambil angkanya langsung. 
+     Contoh: "Total Number of Packages: 91 CTNS" -> pl_total_package = 91.
+     
 11. 11. pl_total_volume:
    - Ambil nilai numerik dari total volume packing list yang merepresentasikan jumlah volume keseluruhan, bukan jumlah volume line item.
    - Dapat muncul dalam berbagai bentuk dan tidak selalu punya label eksplisit seperti "total volume".
