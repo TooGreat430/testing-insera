@@ -7981,19 +7981,25 @@ def _repaired_row_has_allowed_change(input_item: dict, repaired_item: dict) -> b
 
 def _validate_total_issue_gemini_batch_result(batch: list, repaired_batch: list, label: str = ""):
     """
-    Hard validator:
-    Kalau batch punya total issue, Gemini tidak boleh return semua positive/unchanged.
-    Harus ada minimal 1 row:
-    - confidence_label == negative, ATAU
-    - ada value field recheck yang berubah dari input.
+    Soft validator:
+    Untuk total issue batch, Gemini DIHARAPKAN return minimal 1 negative/changed
+    jika visual PDF mendukung.
+
+    Tapi kalau Gemini return semua positive/unchanged, JANGAN raise error.
+    Biarkan Python safety fallback menentukan minimal 1 negative di tahap final.
+
+    Kenapa?
+    - Prompt sendiri mengizinkan semua positive jika bukti visual tidak cukup.
+    - Hard guarantee sekarang ada di _force_min_one_negative_for_total_issue().
     """
     if not _batch_requires_total_negative(batch):
-        return
+        return True
 
     if not isinstance(repaired_batch, list):
         raise Exception(f"Invalid Gemini result for total issue batch {label}: output bukan list")
 
     input_by_no = {}
+
     for item in batch or []:
         if not isinstance(item, dict):
             continue
@@ -8007,7 +8013,7 @@ def _validate_total_issue_gemini_batch_result(batch: list, repaired_batch: list,
         except Exception:
             continue
 
-    has_negative = False
+    has_negative_or_changed = False
 
     for repaired in repaired_batch:
         if not isinstance(repaired, dict):
@@ -8023,7 +8029,9 @@ def _validate_total_issue_gemini_batch_result(batch: list, repaired_batch: list,
             input_item = None
 
         confidence_label = str(
-            repaired.get("confidence_label") or repaired.get("_gemini_recheck_decision") or ""
+            repaired.get("confidence_label")
+            or repaired.get("_gemini_recheck_decision")
+            or ""
         ).strip().lower()
 
         changed_fields = repaired.get("changed_fields")
@@ -8031,22 +8039,26 @@ def _validate_total_issue_gemini_batch_result(batch: list, repaired_batch: list,
             changed_fields = repaired.get("_gemini_changed_fields")
 
         if confidence_label == "negative":
-            has_negative = True
+            has_negative_or_changed = True
             break
 
         if isinstance(changed_fields, list) and changed_fields:
-            has_negative = True
+            has_negative_or_changed = True
             break
 
         if input_item and _repaired_row_has_allowed_change(input_item, repaired):
-            has_negative = True
+            has_negative_or_changed = True
             break
 
-    if not has_negative:
-        raise Exception(
-            f"Invalid Gemini result for total issue batch {label}: "
-            f"total_issue_mode=true tapi Gemini return zero negative / zero changed field."
+    if not has_negative_or_changed:
+        print(
+            f"[TOTAL_ISSUE_GEMINI_ZERO_CHANGE][WARN] "
+            f"{label}: total_issue_mode=true tapi Gemini return semua positive/unchanged. "
+            f"Accepting Gemini result; Python fallback will force min 1 negative if needed."
         )
+        return False
+
+    return True
 
 def _build_recheck_payload_item(
     row: dict,
