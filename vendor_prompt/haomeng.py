@@ -203,6 +203,8 @@ Struktur umum packing list HAOMENG:
 
 BILL OF LADING (BL)
 
+Jika dokumen COO tidak tersedia, mapping bl_description dan bl_hs_code TETAP HARUS DILAKUKAN.
+
 Struktur umum BL HAOMENG:
 - Pada deskripsi goods terdapat beberapa line deskripsi barang
 - Masing-masing diikuti "HS NUMBER: xxxxx.xx"
@@ -229,10 +231,18 @@ Struktur umum BL HAOMENG:
      - "HS NUMBER: 8714.96" -> bl_hs_code = "8714.96"
    - Hanya boleh mengambil dari BL.
 
-Catatan tambahan BL:
-- Jika proses Anda membutuhkan mapping ke invoice/PL item, maka lakukan matching hanya berdasarkan model utama yang benar-benar muncul di BL.
-- Jika model invoice/PL tidak muncul di BL, maka bl_description = "null" dan bl_hs_code = "null" untuk item tersebut.
-- Jangan memaksa matching berdasarkan kemiripan parsial yang lemah.
+LOGIC MAPPING BL:
+- bl_description dan bl_hs_code adalah satu pasangan dari item BL yang sama.
+- Mapping ke row dilakukan dengan prioritas:
+  1) Cocokkan model utama dari inv_description ke item BL.
+     Contoh model: TA-CQ68, TB-CY01, TN-CY10, PRO-A38, TY-CQ01.
+  2) Jika tidak ketemu, cocokkan inv_spart_item_no ke item BL.
+  3) Jika tidak ketemu, cocokkan model utama dari pl_description ke item BL.
+  4) Jika tidak ketemu, cocokkan pl_item_no ke item BL.
+  5) Jika tetap tidak ketemu, JANGAN langsung isi null.
+     Pilih salah satu pasangan item BL yang benar-benar ada di dokumen BL sebagai kandidat fallback.
+     Prioritaskan item BL berdasarkan urutan row yang paling dekat.
+     Jika tidak bisa menentukan, ambil item BL pertama yang tersedia.
 
 CERTIFICATE OF ORIGIN (COO)
 
