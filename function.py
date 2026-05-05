@@ -5197,16 +5197,110 @@ def _enforce_absent_optional_docs_empty(
         f"forced_null_prefixes={prefixes}"
     )
 
+TOTAL_MISMATCH_LABEL_REGEX = re.compile(
+    r"^(Invoice|PackingList):\s*"
+    r"(total_quantity|total_amount|total_package|total_nw|total_gw|total_volume)"
+    r"\s+mismatch",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_total_mismatch_message(msg: str) -> bool:
+    if msg is None:
+        return False
+
+    text = str(msg).strip()
+    return bool(TOTAL_MISMATCH_LABEL_REGEX.search(text))
+
+
+def _canonical_match_error_key(msg: str) -> str:
+    """
+    Samakan key untuk error yang secara makna sama.
+
+    Contoh yang dianggap sama:
+    - PackingList: total_quantity mismatch (sum 3627.0, doc 3633.0)
+    - PackingList: total_quantity mismatch
+
+    Tujuannya:
+    - detail message tetap dipertahankan
+    - label pendek dari total attribution tidak double
+    """
+    text = str(msg or "").strip()
+
+    # normalize whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    if _is_total_mismatch_message(text):
+        # buang detail trailing "(sum ..., doc ...)" untuk canonical key
+        text = re.sub(r"\s*\(sum\b.*?\)\s*$", "", text, flags=re.IGNORECASE)
+
+    return text.lower()
+
+
+def _has_total_detail_message(msg: str) -> bool:
+    """
+    True untuk format detail:
+    PackingList: total_quantity mismatch (sum 3627.0, doc 3633.0)
+    """
+    text = str(msg or "")
+    return bool(re.search(r"\(sum\b.*?\bdoc\b.*?\)", text, flags=re.IGNORECASE))
+
+
+def _split_match_description_messages(value) -> list:
+    if _is_null(value):
+        return []
+
+    return [
+        part.strip()
+        for part in str(value).split(";")
+        if part and part.strip()
+    ]
+
+
 def _append_err(row: dict, msg: str):
-    """Append error ke match_description pakai '; ' dan set match_score=false."""
+    """
+    Append error ke match_description pakai '; ' dan set match_score=false.
+
+    Dengan dedupe:
+    - exact duplicate tidak ditambahkan lagi
+    - total mismatch pendek tidak ditambahkan kalau versi detail sudah ada
+    - kalau versi pendek sudah ada lalu versi detail datang belakangan,
+      versi pendek diganti menjadi versi detail
+    """
     if not isinstance(row, dict):
         return
+
     row["match_score"] = "false"
+
     prev = row.get("match_description")
     if _is_null(prev):
         row["match_description"] = msg
-    else:
-        row["match_description"] = f"{prev}; {msg}"
+        return
+
+    existing_messages = _split_match_description_messages(prev)
+    new_key = _canonical_match_error_key(msg)
+
+    for idx, existing_msg in enumerate(existing_messages):
+        existing_key = _canonical_match_error_key(existing_msg)
+
+        if existing_key != new_key:
+            continue
+
+        # Kalau existing masih generic tapi msg baru lebih detail,
+        # replace supaya output menyimpan "(sum ..., doc ...)".
+        if (
+            _is_total_mismatch_message(msg)
+            and _has_total_detail_message(msg)
+            and not _has_total_detail_message(existing_msg)
+        ):
+            existing_messages[idx] = msg
+            row["match_description"] = "; ".join(existing_messages)
+
+        # Kalau sudah ada semantic duplicate, jangan append lagi.
+        return
+
+    existing_messages.append(msg)
+    row["match_description"] = "; ".join(existing_messages)
 
 def _reset_match_fields(rows: list):
     """Karena Gemini tidak validasi lagi, kita reset supaya Python yang menentukan."""
