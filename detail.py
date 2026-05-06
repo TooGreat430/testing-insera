@@ -425,7 +425,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      maka, inv_invoice_date = 2026-01-07
   - JANGAN AMBIL DARI "SAILING ON OR ABOUT:", "ETD:", atau "ETA:"
 
-2. pl_invoice_no:
+3. pl_invoice_no:
    - Ambil nomor invoice yang direferensikan oleh dokumen Packing List pada level header dokumen.
    - pl_invoice_no TIDAK HARUS selalu berlabel "INVOICE NO".
    - Label/konteks yang valid untuk pl_invoice_no bisa berupa:
@@ -438,7 +438,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Prioritaskan kandidat yang muncul di area header atas, bukan di body table.
    - Jika ada beberapa kandidat, pilih yang paling dekat dengan judul dokumen / area header dan yang paling konsisten dengan invoice reference dokumen tersebut.
 
-3. coo_invoice_no:
+4. coo_invoice_no:
    - Ambil nomor invoice yang direferensikan oleh dokumen COO/RCEP.
    - coo_invoice_no BUKAN COO number / certificate number.
    - Untuk dokumen COO/RCEP, prioritas utama adalah membaca KOLOM / BOX 13 dengan label:
@@ -461,25 +461,25 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Jika continuation sheet tidak menampilkan ulang invoice number,
      tetap gunakan invoice number yang muncul pada page pertama dokumen yang sama.
 
-4. inv_vendor_name pada Invoice:
+5. inv_vendor_name pada Invoice:
    - BUKAN berasal dari PT Insera Sena.
    - Jika terdapat PT Insera Sena dan pihak lain → pilih yang BUKAN PT Insera Sena.
 
-5. Messrs pada Packing List (PL) dan Invoice (INV):
+6. Messrs pada Packing List (PL) dan Invoice (INV):
    - SELALU PT Insera Sena.
    - Jika terdapat beberapa nama → pilih PT Insera Sena.
    - Jika ada variasi nama perusahaan PT Insera Sena seperti:
      "PT. INSERA SENA", "PERSEROAN TERBATAS INSERA SENA", "PT INSERASENA", atau bentuk lainnya yang merujuk pada PT Insera Sena,
      NORMALISASI menjadi: "PT Insera Sena"
 
-6. Messrs address pada Packing List (PL) dan Invoice (INV):
+7. Messrs address pada Packing List (PL) dan Invoice (INV):
    - Hanya ekstrak address dari perusahaannya tanpa kode posnya, contoh:
       JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR 61252
       Berarti yang diekstrak hanya: JL VETERAN, LINGKAR TIMUR, KEL. WADUNGASIH, KEC. BUDURAN, KAB. SIDOARJO, PROV. JAWA TIMUR
    - JANGAN SAMPAI SALAH EKSTRAK! PAHAMI KONTEKS. Jika messrs address maka yang ditanyakan adalah alamat jadi penulisan harus tepat
      contoh: Di dokumen seperti ini JI VETERAN maka perlu di convert menjadi "JL VETERAN" karena konteksnua adalah JALAN
 
-7. inv_total_quantity:
+8. inv_total_quantity:
    - Ambil nilai numerik dari total quantity invoice yang merepresentasikan jumlah quantity keseluruhan, bukan jumlah quantity line item. 
    - Dapat muncul dalam berbagai bentuk dan tidak selalu punya label eksplisit seperti "total quantity".
    - Biasanya muncul di bagian akhir dokumen atau bagian ringkasan, satu baris bersama total amount atau informasi ringkasan lainnya.
@@ -488,7 +488,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Jika tidak tersedia secara eksplisit dan jelas dari dokumen invoice, maka isi dengan "null".
    - JANGAN menghitung, menjumlahkan, mengarang, atau mengambil dari dokumen lain jika value total quantity tidak tersedia.
 
-8. inv_price_unit SAMA dengan inv_amount_unit:
+9. inv_price_unit SAMA dengan inv_amount_unit:
    - Kedua field ini mempresentasikan mata uang (currency).  
    - Telusuri currency yang digunakan, contoh valuenya: USD, CNY, YEN, EUR dan lain-lain.
 
@@ -505,11 +505,11 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      Contoh:
      Currency Code : USD → maka inv_price_unit dan inv_amount_unit diisi dengan USD.
 
-9. pl_total_package dan pl_total_quantity:
+10. pl_total_package dan pl_total_quantity:
    - Jika pada dokumen terdapat dua value dengan UNIT yang berbeda, maka sum kedua value tersebut
      contoh: pada dokumen terlampir total dari quantity seperti ini 2139PCE/150SET. Maka sum kedua value tersebut adalah 2289 (2139 + 150 = 2289)
 
-10. pl_total_package:
+11. pl_total_package:
    - Ambil nilai numerik dari total kemasan fisik terluar (outermost packaging) yang dikirim.
    - ATURAN TANDA KURUNG (SANGAT PENTING): Jika ada angka di dalam tanda kurung ( ) atau kurung siku < >, ABAIKAN ANGKA TERSEBUT SEPENUHNYA. Angka di dalam kurung hanya menjelaskan isi dari kemasan luar, bukan total kemasan fisik.
    - Aturan Hierarki: Jika terdapat gabungan unit besar (contoh: Pallet/PLT/PT/Skid) dan unit kecil yang lepas/loose (contoh: Carton/CTN/CT), JUMLAHKAN HANYA UNIT TERBESAR DENGAN UNIT KECIL YANG LEPAS.
@@ -528,7 +528,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Jika dokumen secara eksplisit menyebutkan 1 total detail tanpa hirarki campuran, ambil angkanya langsung. 
      Contoh: "Total Number of Packages: 91 CTNS" -> pl_total_package = 91.
      
-11. 11. pl_total_volume:
+12. 11. pl_total_volume:
    - Ambil nilai numerik dari total volume packing list yang merepresentasikan jumlah volume keseluruhan, bukan jumlah volume line item.
    - Dapat muncul dalam berbagai bentuk dan tidak selalu punya label eksplisit seperti "total volume".
    - Biasanya muncul di bagian akhir dokumen atau bagian ringkasan total, satu baris bersama total nw, total gw, total package atau informasi ringkasan lainnya.
@@ -537,24 +537,24 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Jika tidak tersedia secara eksplisit dan jelas dari dokumen packing list, maka isi dengan "null".
    - JANGAN menghitung, menjumlahkan, mengarang, atau mengambil dari dokumen lain jika value total volume tidak tersedia.
 
-12. LC Logic pada Bill of Lading (BL):
+13. LC Logic pada Bill of Lading (BL):
    - Jika bl_consignee_name mengandung nama perusahaan Bank → BL bertipe LC.
    - Jika tidak → BL bukan bertipe LC.
 
-13. Jika pada dokumen Bill of Lading (BL) bertipe LC:
+14. Jika pada dokumen Bill of Lading (BL) bertipe LC:
     - bl_consignee_name diambil dari notify party
     - bl_consignee_address diambil dari notify party
 
-14. inv_coo_commodity_origin
+15. inv_coo_commodity_origin
    - SEBUTKAN NAMA NEGARANYA SAJA TIDAK PERLU TULISAN "Made In" yang penting nama negaranya dan tulisan dalam huruf besar semua.
 
-15. pl_volume_unit
+16. pl_volume_unit
   - volume unit yang hanya ada dua value antara CUFT dan M3
   - Jika value pada dokumen seperti ini: MÂ³ --> maka value aslinya adalah "M3"
   - Jika value pada dokumen seperti ini: CU'FT --> maka value aslinya adalah "CUFT
   - JIKA PADA DOKUMEN TIDAK TERTERA VOLUME UNIT DARI Packing List Volume Unit, maka biarkan "null".
 
-16. coo_gw_unit:
+17. coo_gw_unit:
     - Field ini merepresentasikan satuan dari gross weight pada dokumen Certificate of Origin (COO).
     - Pada dokumen COO, nilai weight dapat ditulis dalam format seperti: "80KG G.W.", "160KG G.W.", atau "240KG G.W.".
     - Dalam format tersebut:
@@ -568,9 +568,9 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
 
-17. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
+18. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 
-18. bl_shipper dan bl_seller
+19. bl_shipper dan bl_seller
    - Penempatan bl_shipper selalu diatas dari bl_seller
    - Jika bingung, terdapat tulisan "O/B" Untuk memisahkan antara bl_shipper dan bl_seller
      contoh:
@@ -580,20 +580,21 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       O/B BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
       KOVEL 11, 5431 ST CUIJK, THE NETHERLANDS 
 
-   Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
+     Maka value dari bl_shipper_name adalah SUZHOU GEYA TRADING CO.,LTD. dan bl_seller_name adalah BAFANG ELECTRIC MOTOR SCIENCE TECHNOLOGY B.V.
+   - bl_seller_name HARUS selain "PT INSERA SENA", TIDAK BOLEH diisi dengan "PT INSERA SENA".
 
-19. bl_voyage_no:
+20. bl_voyage_no:
    - Penempatan dari bl_voyage_no selalu di sebelah bl_vessel
    - Format dari bl_voyage_no diawali dengan huruf terus konektor terus kode. Tugas anda ambil setelah V nya
      Contoh:
      V.S018
      Berarti value tersebut adalah S018
 
-20. inv_invoice_no, pl_invoice_no & coo_invoice_no:
+21. inv_invoice_no, pl_invoice_no & coo_invoice_no:
     - PADA SETIAP DOKUMEN INVOICE, PACKING LIST DAN COO, PASTI ADA INVOICE NO JADI TOLONG CARI DENGAN TELITI.
     - inv_invoice_no, pl_invoice_no & coo_invoice_no TIDAK BERSIFAT NULLABLE, JADI TOLONG PERHATIKAN DENGAN TELITI
 
-21. coo_invoice_no:
+22. coo_invoice_no:
     - Merepresentasikan invoice number yang direferensikan pada dokumen COO.
     - Biasanya memiliki kolom sendiri
     - Biasanya kolom ditaruh di paling kanan dari dokumen.
@@ -608,7 +609,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
 
         Maka, coo_invoice_no: SHXM22-2512000393
 
-22. bl_mark_number:
+23. bl_mark_number:
     - Ekstrak dari kolom "Marks and Numbers" pada dokumen BL.
     - Ekstrak secara kesuluruhan apabila ada "PT. IS" pada kolom tersebut.
       Contoh:
@@ -620,11 +621,11 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       MADE IN CHINA
       maka, bl_mark_number: "PT.IS  PO#  P/I NO.:  C/NO.:A  MADE IN CHINA"
 
-23. coo_no
+24. coo_no
     - coo_no merupakan nomor certificate dari dokumen
     - Biasanya di labelkan dengan "Certificate No:..."
 
-24. coo_form_type:
+25. coo_form_type:
    - Ekstrak jenis form Certificate of Origin (COO) dari dokumen.
    - Prioritaskan mapping ke salah satu dari pilihan berikut:
      - RCEP / Regional Comprehensive Economic Partnership Agreement → "RCEP"
