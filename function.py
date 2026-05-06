@@ -6318,42 +6318,62 @@ def _validate_packing_rows(rows: list):
         if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
             _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
 
-def _postprocess_coo_gw_from_pl_gw(rows: list, eps: float = 0.01):
+def _postprocess_coo_numeric_fields_from_pl(rows: list, eps: float = 0.01):
     """
     Sebelum validasi:
-    Jika pl_gw dan coo_gw sama-sama ada tetapi nilainya beda,
-    maka coo_gw mengikuti pl_gw.
+    Jika field COO numeric berbeda dari field PL pasangan,
+    maka field COO mengikuti nilai PL.
+
+    Mapping:
+    - pl_quantity       -> coo_quantity
+    - pl_package_count -> coo_package_count
+    - pl_gw            -> coo_gw
 
     Ini bukan validasi, tidak append error.
     """
     if not isinstance(rows, list):
         return rows
 
+    field_pairs = [
+        ("pl_quantity", "coo_quantity"),
+        ("pl_package_count", "coo_package_count"),
+        ("pl_gw", "coo_gw"),
+    ]
+
     changed_count = 0
+    changed_by_field = {}
 
     for row in rows:
         if not isinstance(row, dict):
             continue
 
-        pl_gw_num = _to_float(row.get("pl_gw"))
-        coo_gw_num = _to_float(row.get("coo_gw"))
+        for pl_field, coo_field in field_pairs:
+            pl_num = _to_float(row.get(pl_field))
+            coo_num = _to_float(row.get(coo_field))
 
-        if pl_gw_num is None or coo_gw_num is None:
-            continue
+            if pl_num is None or coo_num is None:
+                continue
 
-        if abs(pl_gw_num - coo_gw_num) <= eps:
-            continue
+            if abs(pl_num - coo_num) <= eps:
+                continue
 
-        old_coo_gw = row.get("coo_gw")
-        row["coo_gw"] = pl_gw_num
-        changed_count += 1
+            old_value = row.get(coo_field)
+            row[coo_field] = pl_num
 
-        print(
-            f"[COO_GW_FROM_PL_GW] "
-            f"coo_gw replaced from {old_coo_gw} to {pl_gw_num}"
-        )
+            changed_count += 1
+            changed_by_field[coo_field] = changed_by_field.get(coo_field, 0) + 1
 
-    print(f"[COO_GW_FROM_PL_GW] changed_rows={changed_count}")
+            print(
+                f"[COO_NUMERIC_FROM_PL] "
+                f"{coo_field} replaced from {old_value} to {pl_num} "
+                f"using {pl_field}"
+            )
+
+    print(
+        f"[COO_NUMERIC_FROM_PL] "
+        f"changed_cells={changed_count} "
+        f"changed_by_field={changed_by_field}"
+    )
 
     return rows
 
@@ -9312,7 +9332,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_bl_seller_name_similarity(rows)
 
     _postprocess_bl_coo_zero_to_null(rows)
-    _postprocess_coo_gw_from_pl_gw(rows)
+    _postprocess_coo_numeric_fields_from_pl(rows)
 
     _validate_invoice_rows(rows)
     _validate_packing_rows(rows)
@@ -10576,7 +10596,7 @@ def run_ocr(
             columns=["pl_volume_unit"],
         )
 
-        _postprocess_coo_gw_from_pl_gw(all_rows)
+        _postprocess_coo_numeric_fields_from_pl(all_rows)
         all_rows = _validate_po(all_rows)
 
         _validate_invoice_rows(all_rows)
