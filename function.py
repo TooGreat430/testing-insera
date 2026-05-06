@@ -8154,6 +8154,133 @@ def _validate_total_issue_gemini_batch_result(batch: list, repaired_batch: list,
 
     return True
 
+def _compact_anchor_value(value):
+    if value is None:
+        return "null"
+
+    s = str(value).strip()
+    if s == "" or s.lower() == "null":
+        return "null"
+
+    return s
+
+
+def _build_line_item_anchor_context(row: dict):
+    """
+    Anchor untuk membedakan line item target vs previous/next row.
+
+    Tujuan:
+    - Gemini tidak boleh hanya melihat angka pl_volume.
+    - Gemini harus locate row berdasarkan invoice/item/description/sequence dulu.
+    - Baru baca target column di row itu.
+    """
+    if not isinstance(row, dict):
+        return {}
+
+    return {
+        "row_identity": {
+            "_detail_row_no": row.get("_detail_row_no"),
+            "inv_seq": row.get("inv_seq"),
+            "inv_sequence": row.get("inv_sequence"),
+            "pl_seq": row.get("pl_seq"),
+            "coo_seq": row.get("coo_seq"),
+        },
+        "invoice_anchors": {
+            "inv_invoice_no": _compact_anchor_value(row.get("inv_invoice_no")),
+            "pl_invoice_no": _compact_anchor_value(row.get("pl_invoice_no")),
+            "coo_invoice_no": _compact_anchor_value(row.get("coo_invoice_no")),
+            "coo_no": _compact_anchor_value(row.get("coo_no")),
+        },
+        "item_anchors": {
+            "inv_item_no": _compact_anchor_value(row.get("inv_item_no")),
+            "pl_item_no": _compact_anchor_value(row.get("pl_item_no")),
+            "coo_item_no": _compact_anchor_value(row.get("coo_item_no")),
+            "inv_customer_po_no": _compact_anchor_value(row.get("inv_customer_po_no")),
+            "inv_hs_code": _compact_anchor_value(row.get("inv_hs_code")),
+            "coo_hs_code": _compact_anchor_value(row.get("coo_hs_code")),
+        },
+        "description_anchors": {
+            "inv_description": _compact_anchor_value(row.get("inv_description")),
+            "pl_description": _compact_anchor_value(row.get("pl_description")),
+            "coo_description": _compact_anchor_value(row.get("coo_description")),
+        },
+        "numeric_neighbor_anchors": {
+            "inv_quantity": row.get("inv_quantity"),
+            "pl_quantity": row.get("pl_quantity"),
+            "pl_package_count": row.get("pl_package_count"),
+            "pl_nw": row.get("pl_nw"),
+            "pl_gw": row.get("pl_gw"),
+            "pl_volume": row.get("pl_volume"),
+        },
+    }
+
+
+def _build_neighbor_anchor_context(prev_row=None, row=None, next_row=None):
+    return {
+        "previous_anchor": _build_line_item_anchor_context(prev_row),
+        "current_anchor": _build_line_item_anchor_context(row),
+        "next_anchor": _build_line_item_anchor_context(next_row),
+        "instruction": (
+            "Gunakan current_anchor sebagai target row utama. "
+            "previous_anchor dan next_anchor hanya untuk membedakan row, bukan untuk mengambil value. "
+            "Jangan ambil nilai numeric dari previous/next row kecuali visual PDF menunjukkan target cell memang milik current_anchor."
+        ),
+    }
+
+
+def _build_row_shift_risk_context(row: dict, prev_row=None, next_row=None, recheck_fields=None):
+    """
+    Context khusus untuk kasus value dari row index 2 kebaca sebagai index 1.
+    """
+    recheck_fields = recheck_fields or []
+
+    current_anchor = _build_line_item_anchor_context(row)
+    prev_anchor = _build_line_item_anchor_context(prev_row)
+    next_anchor = _build_line_item_anchor_context(next_row)
+
+    suspicious = []
+
+    for field in recheck_fields:
+        cur_val = row.get(field) if isinstance(row, dict) else None
+        prev_val = prev_row.get(field) if isinstance(prev_row, dict) else None
+        next_val = next_row.get(field) if isinstance(next_row, dict) else None
+
+        if next_val is not None and _same_recheck_value(cur_val, next_val, field):
+            suspicious.append({
+                "field": field,
+                "risk": "current_value_equals_next_row_value",
+                "message": (
+                    "Nilai current row sama dengan next row. "
+                    "Pastikan value ini benar-benar berada di target row, bukan terbawa dari row berikutnya."
+                ),
+                "current_value": cur_val,
+                "next_value": next_val,
+            })
+
+        if prev_val is not None and _same_recheck_value(cur_val, prev_val, field):
+            suspicious.append({
+                "field": field,
+                "risk": "current_value_equals_previous_row_value",
+                "message": (
+                    "Nilai current row sama dengan previous row. "
+                    "Pastikan ini bukan duplicate akibat merge/row shift."
+                ),
+                "current_value": cur_val,
+                "previous_value": prev_val,
+            })
+
+    return {
+        "risk_type": "row_shift_or_neighbor_value_leak",
+        "target_row_rule": (
+            "Pertama cari current_anchor di PDF. Setelah row target ditemukan, baru baca target column. "
+            "Jangan cari angka dulu lalu mencocokkan ke row."
+        ),
+        "current_anchor": current_anchor,
+        "previous_anchor": prev_anchor,
+        "next_anchor": next_anchor,
+        "suspicious_neighbor_values": suspicious,
+    }
+
 def _build_recheck_payload_item(
     row: dict,
     recheck_fields: list,
@@ -8228,6 +8355,21 @@ def _build_recheck_payload_item(
         ),
 
         "anchor_context": _build_line_item_anchor_context(row),
+
+        # NEW: anchor pembanding untuk cegah salah ambil value dari index/row sebelah
+        "neighbor_anchor_context": _build_neighbor_anchor_context(
+            prev_row=prev_row,
+            row=row,
+            next_row=next_row,
+        ),
+
+        # NEW: risk context khusus row shift / salah index
+        "row_shift_risk_context": _build_row_shift_risk_context(
+            row=row,
+            prev_row=prev_row,
+            next_row=next_row,
+            recheck_fields=recheck_fields,
+        ),
     }
 
     # Current values untuk semua field recheck schema
@@ -8753,6 +8895,38 @@ ATURAN NEGATIVE:
 - Field yang salah harus dikembalikan dengan nilai benar dari PDF.
 - Jika expected_candidate cocok dengan PDF, pakai expected_candidate.
 
+ATURAN ANCHOR DAN ROW INDEX / ROW SHIFT:
+- Untuk setiap row, JANGAN mulai dari mencari angka target.
+- Pertama, locate target line item di PDF menggunakan:
+  1. anchor_context
+  2. neighbor_anchor_context.current_anchor
+  3. row_context.current_row
+  4. invoice_no
+  5. item/article number
+  6. description
+  7. PO/HS/sequence jika tersedia
+
+- previous_row / next_row / previous_anchor / next_anchor hanya boleh dipakai sebagai pembanding.
+- Jangan mengambil value dari previous row atau next row untuk current row.
+
+- Jika target field adalah pl_volume:
+  1. Cari current row berdasarkan anchor item/description/sequence.
+  2. Setelah current row ditemukan, baca hanya kolom Volume / CBM / Measurement / M3.
+  3. Jangan ambil pl_volume dari row di bawahnya walaupun angka itu terlihat jelas.
+  4. Jika angka yang diekstrak ternyata milik next row / index berikutnya, return value yang benar untuk current row.
+  5. Jika current row tidak punya value karena merged continuation, return 0.
+  6. Jika current row punya value visual berbeda dari extracted_value, return value visual current row.
+
+- Gunakan row_shift_risk_context:
+  - Jika suspicious_neighbor_values menunjukkan current_value sama dengan next_value,
+    cek apakah value itu sebenarnya milik next row.
+  - Jika iya, jangan pertahankan current extracted_value.
+  - Baca ulang target cell pada current row.
+
+- Jika anchor current row tidak jelas:
+  - Jangan koreksi numeric field secara agresif.
+  - Pertahankan extracted_value.
+
 ATURAN OUTPUT:
 1. Output HANYA JSON ARRAY valid, tanpa teks lain.
 2. Jumlah row output HARUS sama persis dengan jumlah row input.
@@ -8775,6 +8949,9 @@ ATURAN OUTPUT:
 19. Jika value memang tidak ada di dokumen:
     - string -> "null"
     - number -> 0
+20. Jangan return neighbor_anchor_context.
+21. Jangan return row_shift_risk_context.
+22. Jangan return anchor_context.
 
 OUTPUT SCHEMA:
 {schema_json}
