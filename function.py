@@ -45,6 +45,14 @@ BATCH_SIZE = 30
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 test_number = 2
 
+DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES = int(
+    os.getenv("DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES", "4")
+)
+
+DETAIL_TOTAL_RECHECK_REPAIR_AFTER_RETRY = str(
+    os.getenv("DETAIL_TOTAL_RECHECK_REPAIR_AFTER_RETRY", "true")
+).strip().lower() in {"1", "true", "yes", "y"}
+
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
     "inv_quantity": "number",
@@ -3892,6 +3900,10 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
 
         # Default untuk row total issue adalah positive dulu.
         row["confidence_label"] = "positive"
+        
+        if row.get("_gemini_total_issue_negative"):
+            row["confidence_label"] = "negative"
+            continue
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
 
@@ -3900,13 +3912,6 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         # mengubah field.
         # =====================================================
         if isinstance(changed_fields, list) and changed_fields:
-            row["confidence_label"] = "negative"
-            continue
-
-        # =====================================================
-        # Negative jika Gemini total issue memilih row ini.
-        # =====================================================
-        if row.get("_gemini_total_issue_negative") is True:
             row["confidence_label"] = "negative"
             continue
 
@@ -8127,6 +8132,57 @@ def _build_document_audit_context(recheck_fields: list, group_plan_item: dict):
         "total_context_by_field": total_context,
     }
 
+def _build_hard_compare_anchor_pack(row: dict, recheck_fields: list, group_field_meta: dict):
+    expected_map = _build_expected_candidate_map(
+        row=row,
+        recheck_fields=recheck_fields,
+        field_meta_map=group_field_meta or {},
+    )
+
+    return {
+        "purpose": (
+            "Anchor pack ini dipakai khusus untuk total mismatch recheck. "
+            "Gemini harus locate row berdasarkan PO + item + sequence dulu, "
+            "baru compare angka target."
+        ),
+        "row_locator_priority": {
+            "customer_po_no": {
+                "inv_customer_po_no": _compact_anchor_value(row.get("inv_customer_po_no")),
+                "pl_customer_po_no": _compact_anchor_value(row.get("pl_customer_po_no")),
+            },
+            "item_no": {
+                "inv_spart_item_no": _compact_anchor_value(row.get("inv_spart_item_no")),
+                "inv_item_no": _compact_anchor_value(row.get("inv_item_no")),
+                "pl_item_no": _compact_anchor_value(row.get("pl_item_no")),
+            },
+            "sequence": {
+                "inv_seq": row.get("inv_seq"),
+                "inv_sequence": row.get("inv_sequence"),
+                "pl_seq": row.get("pl_seq"),
+                "_invoice_group_row_index": row.get("_invoice_group_row_index"),
+                "_batch_row_index": row.get("_batch_row_index"),
+                "_detail_row_no": row.get("_detail_row_no"),
+            },
+            "description_fallback": {
+                "inv_description": _compact_anchor_value(row.get("inv_description")),
+                "pl_description": _compact_anchor_value(row.get("pl_description")),
+            },
+        },
+        "expected_candidates_by_field": expected_map,
+        "target_column_rules": {
+            "pl_volume": "Baca hanya kolom Volume / CBM / Measurement / M3.",
+            "pl_nw": "Baca hanya kolom NW / Net Weight.",
+            "pl_gw": "Baca hanya kolom GW / Gross Weight.",
+            "pl_package_count": "Baca hanya kolom Package / Carton / CTN.",
+            "inv_amount": "Baca hanya kolom Amount.",
+        },
+        "negative_selection_rule": (
+            "Jika batch contract mewajibkan negative, pilih primary candidate paling kuat. "
+            "Jika expected_candidate paling konsisten dengan PDF/total mismatch, "
+            "return confidence_label='negative'."
+        ),
+    }
+
 def _build_force_one_negative_context(row: dict, recheck_fields: list, plan_item: dict, is_primary: bool):
     field_meta_map = (plan_item or {}).get("field_meta", {}) or {}
 
@@ -8140,20 +8196,24 @@ def _build_force_one_negative_context(row: dict, recheck_fields: list, plan_item
         "is_primary_candidate": bool(is_primary),
         "expected_candidates_by_field": expected_map,
         "hard_rule": (
-            "Row ini hanya boleh negative jika is_primary_candidate=true DAN "
-            "angka visual PDF pada anchored line item berbeda dari extracted_value. "
-            "Jika anchor tidak jelas atau angka visual cocok dengan extracted_value, "
-            "set confidence_label='positive'."
+            "Jika is_primary_candidate=true dan batch total mismatch mewajibkan negative, "
+            "row ini adalah kandidat utama. Gemini WAJIB mengecek row ini paling detail. "
+            "Jika semua row lain tampak positive, row primary ini tetap harus dipilih sebagai "
+            "negative minimal satu field/row, kecuali row match_score TRUE."
         ),
         "layout_anchor_rule": (
-            "Gunakan anchor_context: invoice_no + customer_po_no + item/article no. "
-            "Jika item/article kosong, gunakan description/HS/sequence sebagai fallback. "
-            "Jangan koreksi numeric field jika anchored line item tidak jelas."
+            "Cari anchored line item memakai urutan ini: "
+            "1) inv_customer_po_no / pl_customer_po_no, "
+            "2) inv_spart_item_no / pl_item_no / item/article no, "
+            "3) inv_seq / pl_seq / _invoice_group_row_index / _batch_row_index, "
+            "4) description sebagai fallback. "
+            "Setelah row target ditemukan, baru baca target numeric column."
         ),
         "expected_candidate_rule": (
-            "expected_candidate hanya kandidat audit, bukan source of truth. "
-            "Gunakan expected_candidate hanya jika angka tersebut terlihat jelas di PDF "
-            "pada target cell dari anchored line item."
+            "expected_candidate adalah kandidat audit dari total mismatch. "
+            "Jika expected_candidate paling konsisten dengan row anchor, target column, "
+            "dan total mismatch, pilih expected_candidate dan set confidence_label='negative'. "
+            "Jangan return semua positive pada batch yang must_return_negative_in_this_batch=true."
         ),
     }
 
@@ -8211,27 +8271,61 @@ def _build_batch_total_issue_contract(batch: list) -> dict:
         )
     ]
 
+    must_return_negative = bool(total_items and primary_items)
+
+    primary_details = []
+    for item in primary_items:
+        primary_details.append({
+            "_detail_row_no": item.get("_detail_row_no"),
+            "_batch_row_index": item.get("_batch_row_index"),
+            "_invoice_group_row_index": item.get("_invoice_group_row_index"),
+            "recheck_fields": item.get("_recheck_fields"),
+            "force_one_negative_context": item.get("force_one_negative_context"),
+            "anchor_context": item.get("anchor_context"),
+            "neighbor_anchor_context": item.get("neighbor_anchor_context"),
+            "row_shift_risk_context": item.get("row_shift_risk_context"),
+            "hard_compare_anchor_pack": item.get("hard_compare_anchor_pack"),
+        })
+
     return {
         "total_issue_mode": bool(total_items),
-        "min_negative_required": 1 if primary_items else 0,
-        "forbidden_output": (
-            "Jika total_issue_mode=true dan primary_candidate_row_nos tidak kosong, "
-            "minimal satu primary candidate harus negative/changed jika bukti visual PDF mendukung. "
-            "Jika tidak ada bukti visual pada anchored line item, semua row boleh positive/unchanged."
-        ),
+        "must_return_negative_in_this_batch": must_return_negative,
+        "min_negative_required": 1 if must_return_negative else 0,
+        "all_positive_response_is_invalid": must_return_negative,
+
         "candidate_row_nos": [
             item.get("_detail_row_no") for item in total_items
         ],
         "primary_candidate_row_nos": [
             item.get("_detail_row_no") for item in primary_items
         ],
-        "decision_rule": (
-            "Gemini harus membedakan line item mana yang salah berdasarkan visual PDF. "
-            "Jangan pilih berdasarkan urutan row. Gunakan anchor line item dan expected_candidate."
+        "primary_candidate_batch_indexes": [
+            item.get("_batch_row_index") for item in primary_items
+        ],
+        "primary_candidate_details": primary_details,
+
+        "hard_rule": (
+            "Jika must_return_negative_in_this_batch=true, "
+            "Gemini WAJIB return minimal 1 row dengan confidence_label='negative'. "
+            "Output semua positive/unchanged adalah INVALID."
         ),
-        "layout_rule": (
-            "Jika layout horizontal, anchor item/PO/part berada di kiri dan numeric target berada di kanan. "
-            "Jika layout vertical/wrapped, anchor bisa di atas dan numeric target bisa berada di bawahnya."
+
+        "row_location_rule": (
+            "Untuk menentukan row yang benar, gunakan urutan anchor ini: "
+            "1) inv_customer_po_no / pl_customer_po_no, "
+            "2) inv_spart_item_no / pl_item_no, "
+            "3) inv_seq / pl_seq, "
+            "4) _invoice_group_row_index, "
+            "5) _batch_row_index, "
+            "6) _detail_row_no, "
+            "7) previous/next row hanya sebagai pembanding."
+        ),
+
+        "comparison_rule": (
+            "Jangan mulai dari mencari angka. "
+            "Cari anchored line item dulu berdasarkan PO + item + sequence. "
+            "Setelah target row ditemukan, baru bandingkan extracted_value, expected_candidate, "
+            "dan angka visual PDF pada target column."
         ),
     }
 
@@ -8558,6 +8652,12 @@ def _build_recheck_payload_item(
             prev_row=prev_row,
             next_row=next_row,
             recheck_fields=recheck_fields,
+        ),
+
+        "hard_compare_anchor_pack": _build_hard_compare_anchor_pack(
+            row=row,
+            recheck_fields=recheck_fields,
+            group_field_meta=group_field_meta,
         ),
     }
 
@@ -8958,7 +9058,10 @@ BATASAN:
 - PDF visual tetap source of truth.
 - Vendor reference tidak boleh override angka yang terlihat jelas di PDF.
 - expected_candidate / gap_adjust_candidate hanya kandidat audit.
-- Jangan set confidence_label="negative" hanya karena vendor rule atau total gap.
+- Jangan set confidence_label="negative" hanya karena vendor rule.
+- Untuk total mismatch, ikuti BATCH TOTAL ISSUE CONTRACT.
+- Jika BATCH TOTAL ISSUE CONTRACT must_return_negative_in_this_batch=true,
+  maka minimal satu primary candidate tetap wajib confidence_label="negative".
 """.strip()
 
 def _build_detail_line_recheck_prompt(
@@ -8966,13 +9069,12 @@ def _build_detail_line_recheck_prompt(
     strict_total_retry: bool = False,
     vendor_id: str = "default",
     vendor_prompt_text: str = "",
+    zero_negative_retry_count: int = 0,
 ) -> str:
     schema = {
         "_detail_row_no": "number",
         "_recheck_fields": ["string"],
 
-        # ADJUSTMENT 1: Pindahkan visual_reason ke atas agar Gemini menjelaskan alasannya
-        # SEBELUM mengambil keputusan. Ini memaksa Chain-of-Thought dan menekan halusinasi.
         "visual_reason": "string",
         "confidence_label": "positive|negative",
         "changed_fields": ["string"],
@@ -8982,6 +9084,7 @@ def _build_detail_line_recheck_prompt(
 
     schema_json = json.dumps(schema, ensure_ascii=False, indent=2)
     rows_json = json.dumps(rows_payload, ensure_ascii=False, indent=2)
+
     batch_contract = _build_batch_total_issue_contract(rows_payload)
     batch_contract_json = json.dumps(batch_contract, ensure_ascii=False, indent=2)
 
@@ -8993,26 +9096,58 @@ def _build_detail_line_recheck_prompt(
     strict_text = ""
     if strict_total_retry:
         strict_text = """
-    STRICT RETRY MODE:
-    Response sebelumnya invalid karena batch memiliki primary candidate total issue,
-    tetapi tidak ada row negative/changed.
+STRICT RETRY MODE - ZERO NEGATIVE RESPONSE DITOLAK:
+Response sebelumnya ditolak karena batch total mismatch return semua positive/unchanged.
 
-    Pada retry ini:
-    - Evaluasi primary_candidate_row_nos terlebih dahulu.
-    - Set confidence_label="negative" hanya jika anchored line item jelas
-    dan angka visual PDF berbeda dari extracted_value.
-    - Jika tidak ada bukti visual pada anchored line item, boleh tetap positive,
-    tetapi visual_reason wajib menjelaskan bahwa bukti visual tidak cukup.
-    """
+Pada retry ini:
+- Jika BATCH TOTAL ISSUE CONTRACT memiliki must_return_negative_in_this_batch=true,
+  maka output semua positive/unchanged adalah INVALID.
+- Pilih minimal 1 row dari primary_candidate_row_nos.
+- Set confidence_label="negative" untuk row tersebut.
+- Jangan pilih row match_score TRUE.
+- Jangan pilih row non-primary jika primary candidate ada.
+- Jika value numeric perlu dikoreksi, return corrected value pada field terkait.
+- Jika value numeric tidak diubah, tetap boleh set confidence_label="negative"
+  dengan visual_reason yang menjelaskan row tersebut adalah culprit paling kuat.
+"""
+
+    zero_negative_retry_text = ""
+    if zero_negative_retry_count > 0:
+        zero_negative_retry_text = f"""
+ZERO NEGATIVE RETRY ATTEMPT #{zero_negative_retry_count}:
+Anda sebelumnya masih return semua positive/unchanged untuk batch total mismatch.
+
+ATURAN WAJIB:
+- Untuk batch dengan must_return_negative_in_this_batch=true,
+  Anda HARUS return minimal 1 row confidence_label="negative".
+- Jangan gunakan alasan "visual tidak cukup" untuk membuat semua row positive.
+- Jika ragu, pilih primary candidate paling kuat berdasarkan:
+  1) inv_customer_po_no / pl_customer_po_no
+  2) inv_spart_item_no / pl_item_no
+  3) inv_seq / pl_seq
+  4) _invoice_group_row_index
+  5) _batch_row_index
+  6) expected_candidate
+  7) row_context previous/current/next
+
+CARA MEMILIH:
+1. Locate row target pakai PO + item + sequence.
+2. Setelah row target ditemukan, baca target numeric column.
+3. Bandingkan extracted_value vs expected_candidate vs angka visual PDF.
+4. Jika expected_candidate paling konsisten dengan visual PDF atau total mismatch,
+   return expected_candidate dan confidence_label="negative".
+5. Jika angka visual sulit dibaca tetapi primary candidate adalah kandidat paling kuat,
+   tetap set confidence_label="negative" dan isi visual_reason.
+"""
 
     return f"""
 ROLE:
 Anda adalah auditor detail line item berbasis visual PDF.
 
 SOURCE OF TRUTH:
-- PDF visual pada request ini adalah sumber kebenaran utama. JANGAN lakukan koreksi matematis jika PDF secara visual menuliskan angka yang salah cetak.
+- PDF visual pada request ini adalah sumber kebenaran utama.
 - ROWS adalah hasil ekstraksi sebelumnya.
-- Tugas Anda memverifikasi ulang nilai pada PDF.
+- Tugas Anda adalah memverifikasi ulang nilai pada PDF, bukan hanya copy ROWS.
 
 {vendor_reference_block}
 
@@ -9021,39 +9156,87 @@ BATCH TOTAL ISSUE CONTRACT:
 
 {strict_text}
 
+{zero_negative_retry_text}
+
 TUGAS:
 Untuk setiap row dalam ROWS:
 1. Temukan line item yang benar di PDF menggunakan anchor.
-2. Setelah line item ditemukan, baca target numeric field.
-3. Bandingkan `extracted_value` dari ROWS dengan angka VISUAL di PDF.
-4. Tuliskan `visual_reason` terlebih dahulu sebelum menentukan `confidence_label`.
+2. Jangan mulai dari mencari angka numeric.
+3. Setelah line item target ditemukan, baru baca target numeric field.
+4. Bandingkan:
+   - extracted_value dari ROWS
+   - expected_candidate dari field_comparison / force_one_negative_context / hard_compare_anchor_pack
+   - angka visual di PDF pada target row dan target column
+5. Tulis visual_reason sebelum menentukan confidence_label.
 
-STRICT LINE ITEM ANCHOR RULE (ADJUSTED):
-- Untuk setiap row, cari line item di PDF menggunakan anchor_context.
-- PRIORITAS ANCHOR PENCARIAN BARIS:
-  1) inv_spart_item_no / pl_item_no / item/article no
-  2) customer_po_no
-  3) description / HS code
-  4) invoice_no (hanya sebagai validasi akhir)
+STRICT LINE ITEM ANCHOR RULE:
+- Untuk setiap row, cari line item di PDF menggunakan anchor_context dan hard_compare_anchor_pack.
+- Prioritas anchor pencarian row:
+  1) inv_customer_po_no / pl_customer_po_no
+  2) inv_spart_item_no / pl_item_no / item/article no
+  3) inv_seq / pl_seq
+  4) _invoice_group_row_index
+  5) _batch_row_index
+  6) _detail_row_no
+  7) description / HS code sebagai fallback
+  8) previous/next row hanya sebagai pembanding
 - Jangan verifikasi numeric field sebelum menemukan line item yang tepat.
-- Jika anchor ambigu, return unchanged dan confidence_label="positive".
+- Jangan mengambil angka dari previous row atau next row untuk current row.
 
-ATURAN KHUSUS TOTAL MISMATCH:
-- total_issue_mode hanya trigger audit, bukan bukti otomatis row salah.
-- Jangan set confidence_label="negative" hanya karena total gap.
-- expected_candidate hanya boleh dipakai jika angka itu BENAR-BENAR TERLIHAT JELAS di PDF. Jika tidak ada di PDF, abaikan expected_candidate.
-- Jika extracted_value sama dengan angka visual PDF, row HARUS positive walaupun total group masih mismatch.
+ATURAN TOTAL MISMATCH - TIDAK BOLEH SEMUA POSITIVE:
+- Jika BATCH TOTAL ISSUE CONTRACT total_issue_mode=true, berarti ada mismatch antara sum detail dan total dokumen.
+- Jika must_return_negative_in_this_batch=true, Gemini WAJIB return minimal 1 row negative.
+- Output semua positive/unchanged pada batch ini adalah INVALID.
+- Jangan gunakan alasan "visual tidak cukup" untuk mengembalikan semua positive.
+- Jika ragu, pilih primary candidate paling kuat berdasarkan PO + item + sequence + expected_candidate.
+- Jangan pilih row non-primary jika ada primary candidate.
+- Jangan pernah mengubah row dengan match_score TRUE.
 
-ATURAN FIELD & OUTPUT:
-- Fokus HANYA pada field yang ada di "_recheck_fields". Jangan ubah field lain.
-- Jika BENAR/COCOK DENGAN PDF: `confidence_label`="positive", `changed_fields`=[].
-- Jika SALAH VISUAL: `confidence_label`="negative", `changed_fields`=[field_yang_salah], lalu koreksi nilainya.
+CARA COMPARE TOTAL FIELD:
+- Jika total_volume mismatch, fokus ke pl_volume.
+- Jika total_gw mismatch, fokus ke pl_gw.
+- Jika total_nw mismatch, fokus ke pl_nw.
+- Jika total_package mismatch, fokus ke pl_package_count.
+- Jika total_amount mismatch invoice, fokus ke inv_amount.
+- Jangan mengoreksi field lain di luar "_recheck_fields".
 
-ATURAN PENGISIAN PAYLOAD:
-1. Output HANYA JSON ARRAY valid sesuai schema.
-2. Jumlah dan urutan row output HARUS sama persis dengan input (pertahankan _detail_row_no).
-3. HANYA kembalikan field yang ada di OUTPUT SCHEMA. JANGAN mengembalikan field internal dari payload input seperti candidate_values, row_context, document_audit_context, anchor_context, dll.
-4. Jika value tidak ada di dokumen: string -> "null", number -> 0.
+ATURAN KHUSUS KOLOM:
+- pl_volume: baca hanya kolom Volume / CBM / Measurement / M3.
+- pl_nw: baca hanya kolom NW / Net Weight.
+- pl_gw: baca hanya kolom GW / Gross Weight.
+- pl_package_count: baca hanya kolom Package / Carton / CTN.
+- inv_amount: baca hanya kolom Amount.
+
+ATURAN ROW SHIFT:
+- Jika extracted_value terlihat milik row bawah / index berikutnya, jangan pakai untuk current row.
+- Gunakan neighbor_anchor_context dan row_shift_risk_context.
+- previous_row dan next_row hanya pembanding, bukan sumber value current row.
+
+ATURAN OUTPUT:
+1. Output HANYA JSON ARRAY valid, tanpa teks lain.
+2. Jumlah row output HARUS sama persis dengan jumlah row input.
+3. Urutan row output HARUS sama persis dengan input.
+4. WAJIB pertahankan _detail_row_no.
+5. WAJIB pertahankan _recheck_fields persis seperti input.
+6. WAJIB isi visual_reason.
+7. WAJIB isi confidence_label dengan "positive" atau "negative".
+8. Jika must_return_negative_in_this_batch=true, minimal satu row primary harus confidence_label="negative".
+9. Jangan return candidate_values.
+10. Jangan return row_context.
+11. Jangan return field_comparison.
+12. Jangan return document_audit_context.
+13. Jangan return total_issue_context.
+14. Jangan return force_one_negative_context.
+15. Jangan return anchor_context.
+16. Jangan return neighbor_anchor_context.
+17. Jangan return row_shift_risk_context.
+18. Jangan return hard_compare_anchor_pack.
+19. Jangan return field header.
+20. Jangan return field po_*.
+21. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
+22. Jika value memang tidak ada di dokumen:
+    - string -> "null"
+    - number -> 0
 
 OUTPUT SCHEMA:
 {schema_json}
@@ -9374,6 +9557,76 @@ def _build_detail_recheck_batches(rows_payload: list, normal_batch_size: int):
 
     return batches
 
+def _repair_zero_negative_total_issue_response(batch: list, repaired_batch: list, label: str = ""):
+    """
+    Last-resort repair:
+    Dipakai kalau Gemini sudah di-retry berkali-kali tapi tetap return semua positive.
+
+    Tidak mengubah numeric value.
+    Hanya set confidence_label='negative' pada primary candidate paling kuat
+    supaya output final tidak positive semua.
+    """
+    if not _batch_requires_total_negative(batch):
+        return repaired_batch
+
+    if not isinstance(batch, list) or not isinstance(repaired_batch, list):
+        return repaired_batch
+
+    primary_row_no = None
+
+    for item in batch:
+        if not isinstance(item, dict):
+            continue
+
+        force_ctx = item.get("force_one_negative_context")
+        if isinstance(force_ctx, dict) and force_ctx.get("is_primary_candidate") is True:
+            primary_row_no = item.get("_detail_row_no")
+            break
+
+    if primary_row_no is None:
+        for item in batch:
+            if _is_total_issue_payload_item(item):
+                primary_row_no = item.get("_detail_row_no")
+                break
+
+    if primary_row_no is None:
+        return repaired_batch
+
+    repaired_out = []
+
+    for repaired in repaired_batch:
+        if not isinstance(repaired, dict):
+            repaired_out.append(repaired)
+            continue
+
+        row_no = repaired.get("_detail_row_no")
+
+        if str(row_no) == str(primary_row_no):
+            repaired = dict(repaired)
+            repaired["confidence_label"] = "negative"
+
+            reason = str(repaired.get("visual_reason") or "").strip()
+            repaired["visual_reason"] = (
+                (reason + " | ") if reason else ""
+            ) + (
+                "Forced by total mismatch recheck contract after repeated Gemini zero-negative retries. "
+                "Selected primary candidate based on PO/item/sequence/expected_candidate anchors."
+            )
+
+            changed_fields = repaired.get("changed_fields")
+            if not isinstance(changed_fields, list):
+                repaired["changed_fields"] = []
+
+            print(
+                f"[DETAIL_RECHECK_ZERO_NEGATIVE_REPAIR] "
+                f"{label} row_no={primary_row_no} "
+                f"reason=gemini_retried_but_returned_all_positive"
+            )
+
+        repaired_out.append(repaired)
+
+    return repaired_out
+
 def _call_gemini_detail_line_recheck_once(
     file_uri: str,
     rows: list,
@@ -9397,36 +9650,88 @@ def _call_gemini_detail_line_recheck_once(
     batch_size = max(1, min(configured_batch_size, 5))
 
     def _call_recheck_batch(batch: list, label: str, strict_total_retry: bool = False):
-        repaired_batch = _call_gemini_json_uri(
-            file_uri,
-            _build_detail_line_recheck_prompt(
-                batch,
-                strict_total_retry=strict_total_retry,
-                vendor_id=vendor_id,
-                vendor_prompt_text=vendor_prompt_text,
-            ),
-            expect_array=True,
-            retries=3,
-        )
+        # Tambahkan batch index agar Gemini bisa membedakan row dalam batch.
+        for batch_idx, item in enumerate(batch or []):
+            if not isinstance(item, dict):
+                continue
 
-        if not isinstance(repaired_batch, list):
-            raise Exception(
-                f"Gemini detail line recheck output bukan array ({label})"
+            item["_batch_row_index"] = batch_idx + 1
+
+            # NEW:
+            # hard_compare_anchor_pack dibuat sebelum _batch_row_index diisi,
+            # jadi sinkronkan ulang agar Gemini melihat batch index di semua anchor.
+            pack = item.get("hard_compare_anchor_pack")
+            if isinstance(pack, dict):
+                row_locator = pack.get("row_locator_priority")
+                if isinstance(row_locator, dict):
+                    sequence = row_locator.get("sequence")
+                    if isinstance(sequence, dict):
+                        sequence["_batch_row_index"] = batch_idx + 1
+
+        max_attempts = max(1, int(DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES))
+        last_repaired_batch = None
+
+        for attempt in range(1, max_attempts + 1):
+            zero_retry_count = max(0, attempt - 1)
+
+            repaired_batch = _call_gemini_json_uri(
+                file_uri,
+                _build_detail_line_recheck_prompt(
+                    batch,
+                    strict_total_retry=(strict_total_retry or attempt > 1),
+                    vendor_id=vendor_id,
+                    vendor_prompt_text=vendor_prompt_text,
+                    zero_negative_retry_count=zero_retry_count,
+                ),
+                expect_array=True,
+                retries=3,
             )
 
-        if len(repaired_batch) != len(batch):
-            raise Exception(
-                f"Gemini detail line recheck count mismatch ({label}). "
-                f"expected={len(batch)} actual={len(repaired_batch)}"
+            if not isinstance(repaired_batch, list):
+                raise Exception(
+                    f"Gemini detail line recheck output bukan array ({label})"
+                )
+
+            if len(repaired_batch) != len(batch):
+                raise Exception(
+                    f"Gemini detail line recheck count mismatch ({label}). "
+                    f"expected={len(batch)} actual={len(repaired_batch)}"
+                )
+
+            valid = _validate_total_issue_gemini_batch_result(
+                batch=batch,
+                repaired_batch=repaired_batch,
+                label=f"{label}/attempt={attempt}",
             )
 
-        _validate_total_issue_gemini_batch_result(
-            batch=batch,
-            repaired_batch=repaired_batch,
-            label=label,
-        )
+            if valid is not False:
+                return repaired_batch
 
-        return repaired_batch
+            last_repaired_batch = repaired_batch
+
+            if not _batch_requires_total_negative(batch):
+                return repaired_batch
+
+            print(
+                f"[DETAIL_RECHECK_ZERO_NEGATIVE_RETRY] "
+                f"{label} attempt={attempt}/{max_attempts} "
+                f"reason=total_issue_all_positive"
+            )
+
+        # Jangan raise.
+        # Kalau Gemini tetap bandel setelah retry, repair response agar tidak positive semua.
+        if (
+            DETAIL_TOTAL_RECHECK_REPAIR_AFTER_RETRY
+            and _batch_requires_total_negative(batch)
+            and last_repaired_batch is not None
+        ):
+            return _repair_zero_negative_total_issue_response(
+                batch=batch,
+                repaired_batch=last_repaired_batch,
+                label=label,
+            )
+
+        return last_repaired_batch or []
 
     # PENTING:
     # Total issue jangan dipotong per 5 row biasa.
@@ -9553,6 +9858,16 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
         repaired = repaired_by_no.get(row_no)
         if not repaired:
             continue
+
+        gemini_confidence_label = str(
+            repaired.get("confidence_label") or ""
+        ).strip().lower()
+
+        gemini_changed_fields = repaired.get("changed_fields")
+        if not isinstance(gemini_changed_fields, list):
+            gemini_changed_fields = repaired.get("_gemini_changed_fields")
+        if not isinstance(gemini_changed_fields, list):
+            gemini_changed_fields = []
 
         allowed_fields = _normalize_recheck_field_list(
             row.get("_recheck_fields") or []
@@ -10676,15 +10991,16 @@ def run_ocr(
                 row.pop("_recheck_original_values", None)
                 row.pop("_gemini_recheck_changed_fields", None)
 
-                # NEW
                 row.pop("_recheck_group_key", None)
                 row.pop("_recheck_field_meta", None)
+
                 row.pop("_force_total_issue_candidate", None)
                 row.pop("_forced_total_issue_negative", None)
 
+                # NEW
                 row.pop("_gemini_total_issue_negative", None)
-                row.pop("_gemini_total_issue_negative_reason", None)
-                row.pop("_gemini_declared_changed_fields", None)
+                row.pop("_batch_row_index", None)
+                row.pop("_invoice_group_row_index", None)
 
         # =========================
         # FINAL RESULT OBJECT
