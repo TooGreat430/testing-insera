@@ -8951,11 +8951,11 @@ def _build_detail_line_recheck_prompt(
         "_detail_row_no": "number",
         "_recheck_fields": ["string"],
 
-        # Internal decision fields untuk audit.
-        # Tidak perlu masuk CSV final.
+        # ADJUSTMENT 1: Pindahkan visual_reason ke atas agar Gemini menjelaskan alasannya
+        # SEBELUM mengambil keputusan. Ini memaksa Chain-of-Thought dan menekan halusinasi.
+        "visual_reason": "string",
         "confidence_label": "positive|negative",
         "changed_fields": ["string"],
-        "visual_reason": "string",
 
         **DETAIL_RECHECK_SCHEMA,
     }
@@ -8990,9 +8990,9 @@ ROLE:
 Anda adalah auditor detail line item berbasis visual PDF.
 
 SOURCE OF TRUTH:
-- PDF visual pada request ini adalah sumber kebenaran utama.
+- PDF visual pada request ini adalah sumber kebenaran utama. JANGAN lakukan koreksi matematis jika PDF secara visual menuliskan angka yang salah cetak.
 - ROWS adalah hasil ekstraksi sebelumnya.
-- Tugas Anda bukan sekadar copy ROWS, tapi memverifikasi ulang nilai pada PDF.
+- Tugas Anda memverifikasi ulang nilai pada PDF.
 
 {vendor_reference_block}
 
@@ -9003,124 +9003,37 @@ BATCH TOTAL ISSUE CONTRACT:
 
 TUGAS:
 Untuk setiap row dalam ROWS:
-1. Temukan line item yang benar di PDF.
-2. Gunakan anchor kiri/atas:
-   - spare part
-   - item no
-   - PO number
-   - vendor article no
-   - description
-3. Setelah line item ditemukan, baca target numeric field:
-   - jika layout horizontal: numeric value biasanya di kanan anchor
-   - jika layout vertical/wrapped: numeric value bisa berada di bawah anchor
-4. Bandingkan:
-   - extracted_value dari ROWS
-   - expected_candidate dari field_comparison / force_one_negative_context
-   - angka visual di PDF
+1. Temukan line item yang benar di PDF menggunakan anchor.
+2. Setelah line item ditemukan, baca target numeric field.
+3. Bandingkan `extracted_value` dari ROWS dengan angka VISUAL di PDF.
+4. Tuliskan `visual_reason` terlebih dahulu sebelum menentukan `confidence_label`.
 
-STRICT LINE ITEM ANCHOR RULE:
+STRICT LINE ITEM ANCHOR RULE (ADJUSTED):
 - Untuk setiap row, cari line item di PDF menggunakan anchor_context.
-- Prioritas anchor:
-  1) invoice_no
+- PRIORITAS ANCHOR PENCARIAN BARIS:
+  1) inv_spart_item_no / pl_item_no / item/article no
   2) customer_po_no
-  3) inv_spart_item_no / pl_item_no / item/article no
-  4) description / HS code
-  5) sequence / neighboring rows
-- Jangan verifikasi numeric field sebelum menemukan line item yang sama.
-- Jika anchor ambigu atau ada lebih dari satu kandidat line item, return unchanged dan confidence_label="positive".
-- Jika target field tidak terlihat jelas pada anchored line item, return unchanged dan confidence_label="positive".
-- visual_reason wajib menyebut anchor yang dipakai dan angka visual PDF yang dibaca.
+  3) description / HS code
+  4) invoice_no (hanya sebagai validasi akhir)
+- Jangan verifikasi numeric field sebelum menemukan line item yang tepat.
+- Jika anchor ambigu, return unchanged dan confidence_label="positive".
 
 ATURAN KHUSUS TOTAL MISMATCH:
 - total_issue_mode hanya trigger audit, bukan bukti otomatis row salah.
 - Jangan set confidence_label="negative" hanya karena total gap.
-- Gunakan batch_total_issue_contract.primary_candidate_row_nos sebagai prioritas investigasi.
-- Jika primary_candidate_row_nos kosong, semua row boleh positive/unchanged.
-- Jika primary_candidate_row_nos tidak kosong, cek primary candidate terlebih dahulu.
-- Row boleh negative hanya jika:
-  1) anchored line item jelas,
-  2) target cell terlihat jelas di PDF,
-  3) angka visual PDF berbeda dari extracted_value.
-- expected_candidate hanya boleh dipakai jika angka itu terlihat jelas di PDF pada target cell.
+- expected_candidate hanya boleh dipakai jika angka itu BENAR-BENAR TERLIHAT JELAS di PDF. Jika tidak ada di PDF, abaikan expected_candidate.
 - Jika extracted_value sama dengan angka visual PDF, row HARUS positive walaupun total group masih mismatch.
 
-ATURAN FIELD:
-- Jika total_issue_context berisi total_volume mismatch, fokus ke pl_volume.
-- Jika total_issue_context berisi total_gw mismatch, fokus ke pl_gw.
-- Jika total_issue_context berisi total_nw mismatch, fokus ke pl_nw.
-- Jika total_issue_context berisi total_package mismatch, fokus ke pl_package_count.
-- Jika total_issue_context berisi total_quantity mismatch, fokus ke inv_quantity atau pl_quantity sesuai context.
-- Jika total_issue_context berisi total_amount mismatch invoice, fokus ke inv_amount, inv_quantity, inv_unit_price.
-- Jangan mengoreksi field lain di luar "_recheck_fields".
+ATURAN FIELD & OUTPUT:
+- Fokus HANYA pada field yang ada di "_recheck_fields". Jangan ubah field lain.
+- Jika BENAR/COCOK DENGAN PDF: `confidence_label`="positive", `changed_fields`=[].
+- Jika SALAH VISUAL: `confidence_label`="negative", `changed_fields`=[field_yang_salah], lalu koreksi nilainya.
 
-ATURAN POSITIVE:
-- Jika row benar-benar cocok dengan PDF, set confidence_label = "positive".
-- changed_fields harus [].
-- Copy nilai input apa adanya.
-
-ATURAN NEGATIVE:
-- Jika row salah, set confidence_label = "negative".
-- changed_fields wajib berisi minimal 1 field.
-- Field yang salah harus dikembalikan dengan nilai benar dari PDF.
-- Jika expected_candidate cocok dengan PDF, pakai expected_candidate.
-
-ATURAN ANCHOR DAN ROW INDEX / ROW SHIFT:
-- Untuk setiap row, JANGAN mulai dari mencari angka target.
-- Pertama, locate target line item di PDF menggunakan:
-  1. anchor_context
-  2. neighbor_anchor_context.current_anchor
-  3. row_context.current_row
-  4. invoice_no
-  5. item/article number
-  6. description
-  7. PO/HS/sequence jika tersedia
-
-- previous_row / next_row / previous_anchor / next_anchor hanya boleh dipakai sebagai pembanding.
-- Jangan mengambil value dari previous row atau next row untuk current row.
-
-- Jika target field adalah pl_volume:
-  1. Cari current row berdasarkan anchor item/description/sequence.
-  2. Setelah current row ditemukan, baca hanya kolom Volume / CBM / Measurement / M3.
-  3. Jangan ambil pl_volume dari row di bawahnya walaupun angka itu terlihat jelas.
-  4. Jika angka yang diekstrak ternyata milik next row / index berikutnya, return value yang benar untuk current row.
-  5. Jika current row tidak punya value karena merged continuation, return 0.
-  6. Jika current row punya value visual berbeda dari extracted_value, return value visual current row.
-
-- Gunakan row_shift_risk_context:
-  - Jika suspicious_neighbor_values menunjukkan current_value sama dengan next_value,
-    cek apakah value itu sebenarnya milik next row.
-  - Jika iya, jangan pertahankan current extracted_value.
-  - Baca ulang target cell pada current row.
-
-- Jika anchor current row tidak jelas:
-  - Jangan koreksi numeric field secara agresif.
-  - Pertahankan extracted_value.
-
-ATURAN OUTPUT:
-1. Output HANYA JSON ARRAY valid, tanpa teks lain.
-2. Jumlah row output HARUS sama persis dengan jumlah row input.
-3. Urutan row output HARUS sama persis dengan input.
-4. WAJIB pertahankan _detail_row_no.
-5. WAJIB pertahankan _recheck_fields persis seperti input.
-6. WAJIB isi confidence_label.
-7. WAJIB isi changed_fields.
-8. WAJIB isi visual_reason.
-9. Jangan return candidate_values.
-10. Jangan return row_context.
-11. Jangan return field_comparison.
-12. Jangan return document_audit_context.
-13. Jangan return total_issue_context.
-14. Jangan return force_one_negative_context.
-15. Jangan return batch_total_issue_hint.
-16. Jangan return field header.
-17. Jangan return field po_*.
-18. Untuk field di luar "_recheck_fields", copy nilai input apa adanya.
-19. Jika value memang tidak ada di dokumen:
-    - string -> "null"
-    - number -> 0
-20. Jangan return neighbor_anchor_context.
-21. Jangan return row_shift_risk_context.
-22. Jangan return anchor_context.
+ATURAN PENGISIAN PAYLOAD:
+1. Output HANYA JSON ARRAY valid sesuai schema.
+2. Jumlah dan urutan row output HARUS sama persis dengan input (pertahankan _detail_row_no).
+3. HANYA kembalikan field yang ada di OUTPUT SCHEMA. JANGAN mengembalikan field internal dari payload input seperti candidate_values, row_context, document_audit_context, anchor_context, dll.
+4. Jika value tidak ada di dokumen: string -> "null", number -> 0.
 
 OUTPUT SCHEMA:
 {schema_json}
