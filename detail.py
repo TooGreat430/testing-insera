@@ -609,8 +609,16 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
         Maka, coo_invoice_no: SHXM22-2512000393
 
 22. bl_mark_number:
-    - bl_mark_number hanya di ekstrak apa bila label "SHIPPING MARKS",
-      apabila tidak ada label "SHIPPING MARKS" maka bl_mark_number = "null"
+    - Ekstrak dari kolom "Marks and Numbers" pada dokumen BL.
+    - Ekstrak secara kesuluruhan apabila ada "PT. IS" pada kolom tersebut.
+      Contoh:
+      Marks and Numbers
+      PT.IS
+      PO#
+      P/I NO.:
+      C/NO.:A
+      MADE IN CHINA
+      maka, bl_mark_number: "PT.IS  PO#  P/I NO.:  C/NO.:A  MADE IN CHINA"
 
 23. coo_no
     - coo_no merupakan nomor certificate dari dokumen
