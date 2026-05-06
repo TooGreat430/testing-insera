@@ -6318,7 +6318,44 @@ def _validate_packing_rows(rows: list):
         if declared_pkg is not None and abs(sum_pkg - declared_pkg) > 0.01:
             _append_err(r, f"PackingList: total_package mismatch (sum {sum_pkg}, doc {declared_pkg})")
 
+def _postprocess_coo_gw_from_pl_gw(rows: list, eps: float = 0.01):
+    """
+    Sebelum validasi:
+    Jika pl_gw dan coo_gw sama-sama ada tetapi nilainya beda,
+    maka coo_gw mengikuti pl_gw.
 
+    Ini bukan validasi, tidak append error.
+    """
+    if not isinstance(rows, list):
+        return rows
+
+    changed_count = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        pl_gw_num = _to_float(row.get("pl_gw"))
+        coo_gw_num = _to_float(row.get("coo_gw"))
+
+        if pl_gw_num is None or coo_gw_num is None:
+            continue
+
+        if abs(pl_gw_num - coo_gw_num) <= eps:
+            continue
+
+        old_coo_gw = row.get("coo_gw")
+        row["coo_gw"] = pl_gw_num
+        changed_count += 1
+
+        print(
+            f"[COO_GW_FROM_PL_GW] "
+            f"coo_gw replaced from {old_coo_gw} to {pl_gw_num}"
+        )
+
+    print(f"[COO_GW_FROM_PL_GW] changed_rows={changed_count}")
+
+    return rows
 
 def _doc_present(rows: list, keys: list) -> bool:
     """Dokumen dianggap tersedia kalau ada minimal 1 field kunci yang tidak null di salah satu row."""
@@ -6488,6 +6525,135 @@ def _postprocess_bl_seller_name_similarity(rows: list, threshold: float = 0.88):
 
         if sim >= threshold:
             row["bl_seller_name"] = inv_vendor_name
+
+# ==============================
+# BL HEADER MAJORITY BY INVOICE
+# ==============================
+
+BL_HEADER_MAJORITY_FIELDS = [
+    field for field in HEADER_FIELDS
+    if str(field).startswith("bl_")
+]
+
+
+def _normalize_bl_header_value(value):
+    if _is_null(value):
+        return None
+
+    s = re.sub(r"\s+", " ", str(value).strip())
+    if not s:
+        return None
+
+    return s.upper()
+
+
+def _pick_majority_original_value(values: list):
+    """
+    Ambil value mayoritas.
+    Return original value, bukan normalized value.
+    Kalau tie, return None supaya tidak asal replace.
+    """
+    counts = {}
+    originals = {}
+    order = []
+
+    for value in values or []:
+        key = _normalize_bl_header_value(value)
+        if key is None:
+            continue
+
+        if key not in counts:
+            counts[key] = 0
+            originals[key] = value
+            order.append(key)
+
+        counts[key] += 1
+
+    if not counts:
+        return None
+
+    sorted_keys = sorted(order, key=lambda k: counts[k], reverse=True)
+    top_key = sorted_keys[0]
+    top_count = counts[top_key]
+
+    if len(sorted_keys) >= 2 and counts[sorted_keys[1]] == top_count:
+        return None
+
+    return originals[top_key]
+
+
+def _pick_one_vote_per_invoice(group_rows: list, field: str):
+    """
+    Dalam 1 invoice_no bisa ada banyak detail row.
+    Supaya invoice dengan banyak row tidak mendominasi,
+    ambil dulu 1 value mayoritas internal untuk invoice tersebut.
+    """
+    values = [
+        row.get(field)
+        for row in group_rows or []
+        if isinstance(row, dict) and not _is_null(row.get(field))
+    ]
+
+    return _pick_majority_original_value(values)
+
+
+def _postprocess_bl_header_majority_by_invoice(rows: list):
+    """
+    Jika header BL berbeda antar invoice_no,
+    replace semua value bl_* dengan mayoritas value per kolom.
+
+    Voting:
+    - 1 invoice_no = 1 vote
+    - field diproses per kolom bl_*
+    - kalau hasil tie, field tidak diubah
+    """
+    if not isinstance(rows, list) or not rows:
+        return rows
+
+    grouped_rows = _group_rows_by_invoice_no(rows)
+    if not grouped_rows:
+        return rows
+
+    majority_by_field = {}
+
+    for field in BL_HEADER_MAJORITY_FIELDS:
+        invoice_votes = []
+
+        for _, group_rows in grouped_rows.items():
+            invoice_value = _pick_one_vote_per_invoice(group_rows, field)
+            if not _is_null(invoice_value):
+                invoice_votes.append(invoice_value)
+
+        majority_value = _pick_majority_original_value(invoice_votes)
+
+        if not _is_null(majority_value):
+            majority_by_field[field] = majority_value
+
+    if not majority_by_field:
+        return rows
+
+    changed_cells = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for field, majority_value in majority_by_field.items():
+            current_key = _normalize_bl_header_value(row.get(field))
+            majority_key = _normalize_bl_header_value(majority_value)
+
+            if current_key != majority_key:
+                row[field] = majority_value
+                changed_cells += 1
+
+    print(
+        f"[BL_HEADER_MAJORITY] "
+        f"invoice_groups={len(grouped_rows)} "
+        f"majority_fields={len(majority_by_field)} "
+        f"changed_cells={changed_cells}"
+    )
+
+    return rows
 
 def _validate_bl_rows(rows: list):
     """
@@ -7154,6 +7320,9 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
         if not merged_detail_rows:
             raise Exception("Tidak ada hasil detail gabungan")
+
+        if bl_path:
+            _postprocess_bl_header_majority_by_invoice(merged_detail_rows)
 
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
@@ -9230,6 +9399,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_bl_seller_name_similarity(rows)
 
     _postprocess_bl_coo_zero_to_null(rows)
+    _postprocess_coo_gw_from_pl_gw(rows)
 
     _validate_invoice_rows(rows)
     _validate_packing_rows(rows)
@@ -10441,6 +10611,9 @@ def run_ocr(
         _postprocess_bl_coo_zero_to_null(all_rows)
         _postprocess_invoice_no_consensus(all_rows)
 
+        if has_bl_doc:
+            _postprocess_bl_header_majority_by_invoice(all_rows)
+
         # all_rows = _deduplicate_detail_rows_before_validation(all_rows, vendor_id=vendor_id)
 
         _assign_detail_row_numbers(all_rows)
@@ -10490,6 +10663,7 @@ def run_ocr(
             columns=["pl_volume_unit"],
         )
 
+        _postprocess_coo_gw_from_pl_gw(all_rows)
         all_rows = _validate_po(all_rows)
 
         _validate_invoice_rows(all_rows)
