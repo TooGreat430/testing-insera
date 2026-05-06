@@ -417,6 +417,14 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
    - Jika label invoice number dan nilainya berada pada baris berbeda, gabungkan nilainya menjadi satu value utuh.
    - Jika nomor invoice terputus karena line wrap, ambil seluruh bagiannya dan gabungkan tanpa spasi tambahan yang tidak perlu.
 
+2. inv_invoice_date dan pl_invoice_date:
+   - Ambil tanggal dari dokumen invoice dan packing list dengan format YYYY-MM-DD.
+   - Biasanya memiliki label "DATE:", "DATED:", atau "DATES:".
+     Contoh: 
+     DATED: JAN. 07, 2026
+     maka, inv_invoice_date = 2026-01-07
+  - JANGAN AMBIL DARI "SAILING ON OR ABOUT:", "ETD:", atau "ETA:"
+
 2. pl_invoice_no:
    - Ambil nomor invoice yang direferensikan oleh dokumen Packing List pada level header dokumen.
    - pl_invoice_no TIDAK HARUS selalu berlabel "INVOICE NO".
