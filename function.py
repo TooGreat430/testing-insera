@@ -7347,7 +7347,35 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             raise Exception("Tidak ada hasil detail gabungan")
 
         if bl_path:
+            # Majority BL header antar invoice group.
+            # Ini memang harus di run_grouped_ocr karena semua invoice group sudah merge di sini.
             _postprocess_bl_header_majority_by_invoice(merged_detail_rows)
+
+            # Hapus hanya error validasi BL lama.
+            # Error Invoice / PL / COO / PO tetap dipertahankan.
+            for row in merged_detail_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                messages = _split_match_description_messages(row.get("match_description"))
+
+                kept_messages = [
+                    msg for msg in messages
+                    if not str(msg or "").strip().upper().startswith("BL:")
+                ]
+
+                if kept_messages:
+                    row["match_score"] = "false"
+                    row["match_description"] = "; ".join(kept_messages)
+                else:
+                    row["match_score"] = "true"
+                    row["match_description"] = "null"
+
+            # Validasi ulang hanya BL, karena yang berubah hanya kolom bl_*.
+            _validate_bl_rows(merged_detail_rows)
+
+            # Finalize ulang supaya match_score/confidence konsisten setelah BL revalidation.
+            _finalize_match_fields(merged_detail_rows)
 
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
