@@ -6570,6 +6570,19 @@ BL_HEADER_MAJORITY_FIELDS = [
     if str(field).startswith("bl_")
 ]
 
+def _get_bl_header_majority_fields(vendor_id: str = "default"):
+    """
+    Field BL yang boleh diseragamkan sebagai header-level.
+
+    Khusus shimano_inc, bl_mark_number tidak boleh ikut majority,
+    karena field tersebut adalah content-level dan bisa berbeda per line item.
+    """
+    fields = list(BL_HEADER_MAJORITY_FIELDS)
+
+    if _is_shimano_inc_vendor(vendor_id):
+        return [field for field in fields if field != "bl_mark_number"]
+
+    return fields
 
 def _normalize_bl_header_value(value):
     if _is_null(value):
@@ -6632,7 +6645,7 @@ def _pick_one_vote_per_invoice(group_rows: list, field: str):
     return _pick_majority_original_value(values)
 
 
-def _postprocess_bl_header_majority_by_invoice(rows: list):
+def _postprocess_bl_header_majority_by_invoice(rows: list, vendor_id: str = "default"):
     """
     Jika header BL berbeda antar invoice_no,
     replace semua value bl_* dengan mayoritas value per kolom.
@@ -6651,7 +6664,11 @@ def _postprocess_bl_header_majority_by_invoice(rows: list):
 
     majority_by_field = {}
 
-    for field in BL_HEADER_MAJORITY_FIELDS:
+    bl_header_majority_fields = _get_bl_header_majority_fields(vendor_id)
+    if not bl_header_majority_fields:
+        return rows
+    
+    for field in bl_header_majority_fields:
         invoice_votes = []
 
         for _, group_rows in grouped_rows.items():
@@ -7359,7 +7376,10 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
         if bl_path:
             # Majority BL header antar invoice group.
             # Ini memang harus di run_grouped_ocr karena semua invoice group sudah merge di sini.
-            _postprocess_bl_header_majority_by_invoice(merged_detail_rows)
+            _postprocess_bl_header_majority_by_invoice(
+                merged_detail_rows,
+                vendor_id=forced_vendor_id
+            )
 
             # Hapus hanya error validasi BL lama.
             # Error Invoice / PL / COO / PO tetap dipertahankan.
@@ -10901,7 +10921,10 @@ def run_ocr(
         _postprocess_invoice_no_consensus(all_rows)
 
         if has_bl_doc:
-            _postprocess_bl_header_majority_by_invoice(all_rows)
+            _postprocess_bl_header_majority_by_invoice(
+                all_rows,
+                vendor_id=vendor_id
+            )
 
         # all_rows = _deduplicate_detail_rows_before_validation(all_rows, vendor_id=vendor_id)
 
@@ -11046,6 +11069,10 @@ def run_ocr(
                 row.pop("_total_issue_debug", None)
                 row.pop("_gemini_total_issue_negative_reason", None)
                 row.pop("_gemini_declared_changed_fields", None)
+
+                row.pop("idx", None)
+                row.pop("inv_page_no", None)
+                row.pop("pl_page_no", None)
 
         # =========================
         # FINAL RESULT OBJECT
