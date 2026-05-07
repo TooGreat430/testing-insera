@@ -1,5 +1,8 @@
 import json
 
+def _is_shimano_inc_vendor_id(vendor_id: str = "default") -> bool:
+    return str(vendor_id or "default").strip().lower() == "shimano_inc"
+
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -41,6 +44,11 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "match_description",
     "confidence_label",
     "inv_invoice_no",
+    "inv_seq",
+    "po_no",
+    "po_line",
+    "po_quantity",
+    "po_unit",
     "inv_invoice_date",
     "inv_customer_po_no",
     "inv_messrs",
@@ -50,7 +58,6 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "inv_incoterms_terms",
     "inv_terms",
     "inv_coo_commodity_origin",
-    "inv_seq",
     "inv_spart_item_no",
     "inv_description",
     "inv_gw",
@@ -90,13 +97,9 @@ DETAIL_CSV_FIELD_ORDER_FULL = [
     "pl_total_volume",
     "pl_total_package",
 
-    "po_no",
     "po_vendor_article_no",
     "po_text",
     "po_sap_article_no",
-    "po_line",
-    "po_quantity",
-    "po_unit",
     "po_price",
     "po_currency",
     "po_info_record_price",
@@ -205,6 +208,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
 
   "bl_description": "string",
   "bl_hs_code": "string",
+  "bl_mark_number": "string",
 
   "coo_seq": "number",
   "coo_mark_number": "string",
@@ -232,7 +236,7 @@ DETAIL_LINE_FIELDS = [
     "po_no","po_vendor_article_no","po_text","po_sap_article_no","po_line","po_quantity","po_unit","po_price","po_currency",
     "po_info_record_price","po_info_record_currency",
 
-    "bl_description","bl_hs_code",
+    "bl_description","bl_hs_code", "bl_mark_number",
 
     "coo_seq","coo_mark_number","coo_description","coo_hs_code","coo_quantity","coo_unit","coo_package_count", "coo_package_unit",
     "coo_gw", "coo_amount","coo_criteria","coo_customer_po_no"
@@ -309,8 +313,18 @@ CATATAN:
 - Row TOTAL/SUBTOTAL tidak boleh dijumlahkan bersama detail row yang sama karena akan menyebabkan double count.
 """
 
-def build_header_prompt() -> str:
-    return """
+def build_header_prompt(vendor_id: str = "default") -> str:
+    shimano_header_rule = ""
+    if _is_shimano_inc_vendor_id(vendor_id):
+        shimano_header_rule = """
+
+ATURAN KHUSUS VENDOR shimano_inc:
+- bl_mark_number TIDAK diekstrak pada header pass.
+- Isi bl_mark_number dengan "null" pada output header.
+- bl_mark_number untuk shimano_inc akan diekstrak pada content/detail pass dari dokumen Bill of Lading.
+"""
+
+    template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
 Rule-based, deterministik, anti-halusinasi.
@@ -399,6 +413,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
+{shimano_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -620,6 +635,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       C/NO.:A
       MADE IN CHINA
       maka, bl_mark_number: "PT.IS  PO#  P/I NO.:  C/NO.:A  MADE IN CHINA"
+    - Khusus vendor shimano_inc, abaikan rule ini pada header pass dan isi bl_mark_number dengan "null".
 
 24. coo_no
     - coo_no merupakan nomor certificate dari dokumen
@@ -639,6 +655,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      → isi dengan "null".
   - Jangan mengarang atau menebak.
 """
+    return template.replace("{shimano_header_rule}", shimano_header_rule)
 
 def build_detail_prompt_from_index(
     total_row: int,
@@ -659,6 +676,24 @@ VENDOR KHUSUS YANG TERDETEKSI:
 
 ATURAN KHUSUS VENDOR:
 {vendor_prompt_text}
+"""
+
+    bl_mark_number_detail_rule = """
+
+ATURAN bl_mark_number:
+- Untuk vendor selain shimano_inc, bl_mark_number diekstrak pada header pass.
+- Pada content/detail pass vendor selain shimano_inc, isi bl_mark_number dengan "null".
+"""
+    if _is_shimano_inc_vendor_id(vendor_id):
+        bl_mark_number_detail_rule = """
+
+ATURAN KHUSUS SHIMANO_INC UNTUK bl_mark_number:
+- bl_mark_number WAJIB diekstrak pada content/detail pass, BUKAN pada header pass.
+- Gunakan dokumen Bill of Lading saja.
+- Ambil dari kolom/area "Marks and Numbers".
+- Karena output detail berbasis line item, isikan bl_mark_number pada row yang paling relevan dengan mark/PO/item tersebut.
+- Jika mark berlaku global untuk seluruh BL dan tidak bisa dipetakan ke item tertentu, isi nilai yang sama pada semua row output batch yang relevan.
+- Jika tidak ditemukan pada BL, isi "null".
 """
 
     return f"""
@@ -783,7 +818,7 @@ ATURAN:
 - Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
 - Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
-
+{bl_mark_number_detail_rule}
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
 

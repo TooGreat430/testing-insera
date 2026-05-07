@@ -85,6 +85,13 @@ def _get_detail_csv_field_order(vendor_id: str = "default"):
         if k != "inv_hs_code"
     ]
 
+
+def _get_header_fields_for_vendor(vendor_id: str = "default"):
+    if _is_shimano_inc_vendor(vendor_id):
+        return [k for k in HEADER_FIELDS if k != "bl_mark_number"]
+
+    return list(HEADER_FIELDS)
+
 CBM_TO_CUFT = 35.3147
 
 storage_client = storage.Client() 
@@ -5941,13 +5948,16 @@ def _is_missing_num(v) -> bool:
     except:
         return True
 
-def _apply_header_to_rows(rows: list, header_obj: dict):
+def _apply_header_to_rows(rows: list, header_obj: dict, vendor_id: str = "default"):
     if not isinstance(header_obj, dict):
         header_obj = {}
+
+    header_fields = _get_header_fields_for_vendor(vendor_id)
+
     for r in rows:
         if not isinstance(r, dict):
             continue
-        for k in HEADER_FIELDS:
+        for k in header_fields:
             v = header_obj.get(k, "null")
             # overwrite biar konsisten antar row
             r[k] = v if v is not None else "null"
@@ -9516,7 +9526,7 @@ def _run_shimano_hs_code_pass(file_uri: str, rows: list, vendor_id: str = "defau
 def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "default"):
     _ensure_all_detail_keys(rows)
 
-    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {})
+    _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {}, vendor_id=vendor_id)
     _postprocess_package_unit_fields(rows)
     _postprocess_pl_package_unit(rows, vendor_id=vendor_id)
     _postprocess_pl_volume(rows, vendor_id=vendor_id)
@@ -10120,6 +10130,7 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
 OPTIONAL_DETAIL_FIELDS = {
     "bl_description",
     "bl_hs_code",
+    "bl_mark_number",
 
     "coo_seq",
     "coo_mark_number",
@@ -10581,11 +10592,29 @@ def run_ocr(
         base_detail_input_uri = file_uri_detail          # INV + PL only
         optional_detail_input_uri = file_uri_full        # INV + PL + BL/COO, jika ada
 
+        # =========================
+        # VENDOR CONTEXT
+        # Dipakai sejak header pass karena shimano_inc punya aturan khusus:
+        # bl_mark_number diambil dari content/detail, bukan header.
+        # =========================
+        vendor_id = normalize_vendor_id(forced_vendor_id)
+
+        if vendor_id == "default":
+            raise Exception("Vendor wajib dipilih dari UI. forced_vendor_id kosong atau tidak valid.")
+
+        vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+        vendor_source = "ui"
+
+        print(
+            f"[VENDOR CONTEXT] vendor_id={vendor_id} "
+            f"vendor_source={vendor_source} forced_vendor_id={forced_vendor_id}"
+        )
+
         print("OCR Header - BASE INV+PL")
 
         base_header_obj = _call_gemini_json_uri(
             file_uri_detail,
-            build_header_prompt(),
+            build_header_prompt(vendor_id=vendor_id),
             expect_array=False,
             retries=3
         )
@@ -10599,7 +10628,7 @@ def run_ocr(
 
             optional_header_obj = _call_gemini_json_uri(
                 optional_detail_input_uri,
-                build_header_prompt(),
+                build_header_prompt(vendor_id=vendor_id),
                 expect_array=False,
                 retries=3
             )
@@ -10647,22 +10676,6 @@ def run_ocr(
 
         _fill_forward(index_items, "inv_customer_po_no")
         _fill_forward(index_items, "pl_customer_po_no")
-
-        # =========================
-        # VENDOR CONTEXT
-        # =========================
-        vendor_id = normalize_vendor_id(forced_vendor_id)
-
-        if vendor_id == "default":
-            raise Exception("Vendor wajib dipilih dari UI. forced_vendor_id kosong atau tidak valid.")
-
-        vendor_prompt_text = load_vendor_prompt_text(vendor_id)
-        vendor_source = "ui"
-
-        print(
-            f"[VENDOR CONTEXT] vendor_id={vendor_id} "
-            f"vendor_source={vendor_source} forced_vendor_id={forced_vendor_id}"
-        )
 
         # BATCH DETAIL EXTRACTION
         jobs = []
@@ -10832,7 +10845,7 @@ def run_ocr(
         # =========================================
         # FLOW VALIDASI FINAL LAMA TETAP JALAN
         # =========================================
-        _apply_header_to_rows(all_rows, header_obj)
+        _apply_header_to_rows(all_rows, header_obj, vendor_id=vendor_id)
         _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
         _postprocess_package_unit_fields(all_rows)

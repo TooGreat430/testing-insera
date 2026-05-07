@@ -160,6 +160,25 @@ BILL OF LADING (BL):
         bl_hs_code untuk DISC BRAKE adalah 8714.94, maka bl_hs_code isi 8714.94.
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
+3. `bl_mark_number`:
+    - Lihat pada bagian halaman 2 (page 2) dari dokumen BL. Anda akan melihat:
+      PT. IS
+      P/O No. -> PO Number
+      SURABAYA
+      MADE IN [Negara Asal]
+      PLT No. -> Palette numbers
+      CTN No. -> Carton numbers
+      (Dalam satu item bisa hanya terdapat salah satu palette/carton atau bisa terdapat keduanya)
+    
+    - Untuk bl_mark_number, map dengan inv_customer_po_no dan package number yang sama dengan value: "PT. IS PO# [PO Number] P/L No.: [Palette Numbers] C/T No.: [Carton Numbers] MADE IN [NEGARA ASAL]". Untuk package numbers, HANYA RETURN PACKAGE NUMBERS YANG ADA!
+    - Contoh:
+      PT. IS
+      P/O No. -> 43018041
+      SURABAYA
+      MADE IN JAPAN
+      CTN No. -> 1-5, 13, 33-80
+      Maka bl_mark_number UNTUK SEMUA LINE ITEM DENGAN inv_customer_po_no DAN CTN NUMBERS YANG SAMA: "PT. IS PO# 43018041 C/T No.: 1-5, 13, 33-80 MADE IN JAPAN"
+      
 CERTIFICATE OF ORIGIN (COO):
 1. `coo_mark_number`: 
     - Ekstrak dari "7. Marks and numbers on packages".
