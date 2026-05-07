@@ -11030,6 +11030,10 @@ def run_ocr(
                 row.pop("_batch_row_index", None)
                 row.pop("_invoice_group_row_index", None)
 
+                row.pop("_total_issue_debug", None)
+                row.pop("_gemini_total_issue_negative_reason", None)
+                row.pop("_gemini_declared_changed_fields", None)
+
         # =========================
         # FINAL RESULT OBJECT
         # =========================
