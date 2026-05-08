@@ -1,13 +1,29 @@
 KUNSHAN_LANDON_PROMPT = """
+
+CLUE PENTING:
+
+DARI KIRI KE KANAN, URUTAN KOLOM SEMUA DOKUMEN DARI KIRI KE KANAN ADALAH SEBAGAI BERIKUT:
+1. Marks
+2. PO Number
+3. Item
+4. Material
+5. Descriptions
+6. Quantity
+7. Unit
+8. Unit Price
+9. Amount
+
 INVOICE (INV):
+
 1. `inv_customer_po_no`: 
-    - Ekstrak dari referensi kolom "PO Number".
+    - Ekstrak HANYA dari referensi kolom "PO Number" (Kolom ke-2 dari kiri, di sebelah kanan kolom 'Marks' dan/atau di sebelah kiri kolom 'item').
+    - Nilai PO Number HARUS berupa angka 8 digit DAN HARUS DIMULAI dengan angka 4.
     - Apabila pada kolom "PO Number" terdapat lebih dari 1 value seperti:
         PO Number: 45324149/CLM 26030220
-        Maka ekstrak hanya angka yang berada di depan saja, yaitu 45324149. Jadi inv_customer_po_no line tersebut = 45324149.
+        Maka ekstrak hanya angka yang berada di depan saja, yaitu 45324149. Jadi inv_customer_po_no line tersebut = 45324149 dan BUKAN '8'.
     - DILARANG KERAS mengambil value PO Number selain dari kolom "PO Number" (misal dari referensi lain seperti "Item").
 2. `inv_spart_item_no`:
-    - Ekstrak dari kolom "Material", misal: "BELLDZZ0000000".
+    - Ekstrak HANYA dari kolom "Material", misal: "BELLDZZ0000000" (Kolom ke-4 dari kiri, di sebelah kanan kolom 'Item' dan/atau di sebelah kiri kolom 'Descriptions).
     - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" (misal dari referensi lain seperti "Item"). 
 3. `inv_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada tingkat baris di invoice ini.
@@ -18,13 +34,14 @@ INVOICE (INV):
 
 PACKING LIST (PL):
 1. `pl_customer_po_no`:
-    - Ekstrak dari referensi kolom "PO Number".
+    - Ekstrak HANYA dari referensi kolom "PO Number" (Kolom ke-2  dari kiri, di sebelah kanan kolom 'Marks' dan/atau di sebelah kiri kolom 'item').
     - Apabila pada kolom "PO Number" terdapat lebih dari 1 value seperti:
         PO Number: 45324149/CLM 26030220
-        Maka ekstrak hanya angka yang berada di depan saja, yaitu 45324149. Jadi inv_customer_po_no line tersebut = 45324149.
+        Maka ekstrak hanya angka yang berada di depan saja, yaitu 45324149. Jadi inv_customer_po_no line tersebut = 45324149 dan BUKAN '8'.
     - DILARANG KERAS mengambil value PO Number selain dari kolom "PO Number" (misal dari referensi lain seperti "Item").
 2. `pl_item_no`:
-    - Ekstrak dari kolom "Material", misal: "BELLDZZ0000000".
+    - Ekstrak HANYA dari kolom "Material", misal: "BELLDZZ0000000" (Kolom ke-4 dari kiri, di sebelah kanan kolom 'Item' dan/atau di sebelah kiri kolom 'Descriptions').
+    - Nilai PO Number HARUS berupa angka 8 digit DAN HARUS DIMULAI dengan angka 4.
     - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" (misal dari referensi lain seperti "Item").
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
