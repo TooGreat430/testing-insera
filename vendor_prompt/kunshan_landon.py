@@ -1,7 +1,14 @@
 KUNSHAN_LANDON_PROMPT = """
 INVOICE (INV):
-1. `inv_customer_po_no`: Ekstrak dari referensi "PO Number".
-2. `inv_spart_item_no`: Ekstrak dari kolom "Material", misal: "BELLDZZ0000000".
+1. `inv_customer_po_no`: 
+    - Ekstrak dari referensi kolom "PO Number".
+    - Apabila pada kolom "PO Number" terdapat lebih dari 1 value seperti:
+        PO Number: 45324149/CLM 26030220
+        Maka ekstrak hanya angka yang berada di depan saja, yaitu 45324149. Jadi inv_customer_po_no line tersebut = 45324149.
+    - DILARANG KERAS mengambil value PO Number selain dari kolom "PO Number" (misal dari referensi lain seperti "Item").
+2. `inv_spart_item_no`:
+    - Ekstrak dari kolom "Material", misal: "BELLDZZ0000000".
+    - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" (misal dari referensi lain seperti "Item"). 
 3. `inv_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada tingkat baris di invoice ini.
 5. `inv_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
@@ -10,8 +17,15 @@ INVOICE (INV):
 8. `inv_amount`: Ekstrak nilai angka dari kolom "AMOUNT" (hapus simbol mata uang).
 
 PACKING LIST (PL):
-1. `pl_customer_po_no`: Ekstrak dari referensi "PO Number:".
-2. `pl_item_no`: Ekstrak dari kolom "Material", misal: "BELLDZZ0000000".
+1. `pl_customer_po_no`:
+    - Ekstrak dari referensi kolom "PO Number".
+    - Apabila pada kolom "PO Number" terdapat lebih dari 1 value seperti:
+        PO Number: 45324149/CLM 26030220
+        Maka ekstrak hanya angka yang berada di depan saja, yaitu 45324149. Jadi inv_customer_po_no line tersebut = 45324149.
+    - DILARANG KERAS mengambil value PO Number selain dari kolom "PO Number" (misal dari referensi lain seperti "Item").
+2. `pl_item_no`:
+    - Ekstrak dari kolom "Material", misal: "BELLDZZ0000000".
+    - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" (misal dari referensi lain seperti "Item").
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
 5. `pl_package_unit`: Simpulkan sebagai "CTNS" atau "CARTONS" berdasarkan header kolom kemasan.
