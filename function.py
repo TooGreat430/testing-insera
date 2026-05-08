@@ -10579,10 +10579,12 @@ def run_ocr(
         )
 
         file_uri_full = None
+        file_uri_container_bl = None
 
         # FULL:
         # invoice + packing pakai hasil preprocess
         # BL / COO / dokumen lain tetap original
+        # Dipakai untuk optional header/detail enrichment.
         has_extra_docs = (
             len(normalized_pdf_paths) > 2
             and (has_bl_doc or has_coo_doc)
@@ -10604,6 +10606,26 @@ def run_ocr(
                 merged_pdf_full,
                 run_prefix,
                 name="full"
+            )
+
+        # CONTAINER:
+        # Khusus output container, input Gemini harus hanya dokumen BL.
+        # Urutan input legacy/grouped: [invoice, packing, BL, COO?]
+        if with_total_container:
+            if not has_bl_doc or len(normalized_pdf_paths) < 3:
+                raise Exception("Output total/container membutuhkan dokumen Bill of Lading.")
+
+            bl_pdf_for_container = _compress_pdf_if_needed(normalized_pdf_paths[2])
+            if (
+                bl_pdf_for_container not in temp_local_paths
+                and bl_pdf_for_container != normalized_pdf_paths[2]
+            ):
+                temp_local_paths.append(bl_pdf_for_container)
+
+            file_uri_container_bl = _upload_temp_pdf_to_gcs(
+                bl_pdf_for_container,
+                run_prefix,
+                name="container_bl"
             )
 
         # =========================
@@ -10852,9 +10874,9 @@ def run_ocr(
         # =========================
         total_data = None
         container_data = None
-        if with_total_container and file_uri_full:
+        if with_total_container and file_uri_container_bl:
             container_data = _call_gemini_json_uri(
-                file_uri_full,
+                file_uri_container_bl,
                 CONTAINER_SYSTEM_INSTRUCTION,
                 expect_array=True,
                 retries=3
