@@ -16,8 +16,6 @@ Apabila ada line item pada PL yang TIDAK MEMILIKI pl_customer_po_no, pl_item_no,
 Contoh:
 Line item yang tidak memiliki pl_customer_po_no, pl_item_no (misal hanya ada keterangan "Spare parts"), dan pl_description namun memiliki nilai numerik pada pl_quantity, pl_package_count, pl_nw, pl_gw, atau pl_volume; maka line item tersebut HARUS DIABAIKAN dan DILARANG KERAS UNTUK DITAMBAHKAN ke line item lain atau ke line item paling atas.
 Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang sangat umum seperti "Spare parts" tanpa informasi detail lainnya. Meskipun memiliki nilai numerik pada beberapa kolom, line item ini DILARANG KERAS UNTUK DIGABUNGKAN dengan line item lain MANAPUN karena tidak memiliki informasi yang cukup untuk diidentifikasi secara unik.
-KESALAHAN YANG SERING TERJADI: Menambahkan nilai numerik dari line item ini ke line item lain yang paling atas. Tindakan ini SALAH karena mengasumsikan bahwa nilai numerik tersebut terkait dengan line item lain.
-SEHARUSNYA: CUKUP MENGABAIKAN LINE ITEM INI DAN TIDAK PERLU DITAMBAHKAN KE LINE ITEM LAIN.
 
 1. `pl_customer_po_no`: Ekstrak dari kolom "PO No.".
 2. `pl_item_no`: Ekstrak dari kolom "Material".
