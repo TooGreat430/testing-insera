@@ -70,7 +70,11 @@ PACKING LIST (PL):
 
 BILL OF LADING (BL):
 1. `bl_description`: 
-    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+    - Dimapping dengan inv_description.
+    - Jika inv_description tidak exist pada dokumen BL, ambil VALUE RANDOM yang paling mendekati.
+    - bl_description DILARANG KERAS NULL! 
+    - SEMUA line item pada BL HARUS ADA bl_description yang terisi, TIDAK BOLEH ADA bl_description NULL.
+
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
         Contoh:
