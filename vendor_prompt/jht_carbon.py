@@ -31,33 +31,7 @@ SEHARUSNYA: CUKUP MENGABAIKAN LINE ITEM INI DAN TIDAK PERLU DITAMBAHKAN KE LINE 
 
 BILL OF LADING (BL):
 1. `bl_description`: 
-    - Dimapping dengan inv_description berdasarkan kemiripan.
-    Contoh:
-    Pada inv_description ada value:
-    FORK RIGID IS-FC02-53MM
-    FRAME RIGID IS-RB06-610
-    FRAME RIGID IS-RB05-520
-    FRAME RIGID IS-RB05-560
-    FRAME RIGID IS-RB06-430
-    FRAME RIGID IS-RB05-720
-    BIKE HANDLE
-
-    Pada BL ada deskripsi item:
-    FORK RIGID
-    FRAME RIGID 610
-    FRAME RIGID 520
-    FRAME RIGID 560
-    FRAME RIGID 430
-
-    Maka mappingnya bl_desriptionnya adalah:
-    FORK RIGID
-    FRAME RIGID 610
-    FRAME RIGID 520
-    FRAME RIGID 560
-    FRAME RIGID 430
-    FRAME RIGID 520 (Ambil yang terdekat)
-    [RANDOM VALUE]
-    
+    - Dimapping dengan inv_description berdasarkan kemiripan. SELALU map dengan VALUE RANDOM yang PALING MENDEKATI!
     - Jika inv_description tidak exist pada dokumen BL, ambil VALUE RANDOM yang paling mendekati.
     - bl_description DILARANG KERAS NULL! 
     - SEMUA line item pada BL HARUS ADA bl_description yang terisi, TIDAK BOLEH ADA bl_description NULL.
