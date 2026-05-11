@@ -14,8 +14,10 @@ INSTRUKSI PENTING:
 Pada vendor ini, value setiap line item sudah bersifat ATOMIC sehingga DILARANG KERAS untuk menambahkan value numerik pada satu line item ke line item lain TANPA TERKECUALI!
 Apabila ada line item pada PL yang TIDAK MEMILIKI pl_customer_po_no, pl_item_no, dan pl_description; maka ABAIKAN LINE ITEM TERSEBUT!
 Contoh:
-Line item yang tidak memiliki pl_customer_po_no, pl_item_no (misal hanya ada keterangan "Spare parts"), dan pl_description namun memiliki nilai numerik pada pl_quantity, pl_package_count, pl_nw, pl_gw, atau pl_volume; maka line item tersebut HARUS DIABAIKAN dan TIDAK BOLEH DITAMBAHKAN ke line item lain.
-Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang sangat umum seperti "Spare parts" tanpa informasi detail lainnya. Meskipun memiliki nilai numerik pada beberapa kolom, line item ini TIDAK BOLEH DIGABUNGKAN dengan line item lain MANAPUN karena tidak memiliki informasi yang cukup untuk diidentifikasi secara unik.
+Line item yang tidak memiliki pl_customer_po_no, pl_item_no (misal hanya ada keterangan "Spare parts"), dan pl_description namun memiliki nilai numerik pada pl_quantity, pl_package_count, pl_nw, pl_gw, atau pl_volume; maka line item tersebut HARUS DIABAIKAN dan DILARANG KERAS UNTUK DITAMBAHKAN ke line item lain.
+Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang sangat umum seperti "Spare parts" tanpa informasi detail lainnya. Meskipun memiliki nilai numerik pada beberapa kolom, line item ini DILARANG KERAS UNTUK DIGABUNGKAN dengan line item lain MANAPUN karena tidak memiliki informasi yang cukup untuk diidentifikasi secara unik.
+KESALAHAN YANG SERING TERJADI: Menambahkan nilai numerik dari line item ini ke line item lain yang paling atas. Tindakan ini SALAH karena mengasumsikan bahwa nilai numerik tersebut terkait dengan line item lain.
+SEHARUSNYA: CUKUP MENGABAIKAN LINE ITEM INI DAN TIDAK PERLU DITAMBAHKAN KE LINE ITEM LAIN.
 
 1. `pl_customer_po_no`: Ekstrak dari kolom "PO No.".
 2. `pl_item_no`: Ekstrak dari kolom "Material".
@@ -29,33 +31,10 @@ Line item ini biasanya terletak di bagian bawah tabel PL dengan keterangan yang 
 
 BILL OF LADING (BL):
 1. `bl_description`: 
-    - Dimapping dengan inv_description berdasarkan kemiripan. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
-    Contoh:
-    Pada inv_description ada value:
-    FORK RIGID IS-FC02-53MM
-    FRAME RIGID IS-RB06-610
-    FRAME RIGID IS-RB05-520
-    FRAME RIGID IS-RB05-560
-    FRAME RIGID IS-RB06-430
-    FRAME RIGID IS-RB05-720
-    BIKE HANDLE
-
-    Pada BL ada deskripsi item:
-    FORK RIGID
-    FRAME RIGID 610
-    FRAME RIGID 520
-    FRAME RIGID 560
-    FRAME RIGID 430
-
-    Maka mappingnya bl_desriptionnya adalah:
-    FORK RIGID
-    FRAME RIGID 610
-    FRAME RIGID 520
-    FRAME RIGID 560
-    FRAME RIGID 430
-    FRAME RIGID 520 (Ambil yang terdekat)
-    null (Karena tidak ada deskripsi yang sama sekali dengan BIKE HANDLE)
-    -bl_description sebisa mungkin TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
+    - Dimapping dengan inv_description berdasarkan kemiripan. SELALU map dengan VALUE RANDOM yang PALING MENDEKATI!
+    - Jika inv_description tidak exist pada dokumen BL, ambil VALUE RANDOM yang paling mendekati.
+    - bl_description DILARANG KERAS NULL! 
+    - SEMUA line item pada BL HARUS ADA bl_description yang terisi, TIDAK BOLEH ADA bl_description NULL.
 
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya

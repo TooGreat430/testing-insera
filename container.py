@@ -160,7 +160,11 @@ GENERAL KNOWLEDGE CONTAINER
 
 12. bl_container_no::
    - Value dari bl_container_no terdapat pada header "Container No."
-   - Biasanya header Container No digabung dengan header lain seperti "Seal No. dan Mark Numbers". Jadi pahami urutan dari penulisan untuk pengambilan value bl_container_no
+   - Biasanya header Container No digabung dengan header lain seperti "Seal No. dan Mark Numbers". Jadi pahami urutan dari penulisan untuk pengambilan value 
+   
+13. bl_gw dan bl_volume:
+   - Jika terdapat lebih dari 1 container, maka bl_gw dan bl_volume adalah nilai bl_gw dan bl_volume PER CONTAINER, BUKAN TOTAL dari semua container.
+   - DILARANG KERAS mengambil value dari total KECUALI apabila hanya terdapat 1 container di BL.
 
 ============================================
 VALIDASI CONTAINER
