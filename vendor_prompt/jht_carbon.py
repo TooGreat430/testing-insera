@@ -54,8 +54,11 @@ BILL OF LADING (BL):
     FRAME RIGID 560
     FRAME RIGID 430
     FRAME RIGID 520 (Ambil yang terdekat)
-    null (Karena tidak ada deskripsi yang sama sekali dengan BIKE HANDLE)
-    -bl_description sebisa mungkin TIDAK BOLEH NULL kecuali memang tidak ada deskripsi yang mirip sama sekali dengan inv_description pada dokumen BL.
+    [RANDOM VALUE]
+    
+    - Jika inv_description tidak exist pada dokumen BL, ambil VALUE RANDOM yang paling mendekati.
+    - bl_description DILARANG KERAS NULL! 
+    - SEMUA line item pada BL HARUS ADA bl_description yang terisi, TIDAK BOLEH ADA bl_description NULL.
 
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
