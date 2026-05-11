@@ -1,9 +1,7 @@
 NOVATEC_PROMPT = """
 INVOICE (INV):
 1. `inv_customer_po_no`: Ekstrak dari kolom "PO.NO.".
-2. `inv_spart_item_no`: 
-    - Ekstrak HANYA dari kolom "CODE" (misalnya "RIMNT28R4RIM0001" atau "BNXNT-44MM00000").
-    - DILARANG KERAS mengambil value dari kolom lain yang bukan "CODE" seperti "item" DAN "description".
+2. `inv_spart_item_no`: Ekstrak dari kolom "CODE" (misalnya "RIMNT28R4RIM0001" atau "BNXNT-44MM00000").
 3. `inv_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada tingkat baris di invoice ini.
 5. `inv_quantity`: Ekstrak nilai angka dari kolom "QTY".
@@ -13,9 +11,7 @@ INVOICE (INV):
 
 PACKING LIST (PL):
 1. `pl_customer_po_no`: Ekstrak dari kolom "PO NO.".
-2. `pl_item_no`: 
-    - Ekstrak HANYA dari kolom "CODE" (misalnya "RIMNT28R4RIM0001" atau "BNXNT-44MM00000").
-    - DILARANG KERAS mengambil value dari kolom lain yang bukan "CODE" seperti "item" DAN "description".
+2. `pl_item_no`: Ekstrak dari kolom "CODE".
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
 5. `pl_package_unit`: Simpulkan sebagai "CT" berdasarkan header kolom "TOTAL CTNS".
