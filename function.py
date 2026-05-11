@@ -4987,15 +4987,14 @@ def _map_single_detail_row_to_po(
             _zero_po_split_secondary_total_fields(new_row)
 
         # selalu pakai item no asli dari PO JSON
-        po_article_value = _get_best_po_article_value(matched_line)
-        if not _is_null(po_article_value):
-            new_row["inv_spart_item_no"] = po_article_value
-            new_row["pl_item_no"] = po_article_value
-        else:
-            if matched_by == "inv_spart_item_no" and not _is_null(new_row.get("inv_spart_item_no")):
-                new_row["pl_item_no"] = new_row.get("inv_spart_item_no")
-            elif matched_by == "pl_item_no" and not _is_null(new_row.get("pl_item_no")):
-                new_row["inv_spart_item_no"] = new_row.get("pl_item_no")
+        # po_article_value = _get_best_po_article_value(matched_line)
+        # if not _is_null(po_article_value):
+        #     new_row["inv_spart_item_no"] = po_article_value
+        #     new_row["pl_item_no"] = po_article_value
+        if matched_by == "inv_spart_item_no" and not _is_null(new_row.get("inv_spart_item_no")):
+            new_row["pl_item_no"] = new_row.get("inv_spart_item_no")
+        elif matched_by == "pl_item_no" and not _is_null(new_row.get("pl_item_no")):
+            new_row["inv_spart_item_no"] = new_row.get("pl_item_no")
 
         mapped_rows.append(new_row)
 
