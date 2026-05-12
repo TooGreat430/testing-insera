@@ -30,6 +30,7 @@ VENDOR_LIST = [
     "sram",
     "karet_deli",
     "aforge",
+    "hl_vietnam",
 ]
 
 VENDOR_DISPLAY_NAME_MAP = {
@@ -58,6 +59,7 @@ VENDOR_DISPLAY_NAME_MAP = {
     "sram": "SRAM",
     "karet_deli": "Karet Deli",
     "aforge": "A-Forge",
+    "hl_vietnam": "HL Vietnam",
 }
 
 BASE_DIR = Path(__file__).resolve().parent
