@@ -34,7 +34,6 @@ BILL OF LADING (BL):
     - bl_description DILARANG KERAS NULL! 
     - SEMUA line item pada BL HARUS ADA bl_description yang terisi, TIDAK BOLEH ADA bl_description NULL.
 
-
 2. `bl_hs_code`: 
     - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
         Contoh:
@@ -49,19 +48,6 @@ BILL OF LADING (BL):
         Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
         bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
-
-LOGIC MAPPING BL:
-- bl_description dan bl_hs_code adalah satu pasangan dari item BL yang sama.
-- Mapping ke row dilakukan dengan prioritas:
-  1) Cocokkan model utama dari inv_description ke item BL.
-     Contoh model: TA-CQ68, TB-CY01, TN-CY10, PRO-A38, TY-CQ01.
-  2) Jika tidak ketemu, cocokkan inv_spart_item_no ke item BL.
-  3) Jika tidak ketemu, cocokkan model utama dari pl_description ke item BL.
-  4) Jika tidak ketemu, cocokkan pl_item_no ke item BL.
-  5) Jika tetap tidak ketemu, JANGAN langsung isi null.
-     Pilih salah satu pasangan item BL yang benar-benar ada di dokumen BL sebagai kandidat fallback.
-     Prioritaskan item BL berdasarkan urutan row yang paling dekat.
-     Jika tidak bisa menentukan, ambil item BL pertama yang tersedia.
 
 CERTIFICATE OF ORIGIN (COO):
 1. `coo_seq`:
