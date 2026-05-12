@@ -32,6 +32,11 @@ VENDOR_LIST = [
     "aforge",
     "hl_vietnam",
     "chengs",
+    "ddk",
+    "robert_bosch",
+    "taishan_shanghong",
+    "transart",
+    "vn_top_point",
 ]
 
 VENDOR_DISPLAY_NAME_MAP = {
@@ -62,6 +67,11 @@ VENDOR_DISPLAY_NAME_MAP = {
     "aforge": "A-Forge",
     "hl_vietnam": "HL Vietnam",
     "chengs": "Chengs",
+    "ddk": "DDK",
+    "robert_bosch": "Robert Bosch",
+    "taishan_shanghong": "Taishan/Shanghong",
+    "transart": "Transart",
+    "vn_top_point": "VN Top Point",
 }
 
 BASE_DIR = Path(__file__).resolve().parent
