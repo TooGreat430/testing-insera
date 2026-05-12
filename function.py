@@ -42,7 +42,6 @@ from vendor_detection import (
 )
 
 BATCH_SIZE = 30
-CHENGS_DETAIL_BATCH_SIZE = 3
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 test_number = 2
 
@@ -92,19 +91,6 @@ def _get_header_fields_for_vendor(vendor_id: str = "default"):
         return [k for k in HEADER_FIELDS if k != "bl_mark_number"]
 
     return list(HEADER_FIELDS)
-
-def _get_detail_batch_size_for_vendor(vendor_id: str = "default") -> int:
-    """
-    Batch size khusus detail extraction.
-
-    Default = BATCH_SIZE.
-    Khusus vendor chengs = 3, supaya prompt per batch lebih kecil
-    dan mengurangi risiko MAX_TOKENS / output kepotong.
-    """
-    if normalize_vendor_id(vendor_id) == "chengs":
-        return CHENGS_DETAIL_BATCH_SIZE
-
-    return BATCH_SIZE
 
 CBM_TO_CUFT = 35.3147
 
@@ -10401,14 +10387,7 @@ def _merge_optional_rows_into_base_rows(base_rows: list, optional_rows: list) ->
     return base_rows
 
 
-def _run_detail_jobs(
-    input_uri: str,
-    run_prefix: str,
-    jobs: list,
-    total_row: int,
-    label: str,
-    batch_size: int = None,
-):
+def _run_detail_jobs(input_uri: str, run_prefix: str, jobs: list, total_row: int, label: str):
     """
     Wrapper batch detail supaya PASS 1 dan PASS 2 bisa reuse logic yang sama.
     """
@@ -10418,19 +10397,12 @@ def _run_detail_jobs(
     max_workers = max(1, len(jobs))
     results = {}
 
-    log_batch_size = batch_size
-    if log_batch_size is None:
-        try:
-            log_batch_size = max(len(j.get("expected_indices", [])) for j in jobs or [])
-        except Exception:
-            log_batch_size = BATCH_SIZE
-
     print(
         f"[{label}] OCR Batching | total_jobs={len(jobs)} "
         f"| max_workers={max_workers} "
         f"| total_row={total_row} "
-        f"| batch_size={log_batch_size}"
-)
+        f"| batch_size={BATCH_SIZE}"
+    )
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [
@@ -10747,19 +10719,12 @@ def run_ocr(
         _fill_forward(index_items, "pl_customer_po_no")
 
         # BATCH DETAIL EXTRACTION
-        detail_batch_size = _get_detail_batch_size_for_vendor(vendor_id)
-
-        print(
-            f"[DETAIL_BATCH_SIZE] "
-            f"vendor_id={vendor_id} "
-            f"batch_size={detail_batch_size}"
-        )
         jobs = []
         first_index = 1
         batch_no = 1
 
         while first_index <= total_row:
-            last_index = min(first_index + detail_batch_size - 1, total_row)
+            last_index = min(first_index + BATCH_SIZE - 1, total_row)
 
             index_slice = index_items[first_index - 1:last_index]  # 1-based -> 0-based
             expected_indices = list(range(first_index, last_index + 1))
@@ -10789,7 +10754,6 @@ def run_ocr(
                 "first_index": first_index,
                 "last_index": last_index,
                 "expected_indices": expected_indices,
-                "batch_size": detail_batch_size,
             })
 
             first_index = last_index + 1
@@ -10809,7 +10773,6 @@ def run_ocr(
             jobs=jobs,
             total_row=total_row,
             label="BASE_INV_PL",
-            batch_size=detail_batch_size,
         )
 
         # =========================================
@@ -10885,8 +10848,7 @@ def run_ocr(
                     jobs=optional_jobs,
                     total_row=total_row,
                     label="OPTIONAL_FULL_DOCS",
-                    batch_size=detail_batch_size,
-)
+                )
 
                 all_rows = _merge_optional_rows_into_base_rows(
                     base_rows=all_rows,
