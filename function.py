@@ -7154,6 +7154,15 @@ def _normalize_code_compare_value(value):
 
 
 def _extract_bl_description_codes(value):
+    """
+    Extract kode dari bl_description.
+
+    Rule:
+    - Kode alfanumerik tetap valid: ABC123, SH-610, FR/610
+    - Kode numeric-only juga valid: 610, 12345
+    - Minimal panjang 3 karakter supaya angka kecil seperti 1, 2, 10
+      tidak terlalu mudah dianggap kode.
+    """
     if value is None:
         return []
 
@@ -7171,12 +7180,26 @@ def _extract_bl_description_codes(value):
         normalized = _normalize_code_compare_value(token)
         if not normalized:
             continue
+
+        # Minimal 3 char.
+        # Contoh valid:
+        # - 610
+        # - A610
+        # - FRAME-610
         if len(normalized) < 3:
             continue
-        if not re.search(r"[A-Z]", normalized):
-            continue
+
+        # Harus mengandung angka.
+        # Pure text seperti FRAME / RIGID tidak dianggap code.
         if not re.search(r"\d", normalized):
             continue
+
+        # Numeric-only sekarang VALID.
+        # Jadi jangan lagi wajib ada huruf A-Z.
+        # Old rule yang harus dihapus:
+        # if not re.search(r"[A-Z]", normalized):
+        #     continue
+
         if normalized in seen:
             continue
 
@@ -7202,13 +7225,11 @@ def _code_exists_in_value(code, value) -> bool:
 def _postprocess_bl_description(rows: list, threshold: float = 0.4):
     """
     Rule baru:
-    - jika bl_description punya code alfanumerik, compare code tsb ke inv_description
+    - jika bl_description punya code alfanumerik ATAU numeric-only, compare code tsb ke inv_description
     - jika tidak ada di inv_description, fallback ke inv_spart_item_no / pl_item_no
     - jika bl_description tidak punya code, compare full bl_description ke inv_description
     - jika tidak ada yang match, null-kan bl_description dan bl_hs_code
     - bl_mark_number tetap dibiarkan
-
-    threshold dipertahankan hanya untuk backward compatibility.
     """
     for row in rows:
         if not isinstance(row, dict):
