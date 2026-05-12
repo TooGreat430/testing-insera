@@ -85,6 +85,15 @@ BILL OF LADING (BL)
 
 CERTIFICATE OF ORIGIN (COO)
 
+1. coo_seq
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+     
 1. coo_mark_number:
    - Ekstrak dari kolom "7. Marks and numbers on packages"[cite: 28, 92].
    - Biasanya bernilai "N/M"[cite: 28, 143].

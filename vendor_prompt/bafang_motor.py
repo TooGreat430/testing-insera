@@ -124,13 +124,22 @@ BILL OF LADING (BL)
 
 CERTIFICATE OF ORIGIN (COO)
 
-1. coo_mark_number
+1. coo_seq
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+
+2. coo_mark_number
    - Ekstrak dari field "7. Marks and numbers on packages".
    - Pada format vendor ini bisa berupa "N/M".
    - Ambil persis seperti tertulis.
    - Jika tidak tersedia, isi dengan "null".
 
-2. coo_description:
+3. coo_description:
    - Ekstrak dari field "8. Number and kind of packages; and description of goods".
    - Abaikan frasa jumlah kemasan di awal/akhir seperti:
      "FIVE HUNDRED AND SIXTY (560) CTNS".
@@ -139,24 +148,24 @@ CERTIFICATE OF ORIGIN (COO)
    - Contoh hasil:
      "BICYCLE PARTS FORK SUSPENSION GSFXCM32DZ000036;SUNTOUR;SF23-XCM32DS;MATTEBLACKBLADE/CP STANCHION/MATTEBLACK CROWN;-;DISC PM160 QR/NUT,ALLOY BLADE/ALLOY CROWN, 27.5 THREADLESS 28(1-1/8") 255.00MMSTEEL STEERER 100.00 COIL W/ PRELOADADJUSTER - - W/ SEPARATEDECAL"
    - Jika tidak tersedia, isi dengan "null".
-3. coo_hs_code:
+4. coo_hs_code:
    - Ekstrak dari field "9. HS Code of the goods".
    - Contoh: "8714.91".
    - Jika tidak tersedia, isi dengan "null".
 
-4. coo_package_count:
+5. coo_package_count:
    - Ekstrak angka numerik dari frasa jumlah kemasan dalam field 8.
    - Contoh:
      dari "FIVE HUNDRED AND SIXTY (560) CTNS"
      maka coo_package_count = 560
    - Jika tidak tersedia, isi dengan "null".
 
-5. coo_package_unit:
+6. coo_package_unit:
    - Ekstrak unit kemasan dari frasa jumlah kemasan dalam field 8.
    - Contoh: "CTNS".
    - Jika tidak tersedia, isi dengan "null".
 
-6. coo_gw & coo_quantity:
+7. coo_gw & coo_quantity:
    - Untuk vendor ini, cek isi field "12. Quantity (Gross weight or other measurement)..."
    - Jika field 12 berisi quantity + unit, misalnya "3355SETS", maka:
      - coo_quantity = 3355
@@ -164,20 +173,20 @@ CERTIFICATE OF ORIGIN (COO)
    - Hanya isi coo_gw jika ada nilai berat eksplisit dengan unit seperti KG/KGS.
    - Jika tidak tersedia, isi dengan "null".
 
-7. coo_unit:
+8. coo_unit:
    - Ekstrak unit yang melekat pada field 12.
    - Jika field 12 berisi quantity, ambil unit quantity tersebut.
    - Contoh: "SETS".
    - Jika field 12 berisi berat, ambil unit beratnya, misalnya "KG".
    - Jika tidak tersedia, isi dengan "null".
 
-8. coo_criteria:
+9. coo_criteria:
    - Ekstrak dari field "10. Origin Conferring Criterion".
    - Jika ada tanda kutip, hilangkan tanda kutipnya.
    - Contoh: "RVC".
    - Jika tidak tersedia, isi dengan "null".
    
-9. coo_customer_po_no:
+10. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit.
    - Jika tidak ada referensi PO yang jelas, isi null.
    - Jika tidak tersedia, isi dengan "null". 

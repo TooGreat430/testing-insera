@@ -278,7 +278,16 @@ Setiap line COO biasanya berisi:
   "SHXM22-2512000393"
   "DEC. 31, 2025"
 
-1. coo_mark_number
+1. coo_seq
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+
+2. coo_mark_number
    - Ambil dari kolom "Marks and numbers on packages" jika ada value item-level yang jelas.
    - Jika kolom marks kosong untuk line item, isi "null".
    - Jika hanya ada shipment marks umum di luar line item seperti:
@@ -291,7 +300,7 @@ Setiap line COO biasanya berisi:
      maka JANGAN pakai untuk coo_mark_number item-level.
    - Dalam kondisi seperti itu, isi "null".
 
-2. coo_description
+3. coo_description
    - Ambil deskripsi barang dari kolom 8 (description of goods).
    - Fokus pada goods description.
    - Hilangkan bagian package phrase di atasnya jika package_count dan package_unit sudah bisa dipisahkan.
@@ -308,25 +317,25 @@ Setiap line COO biasanya berisi:
      - "CHAINWHEEL AND CRANK PRO-R42,1/8*42T*170MM"
    - Jika deskripsi terpotong ke banyak baris, gabungkan menjadi satu string.
 
-3. coo_hs_code
+4. coo_hs_code
    - Ambil dari kolom 9 "HS Code of the goods".
    - Contoh:
      - "8714.96"
 
-4. coo_quantity
+5. coo_quantity
    - Ambil quantity barang dari kolom 12.
    - Ambil angka sebelum unit.
    - Contoh:
      - "30SETS" -> 30
      - "398SETS" -> 398
 
-5. coo_unit
+6. coo_unit
    - Ambil unit quantity yang menempel pada coo_quantity.
    - Contoh:
      - "30SETS" -> "SETS"
      - "398PCS" -> "PCS" jika ada
 
-6. coo_package_count
+7. coo_package_count
    - Sumber utama: frasa package pada kolom 8.
    - Contoh:
      - "THREE (3) CARTONS OF BICYCLE PARTS" -> coo_package_count = 3
@@ -336,7 +345,7 @@ Setiap line COO biasanya berisi:
    - Jika tidak ada frasa package di description, baru cari fallback value package di bawah area quantity/GW.
    - Jangan tertukar dengan coo_quantity.
 
-7. coo_package_unit
+8. coo_package_unit
    - Ambil package unit yang menempel pada coo_package_count dari frasa package di kolom 8.
    - Contoh:
      - "THREE (3) CARTONS OF BICYCLE PARTS" -> coo_package_unit = "CARTONS"
@@ -344,7 +353,7 @@ Setiap line COO biasanya berisi:
    - Ambil sesuai yang tertulis pada COO.
    - Jangan ambil SETS / PCS karena itu quantity unit, bukan package unit.
 
-8. coo_gw
+9. coo_gw
    - Ambil gross weight dari kolom 12.
    - Ambil angka sebelum "KG G.W." atau "KGS G.W.".
    - Contoh:
@@ -352,18 +361,18 @@ Setiap line COO biasanya berisi:
      - "240KG G.W." -> 240
      - "446.25KG G.W." -> 446.25
 
-9. coo_amount
+10. coo_amount
    - Ambil nilai amount / FOB / value HANYA jika benar-benar tercantum pada kolom 12.
    - Jika kolom 12 hanya berisi quantity dan G.W. tanpa value/FOB, maka coo_amount = null.
    - Jangan ambil amount dari invoice untuk mengisi coo_amount.
    - Jangan menebak.
 
-10. coo_criteria
+11. coo_criteria
    - Ambil dari kolom 10 "Origin Conferring Criterion".
    - Contoh:
      - "PE"
 
-11. coo_customer_po_no
+12. coo_customer_po_no
    - Field ini hanya diisi jika dokumen berasal dari vendor Shimano dan ada Customer PO Number yang jelas.
    - Vendor pada dokumen ini adalah HAOMENG BICYCLE (SHANGHAI) CO., LTD, BUKAN Shimano.
    - Karena itu, untuk vendor HAOMENG:

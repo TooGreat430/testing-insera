@@ -228,12 +228,21 @@ BILL OF LADING (BL):
 
 CERTIFICATE OF ORIGIN (COO):
 
-1. coo_mark_number:
+1. coo_seq
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+
+2. coo_mark_number:
    - Ekstrak dari kolom "Marks and numbers on packages".
    - Jika kolom kosong / tidak terisi jelas pada item, isi null.
    - Jangan mengambil "PO. NO.", "MATERIAL CODE", atau "C/ NO." mark number.
 
-2. coo_description:
+3. coo_description:
    - Ekstrak dari kolom:
      - "7. Number and type of packages, description of products (including quantity where appropriate and HS number in six digit code)" jika tipe form coo = "FORM E"
         ATAU
@@ -257,7 +266,7 @@ CERTIFICATE OF ORIGIN (COO):
    - Abaikan / hapus hs code dari description
      Contoh: Hapus seperti "HS CODE: 3926.90", "HS CODE: 7616.10"
 
-3. coo_hs_code:
+4. coo_hs_code:
    - Ekstrak dari kolom:  
      - "7. Number and type of packages, description of products (including quantity where appropriate and HS number in six digit code)" jika tipe form coo = "FORM E"
         ATAU
@@ -267,7 +276,7 @@ CERTIFICATE OF ORIGIN (COO):
        SIX (6) CARTONS OF PLASTIC WASHER;FEIMIN;-;BLACK;HS CODE: 3926.90
        Maka bl_hs_code = 3926.90
 
-4. coo_quantity:
+5. coo_quantity:
    - Ekstrak dari kolom:
      - "9. Gross weight or net weight or other quantity, and value (FOB) only when RVC criterion is applied" jika tipe form coo = "FORM E"
      - "12. Quantity (Gross weigh or other measurement), and value (FOB) where RVC is applied" jika tipe form coo = "FORM RCEP" 
@@ -278,38 +287,38 @@ CERTIFICATE OF ORIGIN (COO):
      "3600PAIRS" + "1123.2KGS G.W." -> coo_quantity = 3600
      "200PIECES" + "3.48KGS G.W." -> coo_quantity = 200
 
-5. coo_unit:
+6. coo_unit:
    - Ambil unit yang melekat pada quantity dari kolom 9. pada coo dengan form type "FORM E" atau kolom 12. pada coo dengan form type "FORM RCEP"
    - Contoh:
      "5000SETS" -> "SETS"
      "3600PAIRS" -> "PAIRS"
      "200PIECES" -> "PIECES"
 
-6. coo_package_count:
+7. coo_package_count:
    - Ambil angka numerik dari frasa pembuka package count di awal dari kolom 7. pada coo dengan form type "FORM E" atau kolom 8. pada coo dengan form type "FORM RCEP"
    - Contoh:
      "SEVENTEEN (17) CARTONS OF ..." -> 17
      "ONE (1) CARTON OF ..." -> 1
      "SEVENTY-TWO (72) CARTONS OF ..." -> 72
 
-7. coo_package_unit:
+8. coo_package_unit:
    - Ambil unit package dari frasa pembuka di awal dari kolom 7. pada coo dengan form type "FORM E" atau kolom 8. pada coo dengan form type "FORM RCEP" 
    - Jika tertulis "CARTONS", isi "CARTONS".
    - Jika tertulis "CARTON", isi "CARTON".
 
-8. coo_gw:
+9. coo_gw:
    - Ambil gross weight dari bagian kedua dari kolom 9. pada coo dengan form type "FORM E" atau kolom 12. pada coo dengan form type "FORM RCEP"
    - Contoh:
      "5000SETS" + "144.67KGS G.W." -> coo_gw = 144.67
      "3600PAIRS" + "1123.2KGS G.W." -> coo_gw = 1123.2
    - Ambil angka numeriknya saja.
 
-9. coo_amount:
+10. coo_amount:
    - Isi null kecuali nilai FOB / amount tertulis eksplisit di COO.
    - Pada sample vendor ini, field 12 hanya menampilkan quantity dan gross weight, bukan amount.
    - Jangan ambil nilai dari invoice untuk mengisi coo_amount.
 
-10. coo_criteria:
+11. coo_criteria:
    - Ekstrak dari kolom:
      - "8. Origin criteria (see Overleaf Notes)" jika tipe form coo = "FORM E"
      - "10. Origin Conferring Criterion" jika tipe form coo = "FORM RCEP"
@@ -317,7 +326,7 @@ CERTIFICATE OF ORIGIN (COO):
    - Contoh:
      '"PE"' -> "PE"
 
-11. coo_customer_po_no:
+12. coo_customer_po_no:
    - Isi hanya jika nomor PO tertulis eksplisit.
    - Jangan ambil dari invoice number.
    - Jangan ambil dari remarks kosong seperti "PO. NO.:" tanpa value.

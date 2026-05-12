@@ -302,12 +302,13 @@ Struktur umum COO HL SHENZHEN:
   - customer PO item-level
 
 1. coo_seq
-   - Ambil dari nomor item / item number pada COO jika tercetak jelas.
-   - Nilai harus numeric.
-   - Contoh:
-     - "1" -> coo_seq = 1
-     - "28" -> coo_seq = 28
-     - "69" -> coo_seq = 69
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
 
 2. coo_mark_number
    - Ambil dari marks and numbers on packages HANYA jika ada mark item-level yang spesifik pada row tersebut.

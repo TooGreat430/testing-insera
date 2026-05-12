@@ -364,13 +364,13 @@ Struktur umum COO VELO KUNSHAN:
     80010947 / DEC. 29,2025
 
 1. coo_seq
-   - Ambil dari item number yang tercetak pada COO.
-   - Gunakan angka itu apa adanya.
-   - Contoh:
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Untuk vendor TOHO pada dokumen ini, item number tercetak jelas seperti:
      - 1
      - 2
-     - 20
-     - 42
+     - 3
+     - ...
 
 2. coo_mark_number
    - Ambil dari kolom "Marks and numbers on packages" jika ada value item-level yang jelas.

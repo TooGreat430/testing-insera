@@ -299,13 +299,14 @@ Catatan penting COO vendor LIOW KO:
 - Jangan memindahkan nilai dari invoice / packing list / BL ke field COO bila COO sendiri tidak mencantumkannya.
 
 1. coo_seq
-   - Ambil dari nomor item / item number pada COO.
-   - Nilai harus numeric.
-   - Contoh:
-     - "1" -> 1
-     - "15" -> 15
-     - "31" -> 31
-
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+     
 2. coo_mark_number
    - Ambil dari marks and numbers on packages HANYA jika ada mark item-level yang spesifik.
    - Jika hanya berisi generic mark seperti:

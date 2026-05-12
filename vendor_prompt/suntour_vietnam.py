@@ -168,25 +168,34 @@ BILL OF LADING (BL)
    
 CERTIFICATE OF ORIGIN (COO)
 
-1. coo_mark_number:
+1. coo_seq
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+
+2. coo_mark_number:
    - Ekstrak dari kolom "Marks and Numbers".
    - Pada format vendor ini nilainya dapat berupa "no".
    - Ambil persis seperti tertulis.
 
-2. coo_description:
+3. coo_description:
    - Ekstrak dari kolom "Description".
    - Gabungkan teks yang terpotong/wrapped dalam 1 item menjadi 1 string utuh.
    - Jangan sertakan quantity, hs code, gross weight, FOB, invoice number, atau date.
    - Contoh:
      "FORK SUSPENSION GSFM3010APV00034"
 
-3. coo_hs_code:
+4. coo_hs_code:
    - Ekstrak dari kolom "HS Number".
    - Pertahankan format persis seperti di COO.
    - Pada vendor ini HS code ditulis 8 digit, misalnya "87149199".
    - Jangan ubah menjadi format bertitik seperti "8714.91".
 
-4. coo_quantity:
+5. coo_quantity:
    - Ambil quantity utama barang dari baris pertama pada kolom "Quantity".
    - Contoh:
      Quantity Code:
@@ -197,7 +206,7 @@ CERTIFICATE OF ORIGIN (COO)
        50
      Maka coo_quantity = 500.0000
 
-5. coo_unit:
+6. coo_unit:
    - Karena schema hanya menyediakan 1 field unit, gunakan unit utama quantity dari baris pertama kolom "Quantity Code".
    - Contoh: 
      Quantity Code:
@@ -206,7 +215,7 @@ CERTIFICATE OF ORIGIN (COO)
      Maka coo_unit = "SET"
    - Jangan isi dengan package unit; package unit sudah masuk ke coo_package_unit.
 
-6. coo_package_count:
+7. coo_package_count:
    - Pada format e-COO ini, package count diambil dari baris kedua pada kolom "Quantity", yaitu angka yang berpasangan dengan package unit di baris kedua kolom "Quantity Code".
    - Contoh:
      Quantity Code:
@@ -218,25 +227,25 @@ CERTIFICATE OF ORIGIN (COO)
      Maka:
        coo_package_count = 50
 
-7. coo_package_unit:
+8. coo_package_unit:
    - COO package unit sudah pasti Carton untuk semua line item,
    MAKA coo_package_unit = "CT" untuk semua line item.
 
-8. coo_gw:
+9. coo_gw:
    - Ambil dari kolom "Gross weight or Other Quantity".
    - Pada vendor ini nilainya adalah gross weight item.
    - Contoh: "1290.0000", "693.8000", "5482.0000".
 
-9. coo_amount:
+10. coo_amount:
    - Pada format e-COO ini, coo_amount diambil dari kolom "Value" yang merupakan sub kolom "FOB"
    - Contoh: "6600.00000", "87.00000", "49.40000"
 
-10. coo_criteria:
+11. coo_criteria:
    - Ekstrak kode origin criterion dari kolom "Origin Criterion".
    - Jika kolom berisi "RVC 49.92%" atau format sejenisnya, abaikan value numerik presentasenya.
      maka coo_criteria = "RVC"
 
-11. coo_customer_po_no:
+12. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit pada COO.
    - Jangan gunakan invoice number sebagai PO number.
    - Jika tidak ada referensi PO yang jelas, isi null. 

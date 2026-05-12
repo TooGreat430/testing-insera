@@ -180,15 +180,23 @@ BILL OF LADING (BL):
       Maka bl_mark_number UNTUK SEMUA LINE ITEM DENGAN inv_customer_po_no DAN CTN NUMBERS YANG SAMA: "PT. IS PO# 43018041 C/T No.: 1-5, 13, 33-80 MADE IN JAPAN"
       
 CERTIFICATE OF ORIGIN (COO):
-1. `coo_mark_number`: 
+1. `coo_seq`:
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+2. `coo_mark_number`: 
     - Ekstrak dari "7. Marks and numbers on packages".
     - Apabila tidak ada informasi marks and numbers pada kolom 7 atau tertlulis "N/M" (Not Mentioned), maka biarkan null.
-2. `coo_description`: Ekstrak deskripsi teks dari kolom "6. Description of goods" (ambil murni deskripsi barangnya saja, misal "SMALL PARTS SMMA-R 160 D/D", abaikan teks "Invoice No", "PO No", dan "PART#").
-3. `coo_hs_code`: Ekstrak dari kolom "7. HS Code".
-4. `coo_package_count`: Biarkan null.
-5. `coo_package_unit`: Biarkan null.
-6. `coo_gw` & `coo_quantity`: Ekstrak nilai angka dari kolom "10. Quantity" untuk `coo_quantity`, biarkan `coo_gw` null karena dokumen ini menggunakan satuan kuantitas item (PCS), bukan berat.
-7. `coo_unit`: Ekstrak unit dari kolom "10. Quantity" (misalnya "PCS") dan bukan nilai numeriknya.
-8. `coo_criteria`: Ekstrak dari kolom "8. Origin conferring criterion" dan hanya ekstrak kode alphabetic-nya tanpa nomor numeriknya (misalnya "RVC40", maka ekstrak "RVC").
-9. `coo_customer_po_no`: Ekstrak teks setelah "PO No:" di dalam kolom "6. Description of goods", biasanya diawali dengan angka 4 (misal: "43018041").
+3. `coo_description`: Ekstrak deskripsi teks dari kolom "6. Description of goods" (ambil murni deskripsi barangnya saja, misal "SMALL PARTS SMMA-R 160 D/D", abaikan teks "Invoice No", "PO No", dan "PART#").
+4. `coo_hs_code`: Ekstrak dari kolom "7. HS Code".
+5. `coo_package_count`: Biarkan null.
+6. `coo_package_unit`: Biarkan null.
+7. `coo_gw` & `coo_quantity`: Ekstrak nilai angka dari kolom "10. Quantity" untuk `coo_quantity`, biarkan `coo_gw` null karena dokumen ini menggunakan satuan kuantitas item (PCS), bukan berat.
+8. `coo_unit`: Ekstrak unit dari kolom "10. Quantity" (misalnya "PCS") dan bukan nilai numeriknya.
+9. `coo_criteria`: Ekstrak dari kolom "8. Origin conferring criterion" dan hanya ekstrak kode alphabetic-nya tanpa nomor numeriknya (misalnya "RVC40", maka ekstrak "RVC").
+10. `coo_customer_po_no`: Ekstrak teks setelah "PO No:" di dalam kolom "6. Description of goods", biasanya diawali dengan angka 4 (misal: "43018041").
 """

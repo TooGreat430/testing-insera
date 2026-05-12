@@ -276,12 +276,21 @@ BILL OF LADING (BL):
 
 CERTIFICATE OF ORIGIN (COO):
 
-1. coo_mark_number:
+1. coo_seq
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+
+2. coo_mark_number:
    - Ekstrak dari field "7. Marks and numbers on packages".
    - Pada vendor ini nilainya tertulis "N/M".
    - Ambil persis seperti tertulis.
 
-2. coo_description:
+3. coo_description:
    - Ekstrak dari field "8. Number and kind of packages; and description of goods".
    - Abaikan frasa pembuka shipment-level:
      "THREE HUNDRED AND FOURTEEN (314) CARTONS OF"
@@ -293,7 +302,7 @@ CERTIFICATE OF ORIGIN (COO):
    - Gabungkan wrapped lines menjadi 1 string utuh.
    - Jika ada suffix "(REPLACEMENT)" yang memang tertulis di deskripsi item COO, pertahankan suffix tersebut sebagai bagian description.
 
-3. coo_hs_code:
+4. coo_hs_code:
    - Ekstrak dari field "9. HS Code of the goods".
    - Pertahankan format persis sebagaimana tertulis di COO.
    - Contoh:
@@ -301,7 +310,7 @@ CERTIFICATE OF ORIGIN (COO):
      "8714.99"
      "8714.93"
 
-4. coo_quantity:
+5. coo_quantity:
    - Ekstrak angka utama dari field "12. Quantity (Gross weight or other measurement), and value (FOB) where RVC is applied".
    - Pada vendor ini field 12 berisi quantity+unit yang digabung, misalnya:
      "5000SETS"
@@ -312,39 +321,39 @@ CERTIFICATE OF ORIGIN (COO):
      "5000SETS" -> coo_quantity = 5000
      "440PIECES" -> coo_quantity = 440
 
-5. coo_unit:
+6. coo_unit:
    - Ekstrak unit yang melekat pada field 12.
    - Contoh:
      "5000SETS" -> coo_unit = "SETS"
      "440PIECES" -> coo_unit = "PIECES"
 
-6. coo_package_count:
+7. coo_package_count:
    - Jika tidak tersedia package count yang bersifat item-level, maka isi dengan "null" saja
    - JANGAN AMBIL PACKAGE COUNT YANG BERSIFAT SHIPMENT-LEVEL.
 
-7. coo_package_unit:
+8. coo_package_unit:
    - Ekstrak unit kemasan dari frasa pembuka field 8.
    - Contoh:
      "THREE HUNDRED AND FOURTEEN (314) CARTONS OF"
      maka coo_package_unit = "CARTONS"
 
-8. coo_gw:
+9. coo_gw:
    - Isi null kecuali COO menuliskan gross weight eksplisit.
    - Pada sample vendor ini, field 12 berisi quantity+unit, bukan gross weight.
    - Jadi coo_gw = null.
 
-9. coo_amount:
+10. coo_amount:
    - Isi null kecuali nilai amount / FOB tertulis eksplisit pada COO.
    - Pada format COO vendor ini, sample tidak menampilkan nominal amount item secara eksplisit.
    - Jangan ambil amount dari invoice untuk mengisi coo_amount.
 
-10. coo_criteria:
+11. coo_criteria:
    - Ekstrak dari field "10. Origin Conferring Criterion".
    - Hilangkan tanda kutip jika ada.
    - Contoh:
      '"PE"' -> "PE"
 
-11. coo_customer_po_no:
+12. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit pada field 7 atau 8 COO.
    - Jangan ambil dari invoice number.
    - Pada sample vendor ini, tidak ada PO yang tertulis eksplisit pada COO, sehingga isi null.

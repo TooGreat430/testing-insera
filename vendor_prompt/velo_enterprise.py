@@ -352,9 +352,13 @@ Catatan penting COO vendor VELO:
 - Jangan memindahkan nilai dari invoice / packing list / BL ke field COO jika COO-nya sendiri tidak mencantumkannya.
 
 1. coo_seq
-   - Ambil dari nomor item / item number pada COO jika tercetak jelas.
-   - Nilai harus numeric.
-   - Jika tidak ada nomor item yang jelas, isi null.
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
 
 2. coo_mark_number
    - Ambil dari marks and numbers on packages HANYA jika ada mark item-level yang spesifik.

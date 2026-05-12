@@ -326,13 +326,13 @@ Struktur umum COO AURIGA:
   - invoice number/date tercetak, tetapi customer PO tidak tercetak item-level secara jelas
 
 1. coo_seq
-   - Ambil dari nomor item / "Item number" pada COO.
-   - Nilai harus numeric.
-   - Contoh:
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
      - 1
      - 2
-     - 13
-   - Jangan ambil invoice no., HS code, atau quantity sebagai coo_seq.
+     - 3
+     - ...
 
 2. coo_mark_number
    - Ambil dari "Marks and numbers on packages" HANYA jika ada mark item-level yang spesifik.

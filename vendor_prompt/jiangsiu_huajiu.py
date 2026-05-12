@@ -54,15 +54,23 @@ BILL OF LADING (BL):
     - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
 CERTIFICATE OF ORIGIN (COO):
-1. `coo_mark_number`:
+1. `coo_seq`:
+   - Ambil dari kolom "Item number".
+   - Nilai numeric.
+   - Item number tercetak jelas seperti:
+     - 1
+     - 2
+     - 3
+     - ...
+2. `coo_mark_number`:
     - Ekstrak dari "7. Marks and numbers on packages".
     - Apabila tidak ada informasi marks and numbers pada kolom 7 atau tertlulis "N/M" (Not Mentioned), maka biarkan null.
-2. `coo_description`: Ekstrak deskripsi teks dari kolom "8. Number and kind of packages; and description of goods." Abaikan keterangan jumlah paket (angka dan kata) pada field ini.
-3. `coo_hs_code`: Ekstrak dari "9. HS Code of the goods".
-4. `coo_package_count`: Ekstrak kata/angka numerik dari kalimat awal di kolom 8 (misalnya, dari "ONE (1) CTN" ambil angka 1).
-5. `coo_package_unit`: Ekstrak jenis kemasan dari kalimat awal di kolom 8 (misalnya, "CTN").
-6. `coo_gw` & `coo_quantity`: Ekstrak berat angka dari kolom "12. Quantity..." (biasanya ditulis dengan format seperti "20.39KGS G.W.").
-7. `coo_unit`: Ekstrak unit berat dari kolom 12 (misalnya, "KGS").
-8. `coo_criteria`: Ekstrak dari "10. Origin Conferring Criterion" (misalnya "PE").
-9. `coo_customer_po_no`: Biarkan null kecuali ada nomor PO yang secara spesifik ditulis per baris item.
+3. `coo_description`: Ekstrak deskripsi teks dari kolom "8. Number and kind of packages; and description of goods." Abaikan keterangan jumlah paket (angka dan kata) pada field ini.
+4. `coo_hs_code`: Ekstrak dari "9. HS Code of the goods".
+5. `coo_package_count`: Ekstrak kata/angka numerik dari kalimat awal di kolom 8 (misalnya, dari "ONE (1) CTN" ambil angka 1).
+6. `coo_package_unit`: Ekstrak jenis kemasan dari kalimat awal di kolom 8 (misalnya, "CTN").
+7. `coo_gw` & `coo_quantity`: Ekstrak berat angka dari kolom "12. Quantity..." (biasanya ditulis dengan format seperti "20.39KGS G.W.").
+8. `coo_unit`: Ekstrak unit berat dari kolom 12 (misalnya, "KGS").
+9. `coo_criteria`: Ekstrak dari "10. Origin Conferring Criterion" (misalnya "PE").
+10. `coo_customer_po_no`: Biarkan null kecuali ada nomor PO yang secara spesifik ditulis per baris item.
 """
