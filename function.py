@@ -10922,7 +10922,7 @@ def run_ocr(
             _postprocess_coo_po_only_rows_from_invoice(all_rows, vendor_id=vendor_id)
 
             # NEW: hitung coo_seq hanya untuk row COO yang masih valid/matched
-            _postprocess_coo_no_and_seq(all_rows)
+            # _postprocess_coo_no_and_seq(all_rows)
 
         if has_bl_doc:
             _postprocess_bl_description(all_rows)
@@ -10959,7 +10959,7 @@ def run_ocr(
 
         if has_coo_doc:
             _postprocess_coo_po_only_rows_from_invoice(all_rows)
-            _postprocess_coo_no_and_seq(all_rows)
+            # _postprocess_coo_no_and_seq(all_rows)
 
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
