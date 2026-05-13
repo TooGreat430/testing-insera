@@ -75,16 +75,7 @@ PACKING LIST (PL)
    - Ekstrak HANYA dari kolom "CTNS".
    - Contoh: "455", "11", "234", "6"
    - DILARANG KERAS ambil dari kolom lain seperti kolom "PLTS", "PTS", atau kolom lainnya.
-     Contoh:
-       _______________________________
-       |    PLTS     |     CTNS      |
-       -------------------------------
-       |             |               |
-       |       2     |        6      |
-       |             |               |
-       -------------------------------
-       maka, pl_package_count = 6 (BUKAN 2)
-       
+
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
    - Ambil angka numeriknya saja.
