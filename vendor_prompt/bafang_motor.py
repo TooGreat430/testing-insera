@@ -70,8 +70,8 @@ PACKING LIST (PL)
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   - Ekstrak dari kolom "CTNS".
-   - Contoh: "455", "11", "234"
+   - Ekstrak HANYA dari kolom "CTNS".
+   - DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'
    
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
