@@ -7994,16 +7994,12 @@ DETAIL_RECHECK_COLUMN_DEFINITIONS = {
     },
     "pl_package_count": {
         "document_type": "Packing List",
-        "target_column": "Package / Carton / CTNS / CTN / PKGS",
+        "target_column": "Package / Carton / CTN / PKGS",
         "must_not_use_columns": [
-            "PLTS", "PLT", "PTS", "Pallet", "Pallets",
             "NW", "GW", "Volume", "CBM", "Measurement", "Quantity",
         ],
         "visual_hints": [
             "Package count biasanya integer.",
-            "Jika ada kolom PLTS dan CTNS berdampingan, gunakan CTNS untuk pl_package_count."
-            "Jangan ambil PLTS sebagai pl_package_count.",
-            "Contoh Bafang: PLTS=2 dan CTNS=6, maka pl_package_count=6.",
             "Jika cell merged, jangan duplikasikan package count ke continuation row.",
         ],
     },

@@ -73,21 +73,8 @@ PACKING LIST (PL)
 
 6. pl_package_count:
    - Ekstrak HANYA dari kolom "CTNS".
-   - Kolom "CTNS" adalah sumber tunggal untuk pl_package_count.
-   - DILARANG KERAS mengambil dari kolom "PLTS", "PLT", "Pallet", "PTS", atau kolom lain.
-   - Jika pada baris/group yang sama terdapat:
-       PLTS = 2
-       CTNS = 6
-     maka:
-       pl_package_count = 6
-     BUKAN 2.
-   - Kolom PLTS hanya menunjukkan jumlah pallet dan TIDAK BOLEH dipakai untuk pl_package_count.
-   - Jika kolom CTNS kosong pada continuation row / merged group, isi 0.
-   - Jangan fallback ke PLTS walaupun CTNS kosong.
-   - Contoh:
-       Quantity | PLTS | CTNS | G.W | N.W | Measurement
-       60       | 2    | 6    | ...
-     Maka pl_package_count = 6.
+   - Contoh: "455", "11", "234", "6"
+   - DILARANG KERAS ambil dari kolom lain seperti kolom "PLTS", "PTS", atau kolom lainnya.
 
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
