@@ -25,9 +25,8 @@ INVOICE (INV)
    - Isi null kecuali ada gross weight yang tertulis eksplisit pada invoice.
 
 5. inv_quantity:
-   - Ekstrak HANYA dari kolom "Quantity".
-   - Contoh: "455", "700", "140"
-   - DILARANG KERAS ambil dari kolom lain seperti kolom "Measurement" atau kolom lainnya.
+   - Ekstrak dari kolom "Quantity".
+   - Contoh: "455", "700"
 
 6. inv_quantity_unit:
    - Isi null kecuali ada unit quantity yang tertulis eksplisit pada baris item invoice.
@@ -62,9 +61,8 @@ PACKING LIST (PL)
 
 
 4. pl_quantity:
-   - Ekstrak HANYA dari kolom "Quantity".
-   - Contoh: "455", "700", "140"
-   - DILARANG KERAS ambil dari kolom lain seperti kolom "Measurement" atau kolom lainnya.
+   - Ekstrak dari kolom "Quantity".
+   - Contoh: "455", "700"
 
 5. pl_package_unit:
    - Ekstrak jenis kemasan dari nama kolom package (misal "CTNS").
@@ -72,9 +70,8 @@ PACKING LIST (PL)
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   - Ekstrak HANYA dari kolom "CTNS".
-   - Contoh: "455", "11", "234", "6"
-   - DILARANG KERAS ambil dari kolom lain seperti kolom "PLTS", "PTS", atau kolom lainnya.
+   - Ekstrak dari kolom "CTNS".
+   - Contoh: "455", "11", "234"
 
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
