@@ -10849,19 +10849,27 @@ def run_ocr(
         # GEMINI RECHECK SEKALI
         # Recheck INV/PL juga HARUS pakai file_uri_detail.
         # =========================================
-        repaired_rows = _call_gemini_detail_line_recheck_once(
-            base_detail_input_uri,
-            all_rows,
-            vendor_id=vendor_id,
-            vendor_prompt_text=vendor_prompt_text,
-        )
-
-        if repaired_rows:
-            all_rows = _apply_detail_line_recheck_result(all_rows, repaired_rows)
+        # ===== DISABLED =====
+        # Gemini recheck dinonaktifkan agar tidak me-replace nilai numerik
+        # hasil ekstraksi awal (inv_quantity, inv_unit_price, inv_amount,
+        # pl_quantity, pl_nw, pl_gw, pl_volume, dll).
+        # Untuk mengaktifkan kembali, uncomment blok di bawah ini.
+        #
+        # repaired_rows = _call_gemini_detail_line_recheck_once(
+        #     base_detail_input_uri,
+        #     all_rows,
+        #     vendor_id=vendor_id,
+        #     vendor_prompt_text=vendor_prompt_text,
+        # )
+        #
+        # if repaired_rows:
+        #     all_rows = _apply_detail_line_recheck_result(all_rows, repaired_rows)
+        repaired_rows = None
+        # ====================
 
         print(
             f"[DETAIL_COUNT_AFTER_RECHECK] "
-            f"expected={total_row} actual={len(all_rows)}"
+            f"expected={total_row} actual={len(all_rows)} (recheck DISABLED)"
         )
 
         if len(all_rows) != total_row:
