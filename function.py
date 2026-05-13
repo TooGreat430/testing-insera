@@ -3926,16 +3926,6 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             row["confidence_label"] = "negative"
             continue
 
-        changed_fields = row.get("_gemini_recheck_changed_fields")
-
-        # =====================================================
-        # Negative hanya untuk hasil recheck total yang benar-benar
-        # mengubah field.
-        # =====================================================
-        if isinstance(changed_fields, list) and changed_fields:
-            row["confidence_label"] = "negative"
-            continue
-
         # Selain itu tetap positive.
         row["confidence_label"] = "positive"
 
@@ -9900,6 +9890,83 @@ def _call_gemini_detail_line_recheck_once(
 
     return repaired_rows
 
+def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
+    """
+    Apply Gemini recheck hanya untuk confidence label.
+
+    Tujuan:
+    - negative / positive tetap berjalan
+    - tidak replace value apa pun
+    - tidak set _gemini_recheck_changed_fields
+    - tidak pakai changed_fields sebagai dasar koreksi value
+    """
+    repaired_by_no = {}
+
+    for repaired in repaired_rows or []:
+        if not isinstance(repaired, dict):
+            continue
+
+        row_no = repaired.get("_detail_row_no")
+        if row_no is None:
+            continue
+
+        try:
+            repaired_by_no[int(row_no)] = repaired
+        except Exception:
+            continue
+
+    if not isinstance(rows, list):
+        return rows
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        # HARD RULE:
+        # match_score TRUE tidak boleh jadi negative oleh recheck.
+        match_score = str(row.get("match_score", "")).strip().lower()
+        if match_score == "true":
+            row["_gemini_total_issue_negative"] = False
+            row.pop("_gemini_total_issue_negative_reason", None)
+            row.pop("_gemini_recheck_changed_fields", None)
+            row.pop("_gemini_declared_changed_fields", None)
+            continue
+
+        row_no = _safe_row_no_int(row)
+        if row_no is None:
+            continue
+
+        repaired = repaired_by_no.get(row_no)
+        if not repaired:
+            continue
+
+        gemini_label = str(
+            repaired.get("confidence_label")
+            or repaired.get("_gemini_recheck_decision")
+            or ""
+        ).strip().lower()
+
+        visual_reason = (
+            repaired.get("visual_reason")
+            or "Gemini detail recheck label decision."
+        )
+
+        if gemini_label == "negative":
+            row["_gemini_total_issue_negative"] = True
+            row["_gemini_total_issue_negative_reason"] = visual_reason
+
+        elif gemini_label == "positive":
+            row["_gemini_total_issue_negative"] = False
+            row["_gemini_total_issue_negative_reason"] = visual_reason
+
+        # PENTING:
+        # Jangan loop allowed_fields.
+        # Jangan compare old_value vs new_value.
+        # Jangan row[field] = new_value.
+        # Jangan set _gemini_recheck_changed_fields.
+
+    return rows
+
 
 def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
     """
@@ -10857,7 +10924,7 @@ def run_ocr(
         )
 
         if repaired_rows:
-            all_rows = _apply_detail_line_recheck_result(all_rows, repaired_rows)
+            all_rows = _apply_detail_line_recheck_label_only(all_rows, repaired_rows)
 
         print(
             f"[DETAIL_COUNT_AFTER_RECHECK] "
