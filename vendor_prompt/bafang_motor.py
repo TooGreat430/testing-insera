@@ -39,6 +39,21 @@ INVOICE (INV)
      "$106.10" -> 106.10
 
 PACKING LIST (PL)
+PETUNJUK VISUAL YANG SANGAT PENTING:
+Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
+1) No.
+2) Item
+3) Model
+4) Customer Article No.
+5) BF Article No.
+6) Insera Description
+7) Quantity
+8) PLTS
+9) CTNS
+10) G.W(KGS)
+11) N.W(KGS)
+12) MEASUREMENT
+13) PO
 
 1. pl_customer_po_no:
    - Ekstrak dari kolom "PO".
@@ -70,6 +85,10 @@ PACKING LIST (PL)
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
+   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package count adalah kolom 'CTNS' yang merupakan kolom ke-9 dari kiri.
+   Tepatnya, kolom ini berada di sebelah kanan kolom 'PLTS' dan/atau di sebelah kiri kolom 'G.W(KGS)'.
+
+   - Ekstrak angka numeriknya saja dari kolom 'CTNS'.
    - Ekstrak HANYA dari kolom "CTNS".
    - DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'
    
