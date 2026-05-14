@@ -9955,6 +9955,23 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
             row["_gemini_total_issue_negative"] = True
             row["_gemini_total_issue_negative_reason"] = visual_reason
 
+            # NEW: tampung pesan saran dari Gemini ke field internal.
+            # NILAI ROW TIDAK DIUBAH. Pesan ini di-append ke
+            # match_description nanti oleh
+            # _apply_gemini_recheck_suggestions_to_match_description(),
+            # tepat sebelum _finalize_match_fields().
+            suggestion_msgs = _build_gemini_recheck_suggestion_messages(
+                row, repaired
+            )
+            if suggestion_msgs:
+                existing = row.get("_gemini_recheck_suggestion_messages")
+                if not isinstance(existing, list):
+                    existing = []
+                for m in suggestion_msgs:
+                    if m not in existing:
+                        existing.append(m)
+                row["_gemini_recheck_suggestion_messages"] = existing
+
         elif gemini_label == "positive":
             row["_gemini_total_issue_negative"] = False
             row["_gemini_total_issue_negative_reason"] = visual_reason
@@ -9966,6 +9983,121 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
         # Jangan set _gemini_recheck_changed_fields.
 
     return rows
+
+
+# =========================================================================
+# NEW: Gemini recheck suggestion -> match_description
+#
+# Tujuan blok di bawah:
+# - Gemini recheck JANGAN replace nilai numeric apa pun di row.
+# - Tapi kalau Gemini bilang "negative" dengan changed_fields,
+#   informasi itu tetap berguna untuk reviewer.
+# - Jadi kita tampung pesan saran-nya, lalu append ke match_description
+#   di akhir flow (lewat _apply_gemini_recheck_suggestions_to_match_description).
+# =========================================================================
+
+def _format_recheck_value_for_message(value) -> str:
+    """Format nilai untuk ditampilkan di pesan match_description."""
+    if value is None:
+        return "null"
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:g}"
+
+    if isinstance(value, int):
+        return str(value)
+
+    s = str(value).strip()
+    if not s or s.lower() == "null":
+        return "null"
+    return s
+
+
+def _build_gemini_recheck_suggestion_messages(row: dict, repaired: dict) -> list:
+    """
+    Bangun list pesan saran dari hasil Gemini recheck.
+
+    Untuk tiap field di `changed_fields` yang valid (ada di DETAIL_RECHECK_FIELDS
+    dan benar-benar berbeda dengan nilai sekarang di row), buat satu pesan
+    berformat:
+
+        "Gemini recheck: {field} should be {new_value} (extracted: {old_value})"
+
+    NILAI ROW TIDAK DIUBAH. Pesan ini hanya untuk dicatat di match_description.
+    Return list of strings (kosong kalau tidak ada saran valid).
+    """
+    if not isinstance(row, dict) or not isinstance(repaired, dict):
+        return []
+
+    changed_fields = repaired.get("changed_fields")
+    if not isinstance(changed_fields, list) or not changed_fields:
+        return []
+
+    messages = []
+    for field in changed_fields:
+        if not isinstance(field, str):
+            continue
+        if field not in DETAIL_RECHECK_FIELDS:
+            continue
+        if field not in repaired:
+            continue
+
+        old_value = row.get(field)
+        new_value = repaired.get(field)
+
+        # Kalau secara semantik sama (Gemini "ganti" tapi nilainya sama),
+        # tidak perlu pesan saran.
+        if _same_recheck_value(old_value, new_value, field):
+            continue
+
+        msg = (
+            f"Gemini recheck: {field} should be "
+            f"{_format_recheck_value_for_message(new_value)} "
+            f"(extracted: {_format_recheck_value_for_message(old_value)})"
+        )
+        if msg not in messages:
+            messages.append(msg)
+
+    return messages
+
+
+def _apply_gemini_recheck_suggestions_to_match_description(rows: list):
+    """
+    Append pesan saran Gemini recheck (yang tadi di-stash oleh
+    _apply_detail_line_recheck_label_only) ke match_description tiap row.
+
+    Pakai _append_err() yang sudah ada supaya:
+    - match_score otomatis di-set "false" untuk row yang dapat saran
+    - dedupe terhadap pesan lain yang sudah ada di match_description
+    - format pemisah konsisten ("; ")
+
+    HARUS dipanggil SEBELUM _finalize_match_fields(), karena
+    _finalize_match_fields() akan nuke match_description menjadi "null"
+    untuk row dengan match_score == "true".
+    """
+    if not isinstance(rows, list):
+        return
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        msgs = row.get("_gemini_recheck_suggestion_messages")
+        if not isinstance(msgs, list) or not msgs:
+            continue
+
+        for msg in msgs:
+            if not isinstance(msg, str):
+                continue
+            msg = msg.strip()
+            if not msg:
+                continue
+            _append_err(row, msg)
 
 
 def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
@@ -11142,6 +11274,12 @@ def run_ocr(
         all_rows = _inherit_inv_seq_for_secondary_po_split_rows(all_rows)
         all_rows = _compact_inv_seq_gaps_after_po_split(all_rows)
 
+        # NEW: append saran Gemini recheck ke match_description.
+        # Harus dipanggil SEBELUM _finalize_match_fields karena
+        # _finalize_match_fields akan null-kan match_description
+        # untuk row dengan match_score=="true".
+        _apply_gemini_recheck_suggestions_to_match_description(all_rows)
+
         _finalize_match_fields(all_rows)
 
         drop_detail_columns = [
@@ -11216,6 +11354,9 @@ def run_ocr(
                 row.pop("_total_issue_debug", None)
                 row.pop("_gemini_total_issue_negative_reason", None)
                 row.pop("_gemini_declared_changed_fields", None)
+
+                # NEW: bersihkan field internal pesan saran Gemini recheck.
+                row.pop("_gemini_recheck_suggestion_messages", None)
 
                 row.pop("idx", None)
                 row.pop("inv_page_no", None)
