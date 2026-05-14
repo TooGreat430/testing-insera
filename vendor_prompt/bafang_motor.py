@@ -92,10 +92,12 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
    - DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'
    
 7. pl_nw:
+   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_nw adalah kolom 'N.W(KGS)' yang merupakan kolom ke-11 dari kiri.
    - Ekstrak dari kolom "N.W(KGS)".
    - Ambil angka numeriknya saja.
 
 8. pl_gw:
+   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_gw adalah kolom 'G.W(KGS)' yang merupakan kolom ke-10 dari kiri.
    - Ekstrak dari kolom "G.W(KGS)".
    - Ambil angka numeriknya saja.
 
