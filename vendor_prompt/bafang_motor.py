@@ -91,28 +91,7 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
    KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'!
 
    VISUAL CLUE PENTING:
-   Pada beberapa line item akan terdapat merged cells yang bisa menimbulkan kebingungan antara kolom 'PLTS' dan 'CTNS'. Contoh kasus:
-   ___________________________________________
-   | ITEM         |   PLTS     |     CTNS     |
-   |--------------|------------|--------------|
-   |Item A        |            |      48      |
-   |--------------|            |--------------|
-   |Item B        |            |              |
-   |--------------|            |              |
-   |Item C        |   2        |      6       |
-   |--------------|            |              |
-   |Item D        |            |              |
-   |--------------|            |--------------|
-   |Item E        |            |      1       |
-   |------------------------------------------|
-   
-   Maka:
-   - Item A → pl_package_count = 48
-   - Item B → pl_package_count = 0 (BUKAN 48 ATAUPUN 2 ATAUPUN 6)
-   - Item C → pl_package_count = 6 (BUKAN 2)
-   - Item D → pl_package_count = 0 (BUKAN 6)
-   - Item E → pl_package_count = 1 (BUKAN 2)
-
+   Pada beberapa beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PLTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PLTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
    
 7. pl_nw:
    VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_nw adalah kolom 'N.W(KGS)' yang merupakan kolom ke-11 dari kiri.
