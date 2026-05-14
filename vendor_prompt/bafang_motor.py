@@ -87,13 +87,12 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
 6. pl_package_count:
    VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package count adalah kolom 'CTNS' yang merupakan kolom ke-9 dari kiri.
    Tepatnya, kolom ini berada di sebelah kanan kolom 'PLTS' dan/atau di sebelah kiri kolom 'G.W(KGS)'.
-
-   - Ekstrak HANYA dari kolom "CTNS".
-   - DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'
+   
+   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'!
 
    VISUAL CLUE PENTING:
    Pada beberapa line item akan terdapat merged cells yang bisa menimbulkan kebingungan antara kolom 'PLTS' dan 'CTNS'. Contoh kasus:
-   __________________________________________
+   ___________________________________________
    | ITEM         |   PLTS     |     CTNS     |
    |--------------|------------|--------------|
    |Item A        |            |      48      |
