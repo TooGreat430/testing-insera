@@ -70,8 +70,12 @@ PACKING LIST (PL)
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   - Ekstrak dari kolom "CTNS".
-   - Contoh: "455", "11", "234"
+   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package count adalah kolom 'CTNS' yang merupakan kolom ke-9 dari kiri.
+   Tepatnya, kolom ini berada di sebelah kanan kolom 'PLTS' dan/atau di sebelah kiri kolom 'G.W(KGS)'.
+   Pada beberapa beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PLTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PLTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
+   PERHATIKAN JUGA DENGAN SANGAT SEKSAMA pada kolom 'CTNS' terutama pada merged cells agar TIDAK ADA NILAI YANG TERLEWAT untuk line item yang berada di bawah merged cell tersebut.
+   
+   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'!
 
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
