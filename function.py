@@ -11550,7 +11550,7 @@ def run_ocr(
             rows=all_rows,
             current_vendor_id=vendor_id,
             target_vendor_ids="liow_ko",
-            columns=["coo_gw_unit"],
+            columns=["coo_gw_unit", "pl_weight_unit"],
         )
 
         if normalize_vendor_id(vendor_id) != "liow_ko":
