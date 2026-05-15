@@ -39,21 +39,6 @@ INVOICE (INV)
      "$106.10" -> 106.10
 
 PACKING LIST (PL)
-PETUNJUK VISUAL YANG SANGAT PENTING:
-Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
-1) No.
-2) Item
-3) Model
-4) Customer Article No.
-5) BF Article No.
-6) Insera Description
-7) Quantity
-8) PLTS
-9) CTNS
-10) G.W(KGS)
-11) N.W(KGS)
-12) MEASUREMENT
-13) PO
 
 1. pl_customer_po_no:
    - Ekstrak dari kolom "PO".
@@ -85,41 +70,14 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   VISUAL CLUE: Kolom 'CTNS' adalah kolom ke-9 dari kiri. 
-   Tepatnya di sebelah kanan kolom 'PLTS' dan di sebelah kiri kolom 'G.W(KGS)'.
+   - Ekstrak dari kolom "CTNS".
+   - Contoh: "455", "11", "234"
 
-   ATURAN POSISI KOLOM:
-   - Ambil HANYA dari kolom 'CTNS'.
-   - DILARANG KERAS mengambil dari kolom 'PLTS' (kolom ke-8) atau 'Quantity' (kolom ke-7).
-   - Contoh trap yang HARUS dihindari:
-     Jika dalam satu baris terlihat:
-       Quantity=60 | PLTS=2 | CTNS=6
-     Maka pl_package_count = 6, BUKAN 2, BUKAN 60.
-
-   ATURAN MERGE CELL (sama persis dengan aturan pl_volume):
-   Jika satu nilai CTNS dipakai bersama oleh beberapa baris (merge cell, 
-   biasanya sejajar dengan merge cell G.W/N.W/MEASUREMENT):
-   - Nilai tersebut HANYA di-assign ke baris PERTAMA dalam grup merge.
-   - Semua baris setelahnya dalam grup merge yang sama → diisi 0.
-   
-   Contoh:
-     ___________________________________________
-     | Row | Quantity | PLTS | CTNS | G.W      |
-     |-----|----------|------|------|----------|
-     | 4   |   140    |      |      |          |
-     | 5   |    60    |   2  |   6  |   42.65  |
-     | 6   |    48    |      |      |          |
-     ___________________________________________
-     Maka:
-     - Row 4 → pl_package_count = 6 (baris pertama grup merge, dapat nilai)
-     - Row 5 → pl_package_count = 0 (continuation)
-     - Row 6 → pl_package_count = 0 (continuation)
-   
-   Jika tiap baris punya nilai CTNS sendiri (tidak merge):
-   Maka tiap baris ambil dari CTNS-nya masing-masing
+7. pl_nw:
+   - Ekstrak dari kolom "N.W(KGS)".
+   - Ambil angka numeriknya saja.
 
 8. pl_gw:
-   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_gw adalah kolom 'G.W(KGS)' yang merupakan kolom ke-10 dari kiri.
    - Ekstrak dari kolom "G.W(KGS)".
    - Ambil angka numeriknya saja.
 
@@ -129,7 +87,7 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
      - Nilai tersebut hanya boleh di-assign ke line item pertama dalam grup tersebut.
      - Semua baris setelahnya dalam merge grup yang sama → diisi 0.
      - Contoh:
-       ________________________________
+       ____________
        | Description  |   Measurement |
        --------------------------------
        | Row 1        |               |
@@ -166,22 +124,13 @@ BILL OF LADING (BL)
 
 CERTIFICATE OF ORIGIN (COO)
 
-1. coo_seq
-   - Ambil dari kolom "Item number".
-   - Nilai numeric.
-   - Item number tercetak jelas seperti:
-     - 1
-     - 2
-     - 3
-     - ...
-
-2. coo_mark_number
+1. coo_mark_number
    - Ekstrak dari field "7. Marks and numbers on packages".
    - Pada format vendor ini bisa berupa "N/M".
    - Ambil persis seperti tertulis.
    - Jika tidak tersedia, isi dengan "null".
 
-3. coo_description:
+2. coo_description:
    - Ekstrak dari field "8. Number and kind of packages; and description of goods".
    - Abaikan frasa jumlah kemasan di awal/akhir seperti:
      "FIVE HUNDRED AND SIXTY (560) CTNS".
@@ -190,24 +139,24 @@ CERTIFICATE OF ORIGIN (COO)
    - Contoh hasil:
      "BICYCLE PARTS FORK SUSPENSION GSFXCM32DZ000036;SUNTOUR;SF23-XCM32DS;MATTEBLACKBLADE/CP STANCHION/MATTEBLACK CROWN;-;DISC PM160 QR/NUT,ALLOY BLADE/ALLOY CROWN, 27.5 THREADLESS 28(1-1/8") 255.00MMSTEEL STEERER 100.00 COIL W/ PRELOADADJUSTER - - W/ SEPARATEDECAL"
    - Jika tidak tersedia, isi dengan "null".
-4. coo_hs_code:
+3. coo_hs_code:
    - Ekstrak dari field "9. HS Code of the goods".
    - Contoh: "8714.91".
    - Jika tidak tersedia, isi dengan "null".
 
-5. coo_package_count:
+4. coo_package_count:
    - Ekstrak angka numerik dari frasa jumlah kemasan dalam field 8.
    - Contoh:
      dari "FIVE HUNDRED AND SIXTY (560) CTNS"
      maka coo_package_count = 560
    - Jika tidak tersedia, isi dengan "null".
 
-6. coo_package_unit:
+5. coo_package_unit:
    - Ekstrak unit kemasan dari frasa jumlah kemasan dalam field 8.
    - Contoh: "CTNS".
    - Jika tidak tersedia, isi dengan "null".
 
-7. coo_gw & coo_quantity:
+6. coo_gw & coo_quantity:
    - Untuk vendor ini, cek isi field "12. Quantity (Gross weight or other measurement)..."
    - Jika field 12 berisi quantity + unit, misalnya "3355SETS", maka:
      - coo_quantity = 3355
@@ -215,20 +164,20 @@ CERTIFICATE OF ORIGIN (COO)
    - Hanya isi coo_gw jika ada nilai berat eksplisit dengan unit seperti KG/KGS.
    - Jika tidak tersedia, isi dengan "null".
 
-8. coo_unit:
+7. coo_unit:
    - Ekstrak unit yang melekat pada field 12.
    - Jika field 12 berisi quantity, ambil unit quantity tersebut.
    - Contoh: "SETS".
    - Jika field 12 berisi berat, ambil unit beratnya, misalnya "KG".
    - Jika tidak tersedia, isi dengan "null".
 
-9. coo_criteria:
+8. coo_criteria:
    - Ekstrak dari field "10. Origin Conferring Criterion".
    - Jika ada tanda kutip, hilangkan tanda kutipnya.
    - Contoh: "RVC".
    - Jika tidak tersedia, isi dengan "null".
    
-10. coo_customer_po_no:
+9. coo_customer_po_no:
    - Isi hanya jika ada nomor PO yang tertulis eksplisit.
    - Jika tidak ada referensi PO yang jelas, isi null.
    - Jika tidak tersedia, isi dengan "null". 
