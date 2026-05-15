@@ -276,37 +276,64 @@ Struktur umum BL LIOW KO:
 - BL hanya menuliskan item yang benar-benar tercetak di area goods description.
 - Jangan backfill item BL dari invoice/packing list jika item tersebut tidak tertulis di BL.
 
-1. bl_description
-   - Ambil hanya description barang per line pada BL.
-   - Ambil teks sebelum "HS NUMBER" atau "HS CODE".
-   - Jika ada koma atau spasi berlebih sebelum HS NUMBER / HS CODE, buang separator penutupnya.
-   - Jika description terpotong ke lebih dari satu line, gabungkan menjadi satu string utuh.
-   - Contoh:
-     - "FRAME PART IS16PFP08 HS NUMBER : 8714.91" -> bl_description = "FRAME PART IS16PFP08"
-     - "FRAME PART IS24PFP07 HS NUMBER : 8714.91" -> bl_description = "FRAME PART IS24PFP07"
-   - Jangan ambil:
-     - "BICYCLE PARTS"
-     - STC 47 CARTON(s)
-     - gross weight / measurement
-     - container number
-     - freight terms
-     - consignee / notify party / vessel info
+1. bl_description dan bl_hs_code:
+   - Field bl_description dan bl_hs_code merupakan SATU PAKET dan WAJIB selalu terisi (TIDAK BOLEH NULL).
+   - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL) saja, TIDAK BOLEH mengambil dari dokumen lain.
 
-2. bl_hs_code
-   - Ambil nilai setelah "HS NUMBER" atau "HS CODE".
-   - Hapus titik dua / spasi berlebih.
-   - Contoh:
-     - "HS NUMBER : 8714.91" -> bl_hs_code = "8714.91"
+   =========================
+   LOGIC MAPPING (BERURUTAN)
+   =========================
+   - STEP 1 - Mapping berdasarkan inv_description:
+     - Cari apakah inv_description MATCH dengan tipe barang dan kode barang pada deskripsi item pada BL.
+     - Jika ditemukan:
+       - bl_description = description item pada BL yang sesuai
+       - bl_hs_code = HS CODE yang terkait dengan bl_description tersebut
+  - STEP 2 - Jika STEP 2 tidak ditemukan:
+     - Karena bl_description dan bl_hs_code TIDAK BOLEH NULL,
+   - Maka PILIH SECARA ACAK (RANDOM) satu pasangan data dari item BL:
+     - bl_description = salah satu description item dari BL
+     - bl_hs_code = HS CODE yang sesuai dengan item tersebut
+   - JANGAN MEMBUAT BL DESCRIPTION DAN BL HS CODE BARU YANG TIDAK ADA DI DOKUMEN BILL OF LADING (BL). GUNAKAN RANDOM ITEM YANG ADA SAJA DI DOKUMEN BILL OF LADING (BL).
+     Contoh:
+     DATA DI BL SEPERTI INI:
+     FRAME PART IS16PFP08 HS NUMBER : 8714.91
+     FRAME PART IS16PFP07 HS NUMBER : 8714.91
+     FRAME PART IS24PFP10 HS NUMBER : 8714.91
+     FRAME PART IS24PFP07 HS NUMBER : 8714.91
+     FRAME PART IS23PFK50 HS NUMBER : 8714.91
+     
+     JANGAN BUAT DATA BARU SEPERTI = FRAME PART IS23PFK03, YANG TIDAK ADA PADA DOKUMEN BILL OF LADING SEBAGAI HASIL EKSTRAKSI DAN MAPPING.
+   =========================
+   ATURAN PENTING
+   =========================
+   - Tidak boleh mengosongkan field (NO NULL VALUE).
+   - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
+   - Sumber data hanya boleh dari dokumen Bill of Lading (BL) saja.
+   - Tidak boleh membuat atau mengarang data di luar dari dokumen Bill of Lading (BL).
+   - Tidak boleh mengambil HS CODE dari item yang berbeda dengan bl_description.
+   - Prioritas mapping:
+       1. inv_description (utama)
+       3. random BL item (last resort, WAJIB jika tidak match)
 
-Catatan tambahan BL:
-- Pada vendor LIOW KO, BL menuliskan deskripsi barang lebih ringkas dibanding invoice/packing list.
-- Karena itu, saat matching BL ke invoice/PL:
-  - jangan memaksa full part number harus sama persis
-  - cocokkan berdasarkan family/stem description yang sama
-- Contoh:
-  - BL "FRAME PART IS16PFP08" dapat cocok ke item invoice/PL dengan family IS16PFP08
-  - BL "FRAME PART IS23PFK50" dapat cocok ke item invoice/PL dengan family IS23PFK50
+   =========================
+   CONTOH
+   =========================
+   BL:
+     - FRAME PART IS16PFP08 HS NUMBER : 8714.91
+     - FRAME PART IS24PFP10 HS NUMBER : 8714.91
 
+   Case 1:
+     inv_description = FRAME PART;LIOW KO;IS16PFP08;AL6061
+     → MATCH STEP 1
+     → bl_description = FRAME PART IS16PFP08 
+     → bl_hs_code = 8714.91
+
+   Case 2:
+     inv_description = FRAME PART; LIOW KO;IS23PFK03-A;SABK;ALLOY 6061
+     inv_description tidak ada di BL
+     → STEP 3 (RANDOM)
+     → bl_description = FRAME PART IS24PFP10 (contoh random)
+     → bl_hs_code = 8714.91
 
 CERTIFICATE OF ORIGIN (COO)
 
