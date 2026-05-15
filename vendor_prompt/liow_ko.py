@@ -216,7 +216,11 @@ Struktur umum packing list LIOW KO:
      - "9.38" -> 9.38
      - "118.30" -> 118.3
      - "49.55" -> 49.55
-
+   - Jika ada kasus seperti ini:
+   PART NUMBER      | DESCRIPTION                                |  QUANTITY |  CTN   | TOTAL CTN | NW    | GW    |
+   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
+   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40|
+   maka pl_nw = 25.63
 8. pl_gw
    - Ambil dari kolom "GW".
    - Nilai harus numeric saja.
@@ -224,6 +228,11 @@ Struktur umum packing list LIOW KO:
      - "10.58" -> 10.58
      - "120.30" -> 120.3
      - "51.15" -> 51.15
+     - Jika ada kasus seperti ini:
+   PART NUMBER      | DESCRIPTION                                |  QUANTITY |  CTN   | TOTAL CTN | NW    | GW    |
+   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
+   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40 |
+   maka pl_gw = 26.23
 
 9. pl_volume
    - HANYA boleh diambil dari packing list.
