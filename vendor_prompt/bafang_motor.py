@@ -114,17 +114,6 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
      - Row 4 → pl_package_count = 6 (baris pertama grup merge, dapat nilai)
      - Row 5 → pl_package_count = 0 (continuation)
      - Row 6 → pl_package_count = 0 (continuation)
-   
-   Jika tiap baris punya nilai CTNS sendiri (tidak merge):
-     ___________________________________________
-     | Row | Quantity | PLTS | CTNS | G.W      |
-     |-----|----------|------|------|----------|
-     | 1   |   140    |      |  140 |          |
-     | 2   |    60    |      |   60 |  620.00  |
-     | 3   |    48    |      |   48 |          |
-     ___________________________________________
-     Maka tiap baris ambil dari CTNS-nya masing-masing:
-     - Row 1 → 140, Row 2 → 60, Row 3 → 48
 
 8. pl_gw:
    VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_gw adalah kolom 'G.W(KGS)' yang merupakan kolom ke-10 dari kiri.
