@@ -332,7 +332,7 @@ ATURAN KHUSUS VENDOR shimano_inc:
         kunshan_landon_header_rule = """
 
 ATURAN KHUSUS VENDOR kunshan_landon:
-CLUE PENTING: pl_total_quantity dan inv_total_quantity diekstrak HANYA dari kolom 'QTY'. Value-nya biasanya terletak pada bagian paling bawah. DILARANG KERAS mengambil nilai header dari kolom lain!
+CLUE PENTING: pl_total_quantity dan inv_total_quantity diekstrak HANYA dari kolom 'QTY' yang berada di paling bawah. DILARANG KERAS mengambil nilai header dari kolom lain! PASTIKAN ANDA TIDAK MENGAMBIL NILAI DARI KOLOM PACKING!
 """
 
     template = """
