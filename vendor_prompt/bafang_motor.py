@@ -85,19 +85,46 @@ Dari kiri ke kanan, berikut urutan kolom dokumen PL Bafang Motor:
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package count adalah kolom 'CTNS' yang merupakan kolom ke-9 dari kiri.
-   Tepatnya, kolom ini berada di sebelah kanan kolom 'PLTS' dan/atau di sebelah kiri kolom 'G.W(KGS)'.
+   VISUAL CLUE: Kolom 'CTNS' adalah kolom ke-9 dari kiri. 
+   Tepatnya di sebelah kanan kolom 'PLTS' dan di sebelah kiri kolom 'G.W(KGS)'.
+
+   ATURAN POSISI KOLOM:
+   - Ambil HANYA dari kolom 'CTNS'.
+   - DILARANG KERAS mengambil dari kolom 'PLTS' (kolom ke-8) atau 'Quantity' (kolom ke-7).
+   - Contoh trap yang HARUS dihindari:
+     Jika dalam satu baris terlihat:
+       Quantity=60 | PLTS=2 | CTNS=6
+     Maka pl_package_count = 6, BUKAN 2, BUKAN 60.
+
+   ATURAN MERGE CELL (sama persis dengan aturan pl_volume):
+   Jika satu nilai CTNS dipakai bersama oleh beberapa baris (merge cell, 
+   biasanya sejajar dengan merge cell G.W/N.W/MEASUREMENT):
+   - Nilai tersebut HANYA di-assign ke baris PERTAMA dalam grup merge.
+   - Semua baris setelahnya dalam grup merge yang sama → diisi 0.
    
-   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'!
-
-   VISUAL CLUE PENTING:
-   Pada beberapa beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PLTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PLTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
-   PERHATIKAN JUGA DENGAN SANGAT SEKSAMA pada kolom 'CTNS' terutama pada merged cells agar TIDAK ADA NILAI YANG TERLEWAT untuk line item yang berada di bawah merged cell tersebut.
-
-   7. pl_nw:
-   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_nw adalah kolom 'N.W(KGS)' yang merupakan kolom ke-11 dari kiri.
-   - Ekstrak dari kolom "N.W(KGS)".
-   - Ambil angka numeriknya saja.
+   Contoh:
+     ___________________________________________
+     | Row | Quantity | PLTS | CTNS | G.W      |
+     |-----|----------|------|------|----------|
+     | 4   |   140    |      |      |          |
+     | 5   |    60    |   2  |   6  |   42.65  |
+     | 6   |    48    |      |      |          |
+     ___________________________________________
+     Maka:
+     - Row 4 → pl_package_count = 6 (baris pertama grup merge, dapat nilai)
+     - Row 5 → pl_package_count = 0 (continuation)
+     - Row 6 → pl_package_count = 0 (continuation)
+   
+   Jika tiap baris punya nilai CTNS sendiri (tidak merge):
+     ___________________________________________
+     | Row | Quantity | PLTS | CTNS | G.W      |
+     |-----|----------|------|------|----------|
+     | 1   |   140    |      |  140 |          |
+     | 2   |    60    |      |   60 |  620.00  |
+     | 3   |    48    |      |   48 |          |
+     ___________________________________________
+     Maka tiap baris ambil dari CTNS-nya masing-masing:
+     - Row 1 → 140, Row 2 → 60, Row 3 → 48
 
 8. pl_gw:
    VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_gw adalah kolom 'G.W(KGS)' yang merupakan kolom ke-10 dari kiri.
