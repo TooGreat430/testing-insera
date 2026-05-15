@@ -9955,6 +9955,44 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
             row["_gemini_total_issue_negative"] = True
             row["_gemini_total_issue_negative_reason"] = visual_reason
 
+            # NEW: tampung pesan saran dari Gemini ke field internal.
+            # NILAI ROW TIDAK DIUBAH. Pesan ini di-append ke
+            # match_description nanti oleh
+            # _apply_gemini_recheck_suggestions_to_match_description(),
+            # tepat sebelum _finalize_match_fields().
+            #
+            # ALSO NEW: stash structured meta paralel sama panjang
+            # dengan messages, supaya consensus filter bisa decide
+            # mana yang dibuang tanpa parse string.
+            suggestion_msgs = _build_gemini_recheck_suggestion_messages(
+                row, repaired
+            )
+            suggestion_meta = _build_gemini_recheck_suggestion_meta(
+                row, repaired
+            )
+            if suggestion_msgs:
+                existing_msgs = row.get("_gemini_recheck_suggestion_messages")
+                if not isinstance(existing_msgs, list):
+                    existing_msgs = []
+                existing_meta = row.get("_gemini_recheck_suggestion_meta")
+                if not isinstance(existing_meta, list):
+                    existing_meta = []
+
+                existing_msg_set = set(existing_msgs)
+                for msg, meta in zip(suggestion_msgs, suggestion_meta):
+                    if msg in existing_msg_set:
+                        continue
+                    existing_msgs.append(msg)
+                    existing_meta.append(meta)
+                    existing_msg_set.add(msg)
+
+                row["_gemini_recheck_suggestion_messages"] = existing_msgs
+                row["_gemini_recheck_suggestion_meta"] = existing_meta
+                # Flag ini dipakai oleh consensus filter:
+                # kalau semua suggestion ke-filter, demote
+                # _gemini_total_issue_negative jadi False.
+                row["_gemini_recheck_had_suggestions"] = True
+
         elif gemini_label == "positive":
             row["_gemini_total_issue_negative"] = False
             row["_gemini_total_issue_negative_reason"] = visual_reason
@@ -9966,6 +10004,365 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
         # Jangan set _gemini_recheck_changed_fields.
 
     return rows
+
+
+# =========================================================================
+# NEW: Gemini recheck suggestion -> match_description
+#
+# Tujuan blok di bawah:
+# - Gemini recheck JANGAN replace nilai numeric apa pun di row.
+# - Tapi kalau Gemini bilang "negative" dengan changed_fields,
+#   informasi itu tetap berguna untuk reviewer.
+# - Jadi kita tampung pesan saran-nya, lalu append ke match_description
+#   di akhir flow (lewat _apply_gemini_recheck_suggestions_to_match_description).
+# =========================================================================
+
+def _format_recheck_value_for_message(value) -> str:
+    """Format nilai untuk ditampilkan di pesan match_description."""
+    if value is None:
+        return "null"
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:g}"
+
+    if isinstance(value, int):
+        return str(value)
+
+    s = str(value).strip()
+    if not s or s.lower() == "null":
+        return "null"
+    return s
+
+
+def _build_gemini_recheck_suggestion_messages(row: dict, repaired: dict) -> list:
+    """
+    Bangun list pesan saran dari hasil Gemini recheck.
+
+    Untuk tiap field di `changed_fields` yang valid (ada di DETAIL_RECHECK_FIELDS
+    dan benar-benar berbeda dengan nilai sekarang di row), buat satu pesan
+    berformat:
+
+        "Gemini recheck: {field} should be {new_value} (extracted: {old_value})"
+
+    NILAI ROW TIDAK DIUBAH. Pesan ini hanya untuk dicatat di match_description.
+    Return list of strings (kosong kalau tidak ada saran valid).
+    """
+    if not isinstance(row, dict) or not isinstance(repaired, dict):
+        return []
+
+    changed_fields = repaired.get("changed_fields")
+    if not isinstance(changed_fields, list) or not changed_fields:
+        return []
+
+    messages = []
+    for field in changed_fields:
+        if not isinstance(field, str):
+            continue
+        if field not in DETAIL_RECHECK_FIELDS:
+            continue
+        if field not in repaired:
+            continue
+
+        old_value = row.get(field)
+        new_value = repaired.get(field)
+
+        # Kalau secara semantik sama (Gemini "ganti" tapi nilainya sama),
+        # tidak perlu pesan saran.
+        if _same_recheck_value(old_value, new_value, field):
+            continue
+
+        msg = (
+            f"Gemini recheck: {field} should be "
+            f"{_format_recheck_value_for_message(new_value)} "
+            f"(extracted: {_format_recheck_value_for_message(old_value)})"
+        )
+        if msg not in messages:
+            messages.append(msg)
+
+    return messages
+
+
+def _build_gemini_recheck_suggestion_meta(row: dict, repaired: dict) -> list:
+    """
+    Parallel helper untuk _build_gemini_recheck_suggestion_messages().
+
+    Iterasi-nya HARUS identik supaya output kedua function ini selalu
+    lockstep: index i dari messages bersesuaian dengan index i dari meta.
+
+    Output: list of dict, tiap dict {"field", "old_value", "new_value"}.
+    Dipakai oleh _filter_gemini_recheck_suggestions_by_consensus().
+    """
+    if not isinstance(row, dict) or not isinstance(repaired, dict):
+        return []
+
+    changed_fields = repaired.get("changed_fields")
+    if not isinstance(changed_fields, list) or not changed_fields:
+        return []
+
+    metas = []
+    seen_fields = set()
+    for field in changed_fields:
+        if not isinstance(field, str):
+            continue
+        if field not in DETAIL_RECHECK_FIELDS:
+            continue
+        if field not in repaired:
+            continue
+        if field in seen_fields:
+            continue
+
+        old_value = row.get(field)
+        new_value = repaired.get(field)
+
+        if _same_recheck_value(old_value, new_value, field):
+            continue
+
+        seen_fields.add(field)
+        metas.append({
+            "field": field,
+            "old_value": old_value,
+            "new_value": new_value,
+        })
+
+    return metas
+
+
+def _apply_gemini_recheck_suggestions_to_match_description(rows: list):
+    """
+    Append pesan saran Gemini recheck (yang tadi di-stash oleh
+    _apply_detail_line_recheck_label_only) ke match_description tiap row.
+
+    Pakai _append_err() yang sudah ada supaya:
+    - match_score otomatis di-set "false" untuk row yang dapat saran
+    - dedupe terhadap pesan lain yang sudah ada di match_description
+    - format pemisah konsisten ("; ")
+
+    HARUS dipanggil SEBELUM _finalize_match_fields(), karena
+    _finalize_match_fields() akan nuke match_description menjadi "null"
+    untuk row dengan match_score == "true".
+    """
+    if not isinstance(rows, list):
+        return
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        msgs = row.get("_gemini_recheck_suggestion_messages")
+        if not isinstance(msgs, list) or not msgs:
+            continue
+
+        for msg in msgs:
+            if not isinstance(msg, str):
+                continue
+            msg = msg.strip()
+            if not msg:
+                continue
+            _append_err(row, msg)
+
+
+# =========================================================================
+# NEW (Option D — Combine):
+# Consensus-based filter untuk Gemini recheck suggestions.
+#
+# Tujuan:
+# - Kalau 2+ row dengan signature mirip (invoice + qty + description) dapat
+#   saran Gemini untuk field yang sama tapi dengan nilai berbeda, gunakan
+#   nilai field di row TETANGGA YANG TIDAK DI-FLAG sebagai consensus.
+# - Saran yang match consensus dipertahankan. Saran yang menyimpang
+#   dari consensus dibuang.
+# - Kalau tidak ada consensus (tidak ada tetangga unflagged, atau nilainya
+#   campur tanpa majority), buang semua saran konflik (konservatif).
+# - Row yang semua saran-nya ke-filter dan SEBELUMNYA punya saran,
+#   _gemini_total_issue_negative-nya didemote ke False, supaya
+#   _finalize_audit_confidence_labels nanti set confidence_label-nya
+#   kembali ke "positive".
+# =========================================================================
+
+def _gemini_recheck_norm_str(v) -> str:
+    """
+    Normalisasi value untuk equality compare.
+    - None / "null" / "nan" -> ""
+    - integer / float bulat -> string integer (1.0 -> "1")
+    - float pecahan -> str(value)
+    - string angka -> hasil float-normalize (jadi "1.0" juga -> "1")
+    - selain itu -> lowercase strip
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v).lower()
+    if isinstance(v, (int, float)):
+        if isinstance(v, float) and v.is_integer():
+            return str(int(v))
+        return str(v)
+    s = str(v).strip()
+    if s.lower() in ("null", "none", "nan", ""):
+        return ""
+    try:
+        f = float(s)
+        if f.is_integer():
+            return str(int(f))
+        return str(f)
+    except (ValueError, TypeError):
+        return s.lower()
+
+
+def _gemini_recheck_row_signature(row: dict):
+    """
+    Bangun signature tuple untuk identifikasi "row mirip" dalam invoice
+    yang sama: (invoice_no, inv_quantity, inv_description prefix).
+
+    Return None kalau row tidak punya invoice_no (cross-invoice consensus
+    tidak meaningful).
+    """
+    if not isinstance(row, dict):
+        return None
+    inv_no = _gemini_recheck_norm_str(row.get("inv_invoice_no"))
+    if not inv_no:
+        return None
+    qty = _gemini_recheck_norm_str(row.get("inv_quantity"))
+    desc = _gemini_recheck_norm_str(row.get("inv_description"))[:60]
+    return (inv_no, qty, desc)
+
+
+def _filter_gemini_recheck_suggestions_by_consensus(rows: list):
+    """
+    Filter conflicting Gemini recheck suggestions menggunakan consensus
+    dari row tetangga di signature yang sama.
+
+    Lihat docstring header section di atas untuk algoritma lengkapnya.
+
+    Harus dipanggil SEBELUM:
+    - _apply_gemini_recheck_suggestions_to_match_description (supaya pesan
+      false-negative tidak ke-append ke match_description)
+    - _finalize_audit_confidence_labels (supaya confidence_label false-negative
+      ter-demote dari "negative" balik ke "positive")
+    """
+    if not isinstance(rows, list) or len(rows) < 2:
+        return
+
+    # Step 1: group rows by signature
+    by_sig = {}
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        sig = _gemini_recheck_row_signature(row)
+        if sig is None:
+            continue
+        by_sig.setdefault(sig, []).append((idx, row))
+
+    # Step 2: untuk tiap group, deteksi konflik per-field dan tandai drop
+    for sig, group in by_sig.items():
+        if len(group) < 2:
+            continue
+
+        # Kumpulkan suggestion per field di group ini.
+        # field -> list of (group_index, row, meta_dict)
+        field_to_items = {}
+        for gi, (row_idx, row) in enumerate(group):
+            metas = row.get("_gemini_recheck_suggestion_meta")
+            if not isinstance(metas, list):
+                continue
+            for meta in metas:
+                if not isinstance(meta, dict):
+                    continue
+                field = meta.get("field")
+                if not field:
+                    continue
+                field_to_items.setdefault(field, []).append((gi, row, meta))
+
+        for field, items in field_to_items.items():
+            if len(items) < 2:
+                # Cuma 1 row di group ini yang punya saran untuk field
+                # ini -> tidak ada konflik, biarkan.
+                continue
+
+            # Cek apakah suggested values berbeda satu sama lain.
+            distinct_vals = {
+                _gemini_recheck_norm_str(meta.get("new_value"))
+                for (_, _, meta) in items
+            }
+            if len(distinct_vals) <= 1:
+                # Semua saran agree -> tidak ada konflik.
+                continue
+
+            # KONFLIK. Bangun consensus dari row tetangga yang TIDAK ada
+            # di flagged set untuk field ini.
+            flagged_gis = {gi for (gi, _, _) in items}
+
+            consensus_pool = []
+            for gi, (row_idx, row) in enumerate(group):
+                if gi in flagged_gis:
+                    continue
+                val = row.get(field)
+                norm = _gemini_recheck_norm_str(val)
+                if not norm:
+                    continue
+                consensus_pool.append(norm)
+
+            consensus_value = None
+            if consensus_pool:
+                # Mode pakai count dictionary manual biar tidak import Counter
+                tally = {}
+                for v in consensus_pool:
+                    tally[v] = tally.get(v, 0) + 1
+                top_value, top_count = max(tally.items(), key=lambda kv: kv[1])
+                if top_count * 2 > len(consensus_pool):
+                    consensus_value = top_value
+
+            # Mark drop/keep
+            for (gi, row, meta) in items:
+                if consensus_value is not None:
+                    sug_norm = _gemini_recheck_norm_str(meta.get("new_value"))
+                    if sug_norm == consensus_value:
+                        # Match consensus -> keep
+                        continue
+                # Default: drop (kalau tidak ada consensus, atau kalau
+                # sugestion ini menyimpang dari consensus)
+                meta["_dropped_by_consensus_filter"] = True
+
+    # Step 3: terapkan keputusan drop ke list messages/meta per-row,
+    # dan demote _gemini_total_issue_negative kalau perlu.
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        metas = row.get("_gemini_recheck_suggestion_meta")
+        msgs = row.get("_gemini_recheck_suggestion_messages")
+        had_suggestions = row.get("_gemini_recheck_had_suggestions") is True
+
+        if not isinstance(metas, list) or not metas:
+            continue
+        if not isinstance(msgs, list):
+            msgs = []
+
+        new_metas = []
+        new_msgs = []
+        for i, meta in enumerate(metas):
+            if not isinstance(meta, dict):
+                continue
+            if meta.get("_dropped_by_consensus_filter"):
+                # Skip, sekaligus dibersihkan marker-nya (tidak perlu lagi).
+                continue
+            meta.pop("_dropped_by_consensus_filter", None)
+            new_metas.append(meta)
+            if i < len(msgs):
+                new_msgs.append(msgs[i])
+
+        row["_gemini_recheck_suggestion_meta"] = new_metas
+        row["_gemini_recheck_suggestion_messages"] = new_msgs
+
+        # Kalau row ini SEBELUMNYA punya saran tapi sekarang ke-filter
+        # semua, demote negative flag. _finalize_audit_confidence_labels
+        # nanti akan menyetel confidence_label kembali ke "positive".
+        if had_suggestions and not new_metas:
+            row["_gemini_total_issue_negative"] = False
+            row.pop("_gemini_total_issue_negative_reason", None)
 
 
 def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
@@ -11142,6 +11539,20 @@ def run_ocr(
         all_rows = _inherit_inv_seq_for_secondary_po_split_rows(all_rows)
         all_rows = _compact_inv_seq_gaps_after_po_split(all_rows)
 
+        # NEW (Option D): consensus filter — buang Gemini suggestion
+        # yang konflik antar-row mirip dan tidak match consensus
+        # tetangga unflagged. Ini juga demote _gemini_total_issue_negative
+        # untuk row yang semua saran-nya ke-filter, sehingga
+        # _finalize_audit_confidence_labels nanti mengembalikan
+        # confidence_label-nya ke "positive".
+        _filter_gemini_recheck_suggestions_by_consensus(all_rows)
+
+        # NEW: append saran Gemini recheck ke match_description.
+        # Harus dipanggil SEBELUM _finalize_match_fields karena
+        # _finalize_match_fields akan null-kan match_description
+        # untuk row dengan match_score=="true".
+        _apply_gemini_recheck_suggestions_to_match_description(all_rows)
+
         _finalize_match_fields(all_rows)
 
         drop_detail_columns = [
@@ -11216,6 +11627,13 @@ def run_ocr(
                 row.pop("_total_issue_debug", None)
                 row.pop("_gemini_total_issue_negative_reason", None)
                 row.pop("_gemini_declared_changed_fields", None)
+
+                # NEW: bersihkan field internal pesan saran Gemini recheck.
+                row.pop("_gemini_recheck_suggestion_messages", None)
+                # NEW (Option D): bersihkan field internal yang dipakai
+                # consensus filter.
+                row.pop("_gemini_recheck_suggestion_meta", None)
+                row.pop("_gemini_recheck_had_suggestions", None)
 
                 row.pop("idx", None)
                 row.pop("inv_page_no", None)
