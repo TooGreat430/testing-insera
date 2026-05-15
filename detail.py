@@ -582,6 +582,8 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
       80KG G.W. → coo_gw_unit = KG
       160KG G.W. → coo_gw_unit = KG
       240KG G.W. → coo_gw_unit = KG 
+    
+    - Jika coo_gw_unit tidak tersedia maka isi dengan "null"
 
 18. Semua field [tipe_dokumen]_total (contoh: inv_total_quantity, pl_total_gw, inv_total_amount) itu boleh "null" JIKA PADA DOKUMEN EMANG TIDAK DISERTAKAN VALUE DARI TOTAL TERSEBUT
 

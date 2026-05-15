@@ -9611,8 +9611,12 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_bl_seller_name_similarity(rows)
 
     _postprocess_bl_coo_zero_to_null(rows)
-    _postprocess_coo_numeric_fields_from_pl(rows)
 
+    if normalize_vendor_id(vendor_id) != "liow_ko":
+        _postprocess_coo_numeric_fields_from_pl(rows)
+    else:
+        print("[COO_NUMERIC_FROM_PL][PRECHECK] skipped for vendor liow_ko")
+        
     _validate_invoice_rows(rows)
     _validate_packing_rows(rows)
     _validate_invoice_vs_packing_extra(rows)
@@ -11542,7 +11546,11 @@ def run_ocr(
             columns=["pl_volume_unit"],
         )
 
-        _postprocess_coo_numeric_fields_from_pl(all_rows)
+        if normalize_vendor_id(vendor_id) != "liow_ko":
+            _postprocess_coo_numeric_fields_from_pl(all_rows)
+        else:
+            print("[COO_NUMERIC_FROM_PL] skipped for vendor liow_ko")
+
         all_rows = _validate_po(all_rows)
 
         _validate_invoice_rows(all_rows)

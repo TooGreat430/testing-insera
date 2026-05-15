@@ -328,6 +328,7 @@ Catatan penting COO vendor LIOW KO:
 1. coo_seq
    - Ambil dari kolom "Item number".
    - Nilai numeric.
+   - coo_seq pasti tersedia atau tidak boleh "null", kecuali tidak termapping dengan line item invoice.
    - Item number tercetak jelas seperti:
      - 1
      - 2
@@ -379,6 +380,7 @@ Catatan penting COO vendor LIOW KO:
 
 6. coo_unit
    - Ambil unit quantity yang menempel pada coo_quantity.
+   - coo_unit pasti tersedia atau tidak boleh "null", kecuali tidak termapping dengan line item invoice.
    - Gunakan unit sebagaimana tercetak pada COO.
    - Contoh:
      - "64SETS" -> "SETS"
