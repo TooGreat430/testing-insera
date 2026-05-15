@@ -324,13 +324,6 @@ ATURAN KHUSUS VENDOR shimano_inc:
 - bl_mark_number untuk shimano_inc akan diekstrak pada content/detail pass dari dokumen Bill of Lading.
 """
 
-    kunshan_landon_header_rule = ""
-    if normalize_vendor_id(vendor_id) == "kunshan_landon":
-        kunshan_landon_header_rule = """
-
-CLUE PENTING: pl_total_quantity dan inv_total_quantity diekstrak HANYA dari kolom 'QTY'. Value-nya biasanya terletak pada bagian paling bawah. DILARANG KERAS mengambil nilai header dari kolom lain!
-"""
-
     template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
@@ -420,7 +413,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
-{shimano_header_rule}{kunshan_landon_header_rule}
+{shimano_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -664,7 +657,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      → isi dengan "null".
   - Jangan mengarang atau menebak.
 """
-    return template.replace("{shimano_header_rule}", shimano_header_rule).replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
+    return template.replace("{shimano_header_rule}", shimano_header_rule)
 
 def build_detail_prompt_from_index(
     total_row: int,
