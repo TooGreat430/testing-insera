@@ -141,6 +141,17 @@ Struktur umum packing list LIOW KO:
 - Angka setelah carton mark/range adalah jumlah karton / total ctn item-level.
 - Packing list bisa menggabungkan beberapa invoice row menjadi satu row berdasarkan part number.
   Karena itu, jangan memecah row packing list menjadi beberapa customer PO hanya karena invoice memiliki beberapa PO.
+- Semua field pl_* harus diekstrak dari dokumen PACKING LIST saja.
+- Dilarang menggunakan data Invoice untuk mengisi field PL.
+
+- Jika satu item PACKING LIST yang sama ter-match ke beberapa row invoice/customer PO, jangan menduplikasi nilai numerik PL.
+  Nilai numerik PL hanya muncul pada kemunculan pertama.
+  Kemunculan berikutnya untuk item PL yang sama isi 0 pada field numerik aditif PL:
+  pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
+- Jangan split nilai PL mengikuti quantity invoice.
+  Contoh: 
+  jika PL mencetak 469 SET, lalu invoice memecah menjadi 64, 225, 180, 
+  maka output PL harus 469, 0, 0; bukan 64, 225, 180 atau 469, 469, 469.
 
 1. pl_customer_po_no
    - HANYA isi jika packing list secara eksplisit mencantumkan customer PO untuk item tersebut.
@@ -189,6 +200,7 @@ Struktur umum packing list LIOW KO:
      - "469 SET" -> 469
      - "1,060 PCS" -> 1060
      - "81 PRS" -> 81
+   - Jangan memakai inv_quantity untuk mengisi pl_quantity.
 
 5. pl_package_unit
    - pl_package_unit hanya boleh diambil dari bukti package, bukan dari quantity unit.
@@ -208,6 +220,7 @@ Struktur umum packing list LIOW KO:
      - "LK-19-27 9" -> pl_package_count = 9
    - Jangan ambil carton mark/range seperti LK-2-8 sebagai package_count.
    - Jangan ambil total shipment seperti "47 CTN" sebagai package_count item-level.
+   - Jangan memakai data invoice untuk mengisi pl_package_count.
 
 7. pl_nw
    - Ambil dari kolom "NW".
@@ -221,6 +234,9 @@ Struktur umum packing list LIOW KO:
    FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
    FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40|
    maka pl_nw = 25.63
+   - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_nw.
+
+
 8. pl_gw
    - Ambil dari kolom "GW".
    - Nilai harus numeric saja.
@@ -233,6 +249,8 @@ Struktur umum packing list LIOW KO:
    FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
    FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40 |
    maka pl_gw = 26.23
+   - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_gw.
+
 
 9. pl_volume
    - HANYA boleh diambil dari packing list.
