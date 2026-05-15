@@ -76,9 +76,11 @@ DETAIL_RECHECK_NUM_FIELDS = {
 def _is_shimano_inc_vendor(vendor_id: str = "default") -> bool:
     return normalize_vendor_id(vendor_id) == "shimano_inc"
 
-def _is_jht_carbon_vendor(vendor_id: str = "default") -> bool:
-    return normalize_vendor_id(vendor_id) == "jht_carbon"
-
+def _is_recheck_label_only_vendor(vendor_id: str = "default") -> bool:
+    return normalize_vendor_id(vendor_id) in {
+        "jht_carbon",
+        "bafang_motor",
+    }
 
 def _get_detail_csv_field_order(vendor_id: str = "default"):
     if _is_shimano_inc_vendor(vendor_id):
@@ -11333,17 +11335,12 @@ def run_ocr(
         )
 
         if repaired_rows:
-            if _is_jht_carbon_vendor(vendor_id):
-                # Khusus JHT Carbon:
-                # negative / positive tetap jalan,
-                # tapi value hasil extraction tidak boleh di-replace.
+            if _is_recheck_label_only_vendor(vendor_id):
                 all_rows = _apply_detail_line_recheck_label_only(
                     all_rows,
                     repaired_rows
                 )
             else:
-                # Vendor selain JHT Carbon:
-                # aktifkan kembali replace value dari Gemini recheck.
                 all_rows = _apply_detail_line_recheck_result(
                     all_rows,
                     repaired_rows
@@ -11571,7 +11568,7 @@ def run_ocr(
         # untuk row yang semua saran-nya ke-filter, sehingga
         # _finalize_audit_confidence_labels nanti mengembalikan
         # confidence_label-nya ke "positive".
-        if _is_jht_carbon_vendor(vendor_id):
+        if _is_recheck_label_only_vendor(vendor_id):
             _filter_gemini_recheck_suggestions_by_consensus(all_rows)
             _apply_gemini_recheck_suggestions_to_match_description(all_rows)
 
