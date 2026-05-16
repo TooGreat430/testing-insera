@@ -3978,7 +3978,7 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
         config_kwargs.update(extra_config)
 
     response = genai_client.models.generate_content(
-        model="gemini-3.1-flash-lite",
+        model="gemini-2.5-flash",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(**config_kwargs),
     )
