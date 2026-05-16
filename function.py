@@ -1881,18 +1881,39 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
         last_known_key = ""
         
         src_doc = fitz.open(local_pdf_path)
+        vendor_clean = normalize_vendor_id(vendor_id)
+
         for idx in range(total_pages):
             page_text = src_doc[idx].get_text() or ""
-            matches = re.findall(r"\bINS-[A-Z0-9]+\b", page_text, re.IGNORECASE)
+            page_key = None
             
-            if matches:
-                page_key = _preprocess_invoice_no_for_grouping(matches[0])
-            else:
-                page_key = last_known_key # Continuation sheet auto inherit dari page sebelumnya
+            # 1. STRATEGI UTAMA: Pencarian Berbasis Label Anchor (Rekomendasi Anda)
+            if vendor_clean == "shimano_inc":
+                # Mencari teks setelah "Invoice No :"
+                match_label = re.search(r"Invoice\s*No\s*:\s*([A-Z0-9\-]+)", page_text, re.IGNORECASE)
+                if match_label:
+                    page_key = _preprocess_invoice_no_for_grouping(match_label.group(1))
+                    
+            elif vendor_clean == "shimano_singapore":
+                # Mencari teks setelah "INVOICE :"
+                match_label = re.search(r"INVOICE\s*:\s*([A-Z0-9\-]+)", page_text, re.IGNORECASE)
+                if match_label:
+                    page_key = _preprocess_invoice_no_for_grouping(match_label.group(1))
+
+            # 2. STRATEGI CADANGAN: Jika label terpotong, gunakan Token Regex yang Fleksibel (Mendukung INS- dan INSPM-)
+            if not page_key:
+                matches = re.findall(r"\bINS[A-Z]*-[A-Z0-9]+\b", page_text, re.IGNORECASE)
+                if matches:
+                    page_key = _preprocess_invoice_no_for_grouping(matches[0])
+
+            # 3. STRATEGI WARISAN: Jika halaman lanjutan (continuation sheet) kosong, inherit dari halaman sebelumnya
+            if not page_key:
+                page_key = last_known_key
                 
             if page_key:
                 last_known_key = page_key
             page_invoice_keys.append(page_key)
+                
         src_doc.close()
 
         # Backward fill jika halaman awal terlewat header kecilnya
