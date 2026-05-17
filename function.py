@@ -1684,16 +1684,16 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
         ])
 
     explicit_patterns.extend([
+        # DIRECT CATCH: Abaikan kata "INVOICE" atau format tabel PDF yang rusak.
+        # Langsung tangkap string yang berawalan INS- atau INSPM-
+        r"(?is)\b(INS(?:PM)?[-][A-Z0-9]+)\b",
+        
         r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bNO\.?\s*INVOICE\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINVOICE NUMBER\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINV\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINVOICE\s*NO\.?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})", 
         r"\bDOC\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
-        
-        # [NEW] Support untuk invoice Shimano (INS/INSPM) yang terpisah baris baru / tanpa titik dua
-        r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]?\s*[\n\r]*\s*(INS(?:PM)?[-A-Z0-9]+)",
-        r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]?\s*[\n\r]*\s*([A-Z]{2,}[-][A-Z0-9]+)"
     ])
 
     for pattern in explicit_patterns:
@@ -1717,7 +1717,10 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
         for j in range(idx, min(idx + 20, len(lines))):
             candidate_text = lines[j]
             
-            # [NEW] Cegah format Date atau TAX ID ditangkap sebagai nomor invoice sebelum string di-strip
+            # Cegah blok alamat panjang masuk ke proses evaluasi nomor invoice
+            if len(candidate_text) > 30 or candidate_text.count(" ") >= 4: 
+                continue
+                
             if re.search(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", candidate_text):
                 continue
             if "TAX ID" in candidate_text.upper() or "LC" in candidate_text.upper():
