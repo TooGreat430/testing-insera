@@ -1849,41 +1849,17 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
     if total_pages == 0:
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
 
-    # ENHANCEMENT CONSENSUS GATE: Hitung invoice unik via text-layer PyMuPDF untuk verifikasi awal
-    fast_keys = set()
-    try:
-        doc_fitz = fitz.open(local_pdf_path)
-        for p_idx in range(total_pages):
-            txt = doc_fitz[p_idx].get_text() or ""
-            key = _extract_invoice_no_from_text_for_split(txt, doc_type=doc_type)
-            if key:
-                fast_keys.add(key)
-        doc_fitz.close()
-    except Exception as e_fast:
-        print(f"[GROUPING][FAST_SCAN_WARN] Gagal melakukan pra-pemindaian teks: {e_fast}")
-
-    # =========================
-    # PRIMARY: WHOLE-DOCUMENT TRACE
-    # =========================
-    try:
-        traced_refs = _trace_invoice_refs_from_document(local_pdf_path, doc_type, vendor_id=vendor_id)
-        traced_keys = {r["invoice_no"] for r in traced_refs or []}
-
-        # Jika Gemini melewatkan nomor invoice yang jelas terdeteksi di text-layer, paksa lewat jalur fallback
-        if traced_refs and len(fast_keys) > len(traced_keys):
-            print(f"[GROUPING][CONSENSUS_BYPASS][{doc_type.upper()}] Gemini mendeteksi {len(traced_keys)} invoice, tetapi visual text layer menemukan {len(fast_keys)} invoice. Memaksa pemisahan via page-fallback.")
-            traced_refs = []
-
-        if traced_refs:
-            traced_entries = _build_split_entries_from_trace(local_pdf_path=local_pdf_path, doc_type=doc_type, traced_refs=traced_refs)
-            if traced_entries:
-                print(f"[GROUPING][PRIMARY_TRACE_OK][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}'")
-                return traced_entries
-
-        print(f"[GROUPING][PRIMARY_TRACE_EMPTY][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}' -> fallback page splitter")
-
-    except Exception as e:
-        print(f"[GROUPING][PRIMARY_TRACE_FAIL][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}' error='{e}' -> fallback page splitter")
+    # =========================================================================
+    # SOLUSI FINAL: BYPASS WHOLE-DOCUMENT TRACE GEMINI
+    # Langsung gunakan pemisah halaman ke halaman (page fallback).
+    # Karena menyuruh LLM membaca 38 halaman sekaligus memicu masalah
+    # "Lost in the Middle" (LLM skip invoice di akhir atau di tengah).
+    # Dengan ini, Python akan scan tiap halaman 1 per 1 secara pasti.
+    # =========================================================================
+    
+    print(f"[GROUPING][{doc_type.upper()}] Memaksa pemisahan via deterministik page-by-page (Bypass Halusinasi)")
+    
+    return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type, vendor_id=vendor_id)
 
     # =========================
     # FALLBACK: PAGE-BY-PAGE
