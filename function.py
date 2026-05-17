@@ -1614,8 +1614,11 @@ OUTPUT HANYA JSON:
     - NO.: <nomor>
     - NO <nomor>
     - NUMBER: <nomor>
+    - Invoice No: <nomor>
+    - INVOICE: <nomor>
     - Invoice number boleh numeric-only atau alfanumerik.
     - Jangan ambil PO number, TAX ID number, page number, quantity, carton, NW, GW, atau CBM.
+    - Tolong Jangan sampai ada invoice no yang missing
 
     OUTPUT HANYA JSON:
     {{
