@@ -1661,69 +1661,46 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
     def _cleanup_candidate(raw_value: str) -> str:
         if raw_value is None:
             return ""
-
         raw = str(raw_value).strip()
         if not raw:
             return ""
-
-        raw = re.split(
-            r"\bDATE\b|\bPAGE\b|\bPORT\b|\bVESSEL\b|\bVOYAGE\b",
-            raw,
-            maxsplit=1,
-            flags=re.IGNORECASE
-        )[0].strip()
-
+        raw = re.split(r"\bDATE\b|\bPAGE\b|\bPORT\b|\bVESSEL\b|\bVOYAGE\b", raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         if not raw:
             return ""
-
         first_non_empty = ""
         for part in raw.splitlines():
             part = part.strip()
             if part:
                 first_non_empty = part
                 break
-
         raw = (first_non_empty or raw).strip()
-        if not raw:
-            return ""
-
         return _preprocess_invoice_no_for_grouping(raw)
 
-    # pola berbasis label eksplisit
     explicit_patterns = []
-
     if doc_type == "packing":
         explicit_patterns.extend([
             r"(?m)^\s*NO\.?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})\s*$",
             r"(?is)\bPACKING LIST\b.{0,120}?\bNO\.?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         ])
 
+    # Mengcover pola "INVOICE SQF0071" (space separation tanpa punctuation)
     explicit_patterns.extend([
         r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bNO\.?\s*INVOICE\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINVOICE NUMBER\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINV\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
+        r"\bINVOICE\s*NO\.?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})", 
+        r"\bDOC\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
     ])
 
     for pattern in explicit_patterns:
         for m in re.finditer(pattern, joined, flags=re.IGNORECASE):
             raw_match = m.group(1)
             normalized = _cleanup_candidate(raw_match)
-
-            print(
-                f"[GROUPING][FAST_PATH][{doc_type.upper()}] "
-                f"raw_match='{raw_match}' normalized='{normalized}'"
-            )
-
             if normalized and _looks_like_invoice_no_candidate(normalized):
                 return normalized
 
-    # pola layout: cari line yang mengandung keyword INVOICE lalu lihat 20 line berikutnya
-    invoice_hint_patterns = [
-        r"\bINVOICE\b",
-        r"\bINVOICE\s*NO\b",
-        r"\bINVOICE\s*NUMBER\b",
-    ]
+    invoice_hint_patterns = [r"\bINVOICE\b", r"\bINVOICE\s*NO\b", r"\bINVOICE\s*NUMBER\b"]
 
     for idx, line in enumerate(lines[:120]):
         hit = False
@@ -1731,11 +1708,11 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
             if re.search(pat, line, flags=re.IGNORECASE):
                 hit = True
                 break
-
         if not hit:
             continue
 
-        for j in range(idx + 1, min(idx + 20, len(lines))):
+        # FIXED: Mulai scan dari indeks 'idx' (bukan idx + 1) agar line yang sama ikut diperiksa
+        for j in range(idx, min(idx + 20, len(lines))):
             candidate = _cleanup_candidate(lines[j])
             if candidate and _looks_like_invoice_no_candidate(candidate):
                 return candidate
@@ -1743,11 +1720,7 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
     if doc_type == "coo":
         return ""
 
-    # fallback regex generik
-    generic_candidates = re.findall(
-        r"\b[A-Z0-9][A-Z0-9\-/]{3,}\b",
-        joined.upper()
-    )
+    generic_candidates = re.findall(r"\b[A-Z0-9][A-Z0-9\-/]{3,}\b", joined.upper())
     for cand in generic_candidates:
         normalized = _cleanup_candidate(cand)
         if normalized and _looks_like_invoice_no_candidate(normalized):
@@ -1836,7 +1809,8 @@ def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index
             file_uri,
             prompt,
             expect_array=False,
-            retries=3
+            retries=3,
+            vendor_id=vendor_id
         )
 
         raw_invoice_no = "null"
@@ -1855,55 +1829,53 @@ def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index
             pass
 
 
-def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
-    """
-    Primary:
-      1) Gemini whole-document trace -> invoice_no + page_range
-    Fallback:
-      2) page-by-page extraction lama
-    """
+def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str = "default"):
     reader = PdfReader(local_pdf_path)
     total_pages = len(reader.pages)
 
     if total_pages == 0:
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
 
+    # ENHANCEMENT CONSENSUS GATE: Hitung invoice unik via text-layer PyMuPDF untuk verifikasi awal
+    fast_keys = set()
+    try:
+        doc_fitz = fitz.open(local_pdf_path)
+        for p_idx in range(total_pages):
+            txt = doc_fitz[p_idx].get_text() or ""
+            key = _extract_invoice_no_from_text_for_split(txt, doc_type=doc_type)
+            if key:
+                fast_keys.add(key)
+        doc_fitz.close()
+    except Exception as e_fast:
+        print(f"[GROUPING][FAST_SCAN_WARN] Gagal melakukan pra-pemindaian teks: {e_fast}")
+
     # =========================
     # PRIMARY: WHOLE-DOCUMENT TRACE
     # =========================
     try:
-        traced_refs = _trace_invoice_refs_from_document(local_pdf_path, doc_type)
+        traced_refs = _trace_invoice_refs_from_document(local_pdf_path, doc_type, vendor_id=vendor_id)
+        traced_keys = {r["invoice_no"] for r in traced_refs or []}
+
+        # Jika Gemini melewatkan nomor invoice yang jelas terdeteksi di text-layer, paksa lewat jalur fallback
+        if traced_refs and len(fast_keys) > len(traced_keys):
+            print(f"[GROUPING][CONSENSUS_BYPASS][{doc_type.upper()}] Gemini mendeteksi {len(traced_keys)} invoice, tetapi visual text layer menemukan {len(fast_keys)} invoice. Memaksa pemisahan via page-fallback.")
+            traced_refs = []
 
         if traced_refs:
-            traced_entries = _build_split_entries_from_trace(
-                local_pdf_path=local_pdf_path,
-                doc_type=doc_type,
-                traced_refs=traced_refs,
-            )
-
+            traced_entries = _build_split_entries_from_trace(local_pdf_path=local_pdf_path, doc_type=doc_type, traced_refs=traced_refs)
             if traced_entries:
-                print(
-                    f"[GROUPING][PRIMARY_TRACE_OK][{doc_type.upper()}] "
-                    f"file='{os.path.basename(local_pdf_path)}'"
-                )
+                print(f"[GROUPING][PRIMARY_TRACE_OK][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}'")
                 return traced_entries
 
-        print(
-            f"[GROUPING][PRIMARY_TRACE_EMPTY][{doc_type.upper()}] "
-            f"file='{os.path.basename(local_pdf_path)}' -> fallback page splitter"
-        )
+        print(f"[GROUPING][PRIMARY_TRACE_EMPTY][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}' -> fallback page splitter")
 
     except Exception as e:
-        print(
-            f"[GROUPING][PRIMARY_TRACE_FAIL][{doc_type.upper()}] "
-            f"file='{os.path.basename(local_pdf_path)}' error='{e}' "
-            f"-> fallback page splitter"
-        )
+        print(f"[GROUPING][PRIMARY_TRACE_FAIL][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}' error='{e}' -> fallback page splitter")
 
     # =========================
     # FALLBACK: PAGE-BY-PAGE
     # =========================
-    return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type)
+    return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type, vendor_id=vendor_id)
 
 
 def _explode_doc_paths_for_grouping(paths: list, doc_type: str, vendor_id: str = "default"):
@@ -2181,17 +2153,10 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
 
     if doc_type == "coo":
-        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(
-            local_pdf_path,
-            doc_type="coo",
-            vendor_id=vendor_id
-        )
+        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, doc_type="coo", vendor_id=vendor_id)
         only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
-
         if not only_key:
-            raise Exception(
-                f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(local_pdf_path)}"
-            )
+            raise Exception(f"Gagal membaca coo_invoice_no untuk file COO: {os.path.basename(local_pdf_path)}")
 
         return [{
             "group_key": only_key,
@@ -2206,10 +2171,13 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
     page_invoice_keys = []
     last_known_key = ""
 
-    for idx, page in enumerate(reader.pages):
+    # FIXED: Gunakan PyMuPDF (fitz) untuk menjamin akurasi ekstraksi text-layer asli PDF
+    src_doc = fitz.open(local_pdf_path)
+
+    for idx in range(total_pages):
         page_text = ""
         try:
-            page_text = page.extract_text() or ""
+            page_text = src_doc[idx].get_text() or ""
         except Exception:
             page_text = ""
 
@@ -2226,6 +2194,7 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
             page_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
 
         if not page_key:
+            src_doc.close()
             raise Exception(
                 f"Gagal menentukan invoice number untuk file '{os.path.basename(local_pdf_path)}' "
                 f"({doc_type}) halaman ke-{idx + 1} saat split multi-section."
@@ -2234,14 +2203,14 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
         last_known_key = page_key
         page_invoice_keys.append(page_key)
 
+    src_doc.close() # Pastikan handler fitz ditutup bersih dari memori
+
     segments = []
     seg_start = 0
-
     for idx in range(1, total_pages):
         if page_invoice_keys[idx] != page_invoice_keys[idx - 1]:
             segments.append((page_invoice_keys[seg_start], seg_start, idx - 1))
             seg_start = idx
-
     segments.append((page_invoice_keys[seg_start], seg_start, total_pages - 1))
 
     if len(segments) == 1:
@@ -2262,10 +2231,7 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
         for i in range(start_page, end_page + 1):
             writer.add_page(reader.pages[i])
 
-        out = tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=f"_{doc_type}_{_safe_output_suffix(group_key)}_{start_page+1}_{end_page+1}.pdf"
-        )
+        out = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{doc_type}_{_safe_output_suffix(group_key)}_{start_page+1}_{end_page+1}.pdf")
         out.close()
 
         with open(out.name, "wb") as f:
@@ -9560,34 +9526,44 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list, vendor_id: 
                         sequence["_batch_row_index"] = batch_idx + 1
 
         max_attempts = max(1, int(DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES))
-        last_repaired_batch = None
+        repaired_batch = None
 
         for attempt in range(1, max_attempts + 1):
             zero_retry_count = max(0, attempt - 1)
-
-            repaired_batch = _call_gemini_json_uri(
-                file_uri,
-                _build_detail_line_recheck_prompt(
-                    batch,
-                    strict_total_retry=(strict_total_retry or attempt > 1),
-                    vendor_id=vendor_id,
-                    vendor_prompt_text=vendor_prompt_text,
-                    zero_negative_retry_count=zero_retry_count,
-                ),
-                expect_array=True,
-                retries=3,
-                vendor_id=vendor_id # Pass vendor_id down!
-            )
-            ... # Lanjutan handler recheck bawaan Anda tetap utuh di bawahnya
-            return repaired_batch
+            try:
+                repaired_batch = _call_gemini_json_uri(
+                    file_uri,
+                    _build_detail_line_recheck_prompt(
+                        batch,
+                        strict_total_retry=(strict_total_retry or attempt > 1),
+                        vendor_id=vendor_id,
+                        vendor_prompt_text=vendor_prompt_text,
+                        zero_negative_retry_count=zero_retry_count,
+                    ),
+                    expect_array=True,
+                    retries=3,
+                    vendor_id=vendor_id
+                )
+                
+                _validate_total_issue_gemini_batch_result(batch, repaired_batch, label=label)
+                return repaired_batch
+            except Exception as e:
+                print(f"[RECHECK_BATCH_RETRY_WARN] Attempt {attempt} gagal: {e}")
+                if attempt == max_attempts:
+                    if DETAIL_TOTAL_RECHECK_REPAIR_AFTER_RETRY and repaired_batch is not None:
+                        return _repair_zero_negative_total_issue_response(batch, repaired_batch, label=label)
+                    raise e
+        return []
 
     batches = _build_detail_recheck_batches(rows_payload, normal_batch_size=batch_size)
     for batch_index, batch in enumerate(batches, start=1):
         label = f"batch={batch_index}"
         try:
-            repaired_batch = _call_recheck_batch(batch, label=label, strict_total_retry=False)
-            repaired_rows.extend(repaired_batch)
-        except Exception:
+            r_batch = _call_recheck_batch(batch, label=label, strict_total_retry=False)
+            if r_batch:
+                repaired_rows.extend(r_batch)
+        except Exception as e:
+            print(f"[RECHECK_BATCH_FAIL] {label} gagal sepenuhnya: {e}")
             continue
     return repaired_rows
 
