@@ -1770,7 +1770,7 @@ def _create_single_page_pdf(src_pdf_path: str, page_index: int) -> str:
     return out.name
 
 
-def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index: int, doc_type: str, vendor_id: str = "default"):
+def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index: int, doc_type: str) -> str:
     """
     Slow path fallback: jika regex text gagal, pakai Gemini untuk 1 halaman saja.
     Berlaku untuk invoice / packing / coo.
@@ -1838,8 +1838,7 @@ def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index
             file_uri,
             prompt,
             expect_array=False,
-            retries=3,
-            vendor_id=vendor_id,
+            retries=3
         )
 
         raw_invoice_no = "null"
@@ -1858,13 +1857,12 @@ def _extract_invoice_no_from_single_page_for_split(src_pdf_path: str, page_index
             pass
 
 
-def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str = "default"):
+def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str):
     """
     Primary:
-      1) Deterministic Regex Scan untuk Shimano (Invoice & Packing List)
-      2) Gemini whole-document trace -> invoice_no + page_range (Vendor lain)
+      1) Gemini whole-document trace -> invoice_no + page_range
     Fallback:
-      3) page-by-page extraction lama
+      2) page-by-page extraction lama
     """
     reader = PdfReader(local_pdf_path)
     total_pages = len(reader.pages)
@@ -1872,109 +1870,11 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
     if total_pages == 0:
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
 
-    # =========================================================
-    # FAST PATH DETERMINISTIC REGEX UNTUK SHIMANO
-    # =========================================================
-    if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"} and doc_type in {"invoice", "packing"}:
-        print(f"[GROUPING][SHIMANO_REGEX][{doc_type.upper()}] Scan token terstruktur file='{os.path.basename(local_pdf_path)}'")
-        page_invoice_keys = []
-        last_known_key = ""
-        
-        src_doc = fitz.open(local_pdf_path)
-        vendor_clean = normalize_vendor_id(vendor_id)
-
-        for idx in range(total_pages):
-            page_text = src_doc[idx].get_text() or ""
-            page_key = None
-            
-            # 1. STRATEGI UTAMA: Pencarian Berbasis Label Anchor (Rekomendasi Anda)
-            if vendor_clean == "shimano_inc":
-                # Mencari teks setelah "Invoice No :"
-                match_label = re.search(r"Invoice\s*No\s*:\s*([A-Z0-9\-]+)", page_text, re.IGNORECASE)
-                if match_label:
-                    page_key = _preprocess_invoice_no_for_grouping(match_label.group(1))
-                    
-            elif vendor_clean == "shimano_singapore":
-                # Mencari teks setelah "INVOICE :"
-                match_label = re.search(r"INVOICE\s*:\s*([A-Z0-9\-]+)", page_text, re.IGNORECASE)
-                if match_label:
-                    page_key = _preprocess_invoice_no_for_grouping(match_label.group(1))
-
-            # 2. STRATEGI CADANGAN: Jika label terpotong, gunakan Token Regex yang Fleksibel (Mendukung INS- dan INSPM-)
-            if not page_key:
-                matches = re.findall(r"\bINS[A-Z]*-[A-Z0-9]+\b", page_text, re.IGNORECASE)
-                if matches:
-                    page_key = _preprocess_invoice_no_for_grouping(matches[0])
-
-            # 3. STRATEGI WARISAN: Jika halaman lanjutan (continuation sheet) kosong, inherit dari halaman sebelumnya
-            if not page_key:
-                page_key = last_known_key
-                
-            if page_key:
-                last_known_key = page_key
-            page_invoice_keys.append(page_key)
-                
-        src_doc.close()
-
-        # Backward fill jika halaman awal terlewat header kecilnya
-        first_found = next((k for k in page_invoice_keys if k), "")
-        if first_found:
-            page_invoice_keys = [k if k else first_found for k in page_invoice_keys]
-
-        if any(page_invoice_keys):
-            segments = []
-            seg_start = 0
-            for idx in range(1, total_pages):
-                if page_invoice_keys[idx] != page_invoice_keys[idx - 1]:
-                    segments.append((page_invoice_keys[seg_start], seg_start, idx - 1))
-                    seg_start = idx
-            segments.append((page_invoice_keys[seg_start], seg_start, total_pages - 1))
-
-            results = []
-            for group_key, start_page, end_page in segments:
-                if start_page == 0 and end_page == total_pages - 1:
-                    results.append({
-                        "group_key": group_key,
-                        "invoice_no": group_key,
-                        "path": local_pdf_path,
-                        "source_file": os.path.basename(local_pdf_path),
-                        "page_range": f"1-{total_pages}",
-                        "is_temp": False,
-                        "doc_type": doc_type,
-                    })
-                    continue
-
-                writer = PdfWriter()
-                for i in range(start_page, end_page + 1):
-                    writer.add_page(reader.pages[i])
-
-                out = tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=f"_{doc_type}_{_safe_output_suffix(group_key)}_{start_page+1}_{end_page+1}.pdf"
-                )
-                out.close()
-                with open(out.name, "wb") as f:
-                    writer.write(f)
-
-                results.append({
-                    "group_key": group_key,
-                    "invoice_no": group_key,
-                    "path": out.name,
-                    "source_file": os.path.basename(local_pdf_path),
-                    "page_range": f"{start_page + 1}-{end_page + 1}",
-                    "is_temp": True,
-                    "doc_type": doc_type,
-                })
-            print(f"[GROUPING][SHIMANO_REGEX_SUCCESS][{doc_type.upper()}] Berhasil split {len(results)} segmen secara deterministik.")
-            return results
-        print(f"[GROUPING][SHIMANO_REGEX_EMPTY][{doc_type.upper()}] Pola INS- tidak terdeteksi di text layer, fallback ke LLM.")
-
-    # =========================================================
-    # PRIMARY: WHOLE-DOCUMENT TRACE (ALL VENDORS FALLBACK / NON-SHIMANO)
-    # =========================================================
+    # =========================
+    # PRIMARY: WHOLE-DOCUMENT TRACE
+    # =========================
     try:
-        # Menggunakan penelusuran dokumen utuh via LLM dengan model routing yang benar
-        traced_refs = _trace_invoice_refs_from_document(local_pdf_path, doc_type, vendor_id=vendor_id)
+        traced_refs = _trace_invoice_refs_from_document(local_pdf_path, doc_type)
 
         if traced_refs:
             traced_entries = _build_split_entries_from_trace(
@@ -2002,17 +1902,17 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
             f"-> fallback page splitter"
         )
 
-    # =========================================================
-    # FALLBACK: PAGE-BY-PAGE SPLITTER
-    # =========================================================
-    return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type, vendor_id=vendor_id)
+    # =========================
+    # FALLBACK: PAGE-BY-PAGE
+    # =========================
+    return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type)
 
 
-def _explode_doc_paths_for_grouping(paths: list, doc_type: str, vendor_id: str = "default"):
+def _explode_doc_paths_for_grouping(paths: list, doc_type: str):
     expanded = []
 
     for path in paths or []:
-        split_entries = _split_pdf_by_invoice_no(path, doc_type=doc_type, vendor_id=vendor_id)
+        split_entries = _split_pdf_by_invoice_no(path, doc_type=doc_type)
         expanded.extend(split_entries)
 
     return expanded
@@ -2043,7 +1943,22 @@ def _log_extracted_invoice_refs(doc_type: str, entries: list):
         f"count={len(extracted)} values={extracted}"
     )
 
-def _trace_invoice_refs_from_document(local_pdf_path: str, doc_type: str, vendor_id: str = "default"):
+def _trace_invoice_refs_from_document(local_pdf_path: str, doc_type: str):
+    """
+    Primary splitter:
+    Minta Gemini membaca seluruh dokumen dan mengembalikan semua invoice reference
+    beserta page range-nya.
+
+    Output normalized:
+    [
+      {
+        "invoice_no": "ABC123",
+        "start_page": 1,
+        "end_page": 2,
+      },
+      ...
+    ]
+    """
     target_key = _get_grouping_target_key(doc_type)
     doc_label = _get_doc_label_for_prompt(doc_type)
 
@@ -2108,8 +2023,7 @@ VALIDATION RULE:
         file_uri,
         prompt,
         expect_array=False,
-        retries=3,
-        vendor_id=vendor_id  # Ditambahkan agar model routing aktif di sini
+        retries=3
     )
 
     refs = []
@@ -2278,7 +2192,7 @@ def _build_split_entries_from_trace(local_pdf_path: str, doc_type: str, traced_r
     return results
 
 
-def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, vendor_id: str = "default"):
+def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str):
     """
     Fallback lama: page-by-page extraction.
     Dipakai hanya jika whole-document trace gagal / tidak valid.
@@ -2292,11 +2206,12 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
     # KHUSUS COO:
     # jika trace whole-document gagal, fallback HARUS treat 1 file COO
     # sebagai 1 invoice reference document-level.
+    # Jangan split page-by-page, karena continuation sheet biasanya tidak
+    # menampilkan ulang invoice_no dan body table bisa memunculkan SKU.
     if doc_type == "coo":
         doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(
             local_pdf_path,
-            doc_type="coo",
-            vendor_id=vendor_id # SINKRONISASI: Tambahkan vendor_id di sini
+            doc_type="coo"
         )
         only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
 
@@ -2335,15 +2250,13 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
         page_key = _extract_invoice_no_from_text_for_split(page_text, doc_type=doc_type)
 
         if not page_key:
-            # SINKRONISASI: Tambahkan vendor_id=vendor_id di bawah ini
-            page_key = _extract_invoice_no_from_single_page_for_split(local_pdf_path, idx, doc_type=doc_type, vendor_id=vendor_id)
+            page_key = _extract_invoice_no_from_single_page_for_split(local_pdf_path, idx, doc_type=doc_type)
 
         if not page_key and last_known_key:
             page_key = last_known_key
 
         if not page_key and idx == 0:
-            # SINKRONISASI: Tambahkan vendor_id=vendor_id di bawah ini
-            doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, doc_type, vendor_id=vendor_id)
+            doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, doc_type)
             page_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
 
         if not page_key:
@@ -2425,7 +2338,7 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
     return results
 
 
-def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str, vendor_id: str = "default"):
+def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str):
     """
     Grouping key extractor.
     Berlaku untuk invoice / packing / coo.
@@ -2445,10 +2358,9 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str, vendor_
     # PASS 1
     header_obj = _call_gemini_json_uri(
         file_uri,
-        build_header_prompt(vendor_id=vendor_id),
+        build_header_prompt(),
         expect_array=False,
-        retries=3,
-        vendor_id=vendor_id  # Mengarahkan model ke gemini-2.5-flash jika Shimano
+        retries=3
     )
 
     if not isinstance(header_obj, dict):
@@ -2485,8 +2397,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str, vendor_
             file_uri,
             focused_prompt,
             expect_array=False,
-            retries=3,
-            vendor_id=vendor_id  # Mengarahkan model ke gemini-2.5-flash jika Shimano
+            retries=3
         )
 
         if not isinstance(focused_obj, dict):
@@ -2529,7 +2440,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str, vendor_
 
     return group_key, raw_invoice_no, header_obj
 
-def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vendor_id: str = "default"):
+def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None):
     coo_paths = coo_paths or []
 
     groups = {}
@@ -2553,7 +2464,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vend
     # =========================
     # INVOICE = MASTER
     # =========================
-    invoice_entries = _explode_doc_paths_for_grouping(invoice_paths, doc_type="invoice", vendor_id=vendor_id)
+    invoice_entries = _explode_doc_paths_for_grouping(invoice_paths, doc_type="invoice")
     _log_extracted_invoice_refs("invoice", invoice_entries)
 
     for entry in invoice_entries:
@@ -2585,7 +2496,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vend
     # =========================
     # PACKING -> juga bisa multi invoice dalam 1 file
     # =========================
-    packing_entries = _explode_doc_paths_for_grouping(packing_paths, doc_type="packing", vendor_id=vendor_id)
+    packing_entries = _explode_doc_paths_for_grouping(packing_paths, doc_type="packing")
     _log_extracted_invoice_refs("packing", packing_entries)
 
     for entry in packing_entries:
@@ -2629,7 +2540,7 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vend
     # =========================
     # COO -> juga bisa multi invoice dalam 1 file
     # =========================
-    coo_entries = _explode_doc_paths_for_grouping(coo_paths, doc_type="coo", vendor_id=vendor_id)
+    coo_entries = _explode_doc_paths_for_grouping(coo_paths, doc_type="coo")
     _log_extracted_invoice_refs("coo", coo_entries)
 
     for entry in coo_entries:
@@ -4050,7 +3961,7 @@ def _force_min_one_negative_for_total_issue(rows: list, total_attribution=None):
     return rows
 
 
-def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, return_response: bool = False, vendor_id: str = "default"):
+def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, return_response: bool = False):
     parts = [
         types.Part.from_uri(file_uri=file_uri, mime_type="application/pdf"),
         types.Part.from_text(text=prompt),
@@ -4066,11 +3977,8 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
     if extra_config:
         config_kwargs.update(extra_config)
 
-    # Model Routing Rule
-    model_name = "gemini-2.5-flash" if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"} else "gemini-3.1-flash-lite"
-
     response = genai_client.models.generate_content(
-        model=model_name,
+        model="gemini-3.1-flash-lite",
         contents=[types.Content(role="user", parts=parts)],
         config=types.GenerateContentConfig(**config_kwargs),
     )
@@ -4104,7 +4012,7 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
 
     return text_output
 
-def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3, vendor_id: str = "default"):
+def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False, retries: int = 3):
     """
     Wrapper: panggil Gemini -> pastikan output JSON valid.
     - expect_array=True  : kalau Gemini balikin dict, kita bungkus jadi [dict]
@@ -4113,7 +4021,7 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
     p = prompt
     for attempt in range(1, retries + 1):
         try:
-            raw = _call_gemini_uri(file_uri, p, vendor_id=vendor_id)
+            raw = _call_gemini_uri(file_uri, p)
             obj = _parse_json_safe(raw)
 
             if expect_array and isinstance(obj, dict):
@@ -4322,7 +4230,6 @@ def _run_one_detail_batch(
     first_index: int,
     last_index: int,
     expected_indices: list,
-    vendor_id: str = "default",  # Ditambahkan di sini
 ):
     base_contract = _build_detail_batch_contract_prompt(
         batch_no=batch_no,
@@ -4336,8 +4243,7 @@ def _run_one_detail_batch(
 
     for attempt in range(1, 5):
         try:
-            # SINKRONISASI: Teruskan parameter vendor_id ke call_gemini
-            raw = _call_gemini_uri(file_uri_detail, p, vendor_id=vendor_id)
+            raw = _call_gemini_uri(file_uri_detail, p)
             json_array = _parse_json_safe(raw)
 
             json_array = _validate_detail_batch_rows(
@@ -7428,7 +7334,6 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             invoice_paths=invoice_paths,
             packing_paths=packing_paths,
             coo_paths=coo_paths,
-            vendor_id=forced_vendor_id, # Pastikan forced_vendor_id diteruskan di sini
         )
 
         total_groups = len(groups)
@@ -9573,7 +9478,6 @@ def _call_gemini_shimano_hs_code_once(file_uri: str, rows: list, vendor_id: str 
             _build_shimano_hs_code_prompt(batch),
             expect_array=True,
             retries=3,
-            vendor_id=vendor_id, # FIX: Wajib diteruskan agar menggunakan gemini-2.5-flash
         )
 
         if not isinstance(result, list):
@@ -9881,7 +9785,6 @@ def _call_gemini_detail_line_recheck_once(
                 ),
                 expect_array=True,
                 retries=3,
-                vendor_id=vendor_id,  # SINKRONISASI: Tambahkan ini agar Shimano recheck tetap pakai 2.5-flash
             )
 
             if not isinstance(repaired_batch, list):
@@ -11008,7 +10911,6 @@ def _run_detail_jobs(
     total_row: int,
     label: str,
     batch_size: int = None,
-    vendor_id: str = "default",  # 1. Terima parameter di sini
 ):
     """
     Wrapper batch detail supaya PASS 1 dan PASS 2 bisa reuse logic yang sama.
@@ -11044,7 +10946,6 @@ def _run_detail_jobs(
                 job["first_index"],
                 job["last_index"],
                 job["expected_indices"],
-                vendor_id,  # 2. Teruskan parameter ke thread worker target
             )
             for job in jobs
         ]
@@ -11287,8 +11188,7 @@ def run_ocr(
             file_uri_detail,
             build_header_prompt(vendor_id=vendor_id),
             expect_array=False,
-            retries=3,
-            vendor_id=vendor_id # Ditambahkan
+            retries=3
         )
         if not isinstance(base_header_obj, dict):
             base_header_obj = {}
@@ -11302,8 +11202,7 @@ def run_ocr(
                 optional_detail_input_uri,
                 build_header_prompt(vendor_id=vendor_id),
                 expect_array=False,
-                retries=3,
-                vendor_id=vendor_id # Ditambahkan
+                retries=3
             )
             if not isinstance(optional_header_obj, dict):
                 optional_header_obj = {}
@@ -11323,13 +11222,7 @@ def run_ocr(
         )
 
         # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(
-            file_uri_detail, 
-            ROW_SYSTEM_INSTRUCTION, 
-            expect_array=False, 
-            retries=3, 
-            vendor_id=vendor_id # Ditambahkan
-        )
+        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -11341,8 +11234,7 @@ def run_ocr(
             file_uri_detail,
             build_index_prompt(total_row),
             expect_array=True,
-            retries=3,
-            vendor_id=vendor_id # Ditambahkan
+            retries=3
         )
 
         # fallback safety
@@ -11421,7 +11313,6 @@ def run_ocr(
             total_row=total_row,
             label="BASE_INV_PL",
             batch_size=detail_batch_size,
-            vendor_id=vendor_id,  # SINKRONISASI
         )
 
         # =========================================
@@ -11507,8 +11398,7 @@ def run_ocr(
                     total_row=total_row,
                     label="OPTIONAL_FULL_DOCS",
                     batch_size=detail_batch_size,
-                    vendor_id=vendor_id,  # SINKRONISASI
-                )
+)
 
                 all_rows = _merge_optional_rows_into_base_rows(
                     base_rows=all_rows,
@@ -11538,8 +11428,7 @@ def run_ocr(
                 file_uri_container_bl,
                 CONTAINER_SYSTEM_INSTRUCTION,
                 expect_array=True,
-                retries=3,
-                vendor_id=vendor_id  # Menjaga konsistensi di seluruh sub-proses
+                retries=3
             )
 
             _postprocess_unit_fields(container_data)
