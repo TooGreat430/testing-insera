@@ -1683,7 +1683,6 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
             r"(?is)\bPACKING LIST\b.{0,120}?\bNO\.?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         ])
 
-    # Mengcover pola "INVOICE SQF0071" (space separation tanpa punctuation)
     explicit_patterns.extend([
         r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bNO\.?\s*INVOICE\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
@@ -1691,6 +1690,10 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
         r"\bINV\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINVOICE\s*NO\.?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})", 
         r"\bDOC\.?\s*NO\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
+        
+        # [NEW] Support untuk invoice Shimano (INS/INSPM) yang terpisah baris baru / tanpa titik dua
+        r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]?\s*[\n\r]*\s*(INS(?:PM)?[-A-Z0-9]+)",
+        r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]?\s*[\n\r]*\s*([A-Z]{2,}[-][A-Z0-9]+)"
     ])
 
     for pattern in explicit_patterns:
@@ -1711,12 +1714,19 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
         if not hit:
             continue
 
-        # FIXED: Mulai scan dari indeks 'idx' (bukan idx + 1) agar line yang sama ikut diperiksa
         for j in range(idx, min(idx + 20, len(lines))):
-            candidate = _cleanup_candidate(lines[j])
+            candidate_text = lines[j]
+            
+            # [NEW] Cegah format Date atau TAX ID ditangkap sebagai nomor invoice sebelum string di-strip
+            if re.search(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b", candidate_text):
+                continue
+            if "TAX ID" in candidate_text.upper() or "LC" in candidate_text.upper():
+                continue
+                
+            candidate = _cleanup_candidate(candidate_text)
             if candidate and _looks_like_invoice_no_candidate(candidate):
                 return candidate
-                
+
     if doc_type == "coo":
         return ""
 
