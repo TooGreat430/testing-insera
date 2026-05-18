@@ -54,6 +54,21 @@ DETAIL_TOTAL_RECHECK_REPAIR_AFTER_RETRY = str(
     os.getenv("DETAIL_TOTAL_RECHECK_REPAIR_AFTER_RETRY", "true")
 ).strip().lower() in {"1", "true", "yes", "y"}
 
+# =====================================================================
+# ROW/INDEX RECONCILIATION
+# Mencegah silent truncation kalau ROW count vs INDEX count berbeda
+# signifikan (Gemini tidak baca seluruh dokumen).
+# =====================================================================
+ROW_INDEX_RECONCILE_MAX_RETRIES = int(
+    os.getenv("ROW_INDEX_RECONCILE_MAX_RETRIES", "2")
+)
+ROW_INDEX_RECONCILE_GAP_THRESHOLD = int(
+    os.getenv("ROW_INDEX_RECONCILE_GAP_THRESHOLD", "5")
+)
+ROW_INDEX_RECONCILE_RATIO_THRESHOLD = float(
+    os.getenv("ROW_INDEX_RECONCILE_RATIO_THRESHOLD", "0.2")
+)
+
 DETAIL_RECHECK_SCHEMA = {
     "inv_gw_unit": "string",
     "inv_quantity": "number",
@@ -10735,6 +10750,153 @@ def _run_detail_jobs(
 
     return rows
 
+
+# =====================================================================
+# ROW + INDEX COUNT RECONCILIATION HELPERS
+# Mencegah silent truncation: kalau Gemini balikin INDEX yang lebih
+# pendek dari ROW count, retry dengan prompt stricter dulu sebelum
+# raise. Tidak mengubah model, merge-to-one-page, atau postprocess.
+# =====================================================================
+
+_ROW_STRICT_SUFFIX = """
+
+PENTING (RETRY STRICTER):
+- Sebelumnya hitungan total_row tidak konsisten dengan ekstraksi INDEX.
+- WAJIB baca SELURUH halaman dokumen sampai habis.
+- Jangan berhenti di halaman pertama.
+- Jika dokumen multi-page, periksa table line item di setiap halaman.
+- Termasuk line item yang berada di halaman terakhir.
+- Output WAJIB tepat satu JSON object: {"total_row": <number>}.
+"""
+
+_INDEX_STRICT_SUFFIX = """
+
+PENTING (RETRY STRICTER):
+- Sebelumnya output INDEX lebih pendek dari total_row yang dilaporkan ROW prompt.
+- Itu berarti SEBAGIAN line item TIDAK ter-ekstrak.
+- WAJIB baca SELURUH halaman dokumen sampai habis dan keluarkan SEMUA line item.
+- Tidak boleh berhenti di tengah dokumen.
+- Tidak boleh melewatkan halaman terakhir.
+- Output WAJIB JSON array dengan panjang persis sama dengan jumlah line item invoice.
+"""
+
+
+def _index_significantly_truncated(row_count: int, index_count: int) -> bool:
+    """
+    True kalau INDEX count cukup kecil dibanding ROW count untuk
+    dicurigai sebagai truncation (Gemini tidak baca semua halaman).
+    """
+    if index_count >= row_count:
+        return False
+
+    gap = row_count - index_count
+
+    # Toleransi diff kecil (Gemini kadang off-by-one karena counting style)
+    if gap <= 1:
+        return False
+
+    if gap >= ROW_INDEX_RECONCILE_GAP_THRESHOLD:
+        return True
+
+    if row_count > 0 and (gap / row_count) >= ROW_INDEX_RECONCILE_RATIO_THRESHOLD:
+        return True
+
+    return False
+
+
+def _extract_row_count_via_gemini(file_uri: str, vendor_id: str, strict: bool = False) -> int:
+    prompt = ROW_SYSTEM_INSTRUCTION
+    if strict:
+        prompt = ROW_SYSTEM_INSTRUCTION + _ROW_STRICT_SUFFIX
+
+    data_row = _call_gemini_json_uri(
+        file_uri,
+        prompt,
+        expect_array=False,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if isinstance(data_row, dict) and "total_row" in data_row:
+        return int(data_row["total_row"])
+
+    raise Exception(f"total_row tidak ditemukan di response: {data_row}")
+
+
+def _extract_index_items_via_gemini(
+    file_uri: str,
+    declared_row_count: int,
+    vendor_id: str,
+    strict: bool = False,
+) -> list:
+    prompt = build_index_prompt(declared_row_count)
+    if strict:
+        prompt = prompt + _INDEX_STRICT_SUFFIX
+
+    index_items = _call_gemini_json_uri(
+        file_uri,
+        prompt,
+        expect_array=True,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if not isinstance(index_items, list) or not index_items:
+        raise Exception("INDEX line items kosong")
+
+    return index_items
+
+
+def _reconcile_row_and_index_counts(file_uri: str, vendor_id: str):
+    """
+    Get total_row + index_items dengan defensive cross-check.
+
+    Return:
+        (total_row, index_items)
+
+    Raises:
+        Exception kalau setelah retry max kali INDEX masih jauh lebih pendek
+        dari ROW count (suspected Gemini truncation).
+    """
+    row_count = _extract_row_count_via_gemini(file_uri, vendor_id)
+    index_items = _extract_index_items_via_gemini(file_uri, row_count, vendor_id)
+
+    for attempt in range(1, ROW_INDEX_RECONCILE_MAX_RETRIES + 1):
+        if not _index_significantly_truncated(row_count, len(index_items)):
+            break
+
+        gap = row_count - len(index_items)
+        print(
+            f"[ROW_INDEX_RECONCILE][RETRY {attempt}] "
+            f"INDEX truncation suspected: row_count={row_count} "
+            f"index_count={len(index_items)} gap={gap}"
+        )
+
+        row_count = _extract_row_count_via_gemini(file_uri, vendor_id, strict=True)
+        index_items = _extract_index_items_via_gemini(
+            file_uri, row_count, vendor_id, strict=True
+        )
+
+    if _index_significantly_truncated(row_count, len(index_items)):
+        gap = row_count - len(index_items)
+        raise Exception(
+            f"Gemini INDEX truncation persistent setelah "
+            f"{ROW_INDEX_RECONCILE_MAX_RETRIES} retry. "
+            f"ROW count={row_count}, INDEX count={len(index_items)}, gap={gap}. "
+            f"Kemungkinan model tidak membaca seluruh halaman dokumen. "
+            f"Verifikasi PDF input atau prompt vendor."
+        )
+
+    if len(index_items) != row_count:
+        print(
+            f"[ROW_INDEX_RECONCILE] Accepting tolerable gap: "
+            f"row_count={row_count} index_count={len(index_items)}. "
+            f"Using INDEX length sebagai total_row."
+        )
+
+    return len(index_items), index_items
+
+
 def run_ocr(
     invoice_name,
     uploaded_pdf_paths,
@@ -10951,31 +11113,12 @@ def run_ocr(
             has_coo_doc=has_coo_doc,
         )
 
-        # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id)
-
-        if isinstance(data_row, dict) and "total_row" in data_row:
-            total_row = int(data_row["total_row"])
-        else:
-            raise Exception(f"total_row tidak ditemukan di response: {data_row}")
-
-        # NEW: INDEX extraction (anchor line item)
-        index_items = _call_gemini_json_uri(
-            file_uri_detail,
-            build_index_prompt(total_row),
-            expect_array=True,
-            retries=3,
-            vendor_id=vendor_id
+        # GET TOTAL ROW + INDEX (with defensive reconciliation to prevent
+        # silent truncation kalau Gemini tidak baca semua halaman).
+        total_row, index_items = _reconcile_row_and_index_counts(
+            file_uri=file_uri_detail,
+            vendor_id=vendor_id,
         )
-
-        # fallback safety
-        if not isinstance(index_items, list) or not index_items:
-            raise Exception("INDEX line items kosong")
-
-        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
-        if len(index_items) != total_row:
-            print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
-            total_row = len(index_items)
 
         _fill_forward(index_items, "inv_customer_po_no")
         _fill_forward(index_items, "pl_customer_po_no")
