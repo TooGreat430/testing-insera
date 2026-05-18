@@ -3692,7 +3692,7 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         if not isinstance(row, dict):
             continue
 
-        match_score = str(row.get("match_score", "")).strip().lower()
+        match_score = str(row.get("match_score", "")).strip().upper() # Ambil uppercase
         invoice_group = _get_detail_total_group_key(row, idx)
 
         row_has_total_issue = (
@@ -3701,23 +3701,15 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             or invoice_group in confidence_total_groups
         )
 
-        # =====================================================
-        # Group/row yang tidak terkait total issue tetap positive.
-        # Non-total mismatch/missing tidak boleh jadi negative.
-        # =====================================================
         if not row_has_total_issue:
             row["confidence_label"] = "positive"
             continue
 
-        # =====================================================
-        # HARD RULE:
-        # TRUE tidak boleh negative.
-        # =====================================================
-        if match_score == "true":
+        # HARD RULE: TRUE dan CHILD PO tidak boleh negative.
+        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI
             row["confidence_label"] = "positive"
             continue
 
-        # Default untuk row total issue adalah positive dulu.
         row["confidence_label"] = "positive"
         
         if row.get("_gemini_total_issue_negative"):
@@ -3725,15 +3717,10 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
             continue
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
-
-        # Untuk vendor non-JHT Carbon:
-        # jika recheck accepted dan value benar-benar di-replace,
-        # row menjadi negative.
         if isinstance(changed_fields, list) and changed_fields:
             row["confidence_label"] = "negative"
             continue
 
-        # Selain itu tetap positive.
         row["confidence_label"] = "positive"
 
     return rows
@@ -5784,7 +5771,9 @@ def _finalize_match_fields(rows: list):
     for r in rows:
         if not isinstance(r, dict):
             continue
-        if r.get("match_score") == "true":
+            
+        match_score = str(r.get("match_score", "")).strip().upper()
+        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI
             r["match_description"] = "null"
         else:
             if _is_null(r.get("match_description")):
@@ -5904,13 +5893,9 @@ def _validate_po(detail_rows):
     for row in detail_rows:
         is_po_child = _is_secondary_po_split_row(row)
 
-        # =====================================================
-        # Kalau child PO split tidak mapped, jangan validasi.
-        # Child hanya row turunan dari parent PO, bukan row utama.
-        # =====================================================
         if not row.get("_po_mapped"):
             if is_po_child:
-                row["match_score"] = "true"
+                row["match_score"] = "CHILD PO" # <-- UBAH DISINI
                 row["match_description"] = "null"
                 row.pop("_po_data", None)
                 row.pop("_po_mapped", None)
@@ -5943,13 +5928,8 @@ def _validate_po(detail_rows):
         row["po_info_record_price"] = po_data.get("po_info_record_price", "null")
         row["po_info_record_currency"] = po_data.get("po_info_record_currency", "null")
 
-        # =====================================================
-        # IMPORTANT:
-        # Child PO split tidak divalidasi PO price/currency/unit.
-        # Hanya parent yang boleh divalidasi.
-        # =====================================================
         if is_po_child:
-            row["match_score"] = "true"
+            row["match_score"] = "CHILD PO" # <-- UBAH DISINI
             row["match_description"] = "null"
             row.pop("_po_data", None)
             row.pop("_po_mapped", None)
@@ -5957,7 +5937,6 @@ def _validate_po(detail_rows):
 
         inv_price = _to_num(row.get("inv_unit_price"))
         po_price  = _to_num(po_data.get("po_price"))
-
         inv_currency = str(row.get("inv_price_unit") or "").strip()
         po_currency  = str(po_data.get("po_currency") or "").strip()
 
@@ -5985,12 +5964,10 @@ def _validate_po(detail_rows):
 def _force_secondary_po_split_rows_true(rows: list):
     """
     Child row hasil split PO tidak boleh ikut validasi parent.
-
     Rule:
-    - Child PO split selalu TRUE.
+    - Child PO split selalu 'CHILD PO'
     - match_description dikosongkan/null.
     - confidence_label jadi positive.
-    - Metadata PO split tetap boleh dipakai sampai tahap final cleanup.
     """
     if not isinstance(rows, list):
         return rows
@@ -6002,22 +5979,15 @@ def _force_secondary_po_split_rows_true(rows: list):
         if not _is_secondary_po_split_row(row):
             continue
 
-        row["match_score"] = "true"
+        row["match_score"] = "CHILD PO" # <-- UBAH DISINI
         row["match_description"] = "null"
         row["confidence_label"] = "positive"
 
-        # Bersihkan kemungkinan marker internal error kalau ada.
         for key in [
-            "_errors",
-            "_error",
-            "_validation_errors",
-            "_match_errors",
-            "_recheck_fields",
-            "_recheck_original_values",
-            "_gemini_recheck_changed_fields",
-            "_gemini_total_issue_negative",
-            "_force_total_issue_candidate",
-            "_forced_total_issue_negative",
+            "_errors", "_error", "_validation_errors", "_match_errors",
+            "_recheck_fields", "_recheck_original_values",
+            "_gemini_recheck_changed_fields", "_gemini_total_issue_negative",
+            "_force_total_issue_candidate", "_forced_total_issue_negative",
         ]:
             row.pop(key, None)
 
@@ -8672,14 +8642,14 @@ DETAIL_RECHECK_ADDITIVE_NUM_FIELDS = {
 
 def _is_false_total_issue_row(row: dict) -> bool:
     """
-    TRUE tidak boleh dipaksa negative.
+    TRUE / CHILD PO tidak boleh dipaksa negative.
     Hanya FALSE + total issue yang boleh jadi primary candidate.
     """
     if not isinstance(row, dict):
         return False
 
-    match_score = str(row.get("match_score", "")).strip().lower()
-    if match_score == "true":
+    match_score = str(row.get("match_score", "")).strip().upper()
+    if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI
         return False
 
     try:
@@ -8690,12 +8660,9 @@ def _is_false_total_issue_row(row: dict) -> bool:
 
     desc = str(row.get("match_description") or "").lower()
     total_keywords = [
-        "total_quantity mismatch",
-        "total_amount mismatch",
-        "total_package mismatch",
-        "total_nw mismatch",
-        "total_gw mismatch",
-        "total_volume mismatch",
+        "total_quantity mismatch", "total_amount mismatch",
+        "total_package mismatch", "total_nw mismatch",
+        "total_gw mismatch", "total_volume mismatch",
     ]
 
     return any(k in desc for k in total_keywords)
@@ -9703,9 +9670,8 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
             continue
 
         # HARD RULE:
-        # match_score TRUE tidak boleh jadi negative oleh recheck.
-        match_score = str(row.get("match_score", "")).strip().lower()
-        if match_score == "true":
+        match_score = str(row.get("match_score", "")).strip().upper()
+        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI
             row["_gemini_total_issue_negative"] = False
             row.pop("_gemini_total_issue_negative_reason", None)
             row.pop("_gemini_recheck_changed_fields", None)
@@ -10177,14 +10143,12 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
     # STEP 1: Build proposals, jangan langsung apply.
     # =========================================================
     proposals = []
-
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
-        # TRUE tidak boleh berubah / negative.
-        match_score = str(row.get("match_score", "")).strip().lower()
-        if match_score == "true":
+        match_score = str(row.get("match_score", "")).strip().upper()
+        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI (1)
             continue
 
         row_no = _safe_row_no_int(row)
@@ -10398,9 +10362,9 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
     for p in accepted:
         row = p["row"]
 
-        # Safety lagi: TRUE tidak boleh berubah.
-        match_score = str(row.get("match_score", "")).strip().lower()
-        if match_score == "true":
+        # Safety lagi: TRUE / CHILD PO tidak boleh berubah.
+        match_score = str(row.get("match_score", "")).strip().upper()
+        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI (2)
             continue
 
         field = p["field"]
