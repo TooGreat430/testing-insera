@@ -1646,7 +1646,7 @@ OUTPUT HANYA JSON:
 }}
 """.strip()
 
-def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> str:
+def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str, vendor_id: str = "default") -> str:
     """
     Fast path: ambil invoice no referensi dari text page tanpa Gemini.
     Berlaku untuk invoice / packing / coo.
@@ -1683,11 +1683,13 @@ def _extract_invoice_no_from_text_for_split(page_text: str, doc_type: str) -> st
             r"(?is)\bPACKING LIST\b.{0,120}?\bNO\.?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         ])
 
+    # === GUARD SHIMANO ===
+    # Hanya tangkap pola INS- jika vendor yang sedang diproses adalah Shimano
+    if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+        explicit_patterns.append(r"(?is)\b(INS(?:PM)?[-][A-Z0-9]+)\b")
+    # =====================
+
     explicit_patterns.extend([
-        # DIRECT CATCH: Abaikan kata "INVOICE" atau format tabel PDF yang rusak.
-        # Langsung tangkap string yang berawalan INS- atau INSPM-
-        r"(?is)\b(INS(?:PM)?[-][A-Z0-9]+)\b",
-        
         r"\bINVOICE\s*(?:NO\.?|NUMBER|#)?\s*[:\-]\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bNO\.?\s*INVOICE\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
         r"\bINVOICE NUMBER\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/ ]{3,})",
@@ -1868,7 +1870,8 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
         doc_fitz = fitz.open(local_pdf_path)
         for p_idx in range(total_pages):
             txt = doc_fitz[p_idx].get_text() or ""
-            key = _extract_invoice_no_from_text_for_split(txt, doc_type=doc_type)
+            # TAMBAHKAN vendor_id=vendor_id DI SINI
+            key = _extract_invoice_no_from_text_for_split(txt, doc_type=doc_type, vendor_id=vendor_id)
             if key:
                 fast_keys.add(key)
         doc_fitz.close()
@@ -2205,7 +2208,8 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
         except Exception:
             page_text = ""
 
-        page_key = _extract_invoice_no_from_text_for_split(page_text, doc_type=doc_type)
+        # TAMBAHKAN vendor_id=vendor_id DI SINI
+        page_key = _extract_invoice_no_from_text_for_split(page_text, doc_type=doc_type, vendor_id=vendor_id)
 
         if not page_key:
             page_key = _extract_invoice_no_from_single_page_for_split(local_pdf_path, idx, doc_type=doc_type, vendor_id=vendor_id)
