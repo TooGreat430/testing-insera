@@ -4823,20 +4823,99 @@ def _map_single_detail_row_to_po(
 
     return mapped_rows, True
 
-def _map_po_to_details(po_lines, detail_rows):
+# Tambahkan vendor lain ke dalam set ini di masa depan
+VENDORS_USING_PO_ITEM_FALLBACK = {
+    "shimano_singapore",
+}
+
+def _should_use_po_item_fallback(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_USING_PO_ITEM_FALLBACK
+
+
+def _fallback_po_item_by_qty_price(row: dict, po_lines: list) -> bool:
+    """
+    Fallback generik jika item number hilang/tidak valid.
+    Mencocokkan berdasarkan PO No, Quantity, dan Unit Price.
+    Jika ada duplikasi kandidat, pilih berdasarkan kemiripan deskripsi tertinggi.
+    """
+    from difflib import SequenceMatcher
+
+    inv_po = _norm_po_number(row.get("inv_customer_po_no"))
+    inv_qty = _to_float(row.get("inv_quantity"))
+    inv_price = _to_float(row.get("inv_unit_price"))
+    inv_desc = str(row.get("inv_description") or "").strip()
+
+    if not inv_po or inv_qty is None or inv_price is None:
+        return False
+
+    candidates = []
+    for po in po_lines:
+        if not isinstance(po, dict):
+            continue
+            
+        po_no = _norm_po_number(po.get("po_no"))
+        po_qty = _to_float(po.get("po_quantity"))
+        po_price_val = _to_float(po.get("po_price"))
+
+        if po_no == inv_po and po_qty == inv_qty and po_price_val == inv_price:
+            candidates.append(po)
+
+    if not candidates:
+        return False
+
+    best_match = None
+    if len(candidates) == 1:
+        best_match = candidates[0]
+    else:
+        best_score = -1.0
+        for po in candidates:
+            po_text = str(po.get("po_text") or "").strip()
+            score = SequenceMatcher(None, inv_desc.lower(), po_text.lower()).ratio()
+            
+            if score > best_score:
+                best_score = score
+                best_match = po
+
+    if best_match:
+        sap_article = best_match.get("po_sap_article_no")
+        if sap_article and str(sap_article).strip().lower() != "null":
+            normalized_sap = str(sap_article).strip()
+            row["inv_spart_item_no"] = normalized_sap
+            row["pl_item_no"] = normalized_sap
+            return True
+
+    return False
+
+def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
     remaining_state = {}
+
+    # Cek apakah vendor saat ini butuh fallback
+    use_po_fallback = _should_use_po_item_fallback(vendor_id)
 
     # first pass: mapping normal
     per_input_results = []
 
     for row in detail_rows or []:
-        mapped_rows, _ = _map_single_detail_row_to_po(
+        mapped_rows, success = _map_single_detail_row_to_po(
             row=row,
             po_article_index=po_article_index,
             po_desc_index=po_desc_index,
             remaining_state=remaining_state,
         )
+        
+        # --- NEW: GENERIC PO ITEM FALLBACK ---
+        if not success and use_po_fallback:
+            if _fallback_po_item_by_qty_price(row, po_lines):
+                # Remap ulang karena item no sudah diperbaiki
+                mapped_rows, success = _map_single_detail_row_to_po(
+                    row=row,
+                    po_article_index=po_article_index,
+                    po_desc_index=po_desc_index,
+                    remaining_state=remaining_state,
+                )
+        # ---------------------------------------
+        
         per_input_results.append(mapped_rows)
 
     # second pass: neighbor fallback
@@ -11176,7 +11255,7 @@ def run_ocr(
             has_coo_doc=has_coo_doc,
         )
 
-        all_rows = _map_po_to_details(po_lines, all_rows)
+        all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
         all_rows = _generate_inv_amount_before_validation(all_rows)
 
         _postprocess_bl_coo_zero_to_null(all_rows)
