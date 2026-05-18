@@ -11323,6 +11323,13 @@ def run_ocr(
             columns=["coo_gw_unit", "pl_weight_unit"],
         )
 
+        _postprocess_null_fields_for_vendor(
+            rows=all_rows,
+            current_vendor_id=vendor_id,
+            target_vendor_ids="karet_deli",
+            columns=["pl_total_package"],
+        )
+
         if normalize_vendor_id(vendor_id) != "liow_ko":
             _postprocess_coo_numeric_fields_from_pl(all_rows)
         else:
