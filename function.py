@@ -11327,9 +11327,9 @@ def run_ocr(
             rows=all_rows,
             current_vendor_id=vendor_id,
             target_vendor_ids="karet_deli",
-            columns=["pl_total_package"],
+            columns=["inv_total_quantity", "pl_total_package"],
         )
-
+ 
         if normalize_vendor_id(vendor_id) != "liow_ko":
             _postprocess_coo_numeric_fields_from_pl(all_rows)
         else:
