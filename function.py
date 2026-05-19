@@ -92,6 +92,61 @@ def _get_detail_csv_field_order(vendor_id: str = "default"):
         if k != "inv_hs_code"
     ]
 
+# Tambahkan vendor lain ke dalam set ini di masa depan jika butuh deduplikasi PL
+DEDUPLICATE_PL_NUMERIC_VENDORS = {
+    "liow_ko",
+}
+
+def _should_deduplicate_pl_numeric(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in DEDUPLICATE_PL_NUMERIC_VENDORS
+
+def _deduplicate_pl_numeric_fields_for_vendors(rows: list, vendor_id: str = "default"):
+    """
+    Mencegah duplikasi field aditif PL ketika 1 baris PL dipecah ke beberapa baris Invoice secara berurutan.
+    Dijalankan setelah PO Mapping agar tidak mengganggu logic child PO.
+    Hanya berlaku untuk vendor yang terdaftar di DEDUPLICATE_PL_NUMERIC_VENDORS.
+    """
+    if not _should_deduplicate_pl_numeric(vendor_id):
+        return rows
+        
+    last_pl_key = None
+    
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+            
+        # Abaikan child PO karena nilainya sudah otomatis di-nol-kan oleh fungsi PO Split
+        if row.get("_po_split_primary") is False:
+            continue
+            
+        pl_item = str(row.get("pl_item_no") or "").strip()
+        pl_qty = _to_float(row.get("pl_quantity"))
+        pl_pkg = _to_float(row.get("pl_package_count"))
+        pl_nw = _to_float(row.get("pl_nw"))
+        pl_gw = _to_float(row.get("pl_gw"))
+        pl_vol = _to_float(row.get("pl_volume"))
+        
+        # Abaikan jika item_no kosong atau quantity 0/null
+        if not pl_item or pl_item == "null" or not pl_qty:
+            last_pl_key = None
+            continue
+            
+        # Bentuk key gabungan dari semua value PL
+        current_pl_key = f"{pl_item}::{pl_qty}::{pl_pkg}::{pl_nw}::{pl_gw}::{pl_vol}"
+        
+        if current_pl_key == last_pl_key:
+            # Duplikat item berurutan dengan semua numerik sama ditemukan, nol-kan field PL
+            row["pl_quantity"] = 0
+            row["pl_package_count"] = 0
+            row["pl_nw"] = 0
+            row["pl_gw"] = 0
+            row["pl_volume"] = 0
+                
+            print(f"[_deduplicate_pl_numeric] Deduped PL row for item {pl_item}")
+        else:
+            last_pl_key = current_pl_key
+            
+    return rows
 
 def _get_header_fields_for_vendor(vendor_id: str = "default"):
     if _is_shimano_inc_vendor(vendor_id):
@@ -11206,6 +11261,9 @@ def run_ocr(
         )
 
         all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
+
+        all_rows = _deduplicate_pl_numeric_fields_for_vendors(all_rows, vendor_id=vendor_id)
+
         all_rows = _generate_inv_amount_before_validation(all_rows)
 
         _postprocess_bl_coo_zero_to_null(all_rows)

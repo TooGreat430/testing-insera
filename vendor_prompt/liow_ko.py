@@ -153,13 +153,6 @@ Struktur umum packing list LIOW KO:
   jika PL mencetak 469 SET, lalu invoice memecah menjadi 64, 225, 180, 
   maka output PL harus 469, 0, 0; bukan 64, 225, 180 atau 469, 469, 469.
 
-- Jika satu item PACKING LIST yang sama ter-match ke beberapa row invoice/customer PO (1 baris PL dipecah ke beberapa Invoice), JANGAN menduplikasi nilai numerik PL.
-  Nilai numerik PL HANYA boleh diisi pada kemunculan PERTAMA.
-  Kemunculan KEDUA (dan seterusnya) untuk item PL yang sama WAJIB diisi 0 pada field: pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
-  CONTOH KASUS BENAR: 
-  Baris 1 (Invoice Qty 121) -> pl_quantity: 168, pl_package_count: 7, pl_nw: 49.55, pl_gw: 51.15
-  Baris 2 (Invoice Qty 47)  -> pl_quantity: 0, pl_package_count: 0, pl_nw: 0, pl_gw: 0
-  
 1. pl_customer_po_no
    - HANYA isi jika packing list secara eksplisit mencantumkan customer PO untuk item tersebut.
    - Pada sampel packing list LIOW KO, tidak ada customer PO item-level yang jelas.
