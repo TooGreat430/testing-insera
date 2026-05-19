@@ -22,6 +22,7 @@ ATURAN SANGAT PENTING UNTUK DOKUMEN INVOICE VENDOR INI:
         - Line item A: quantity = 0 dan BUKAN 480
         - Line item B: quantity = 0 dan BUKAN 480
         - Line item C: quantity = 480
+    - DILARANG KERAS untuk mengambil pl_quantity untuk mengisi value dari inv_quantity.
 6. `inv_quantity_unit`: Ekstrak dari kolom "UNIT" (misalnya "SET").
 7. `inv_unit_price`: Ekstrak nilai angka dari kolom "UNIT PRICE".
 8.  `inv_amount`: 
