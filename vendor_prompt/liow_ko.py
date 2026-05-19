@@ -200,7 +200,7 @@ Struktur umum packing list LIOW KO:
      - "469 SET" -> 469
      - "1,060 PCS" -> 1060
      - "81 PRS" -> 81
-   - Jangan memakai inv_quantity untuk mengisi pl_quantity.
+   - DILARANG KERAS memakai inv_quantity untuk mengisi pl_quantity.
 
 5. pl_package_unit
    - pl_package_unit hanya boleh diambil dari bukti package, bukan dari quantity unit.
