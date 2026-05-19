@@ -29,39 +29,54 @@ PACKING LIST (PL):
     Maka pl_description adalah DOUBLE WALL BLACK  20*1.5 AV  32H W/ SAFETY LINE W/O DECAL.
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
 5. `pl_package_unit`: Apabila tidak ada kolom unit kemasan yang spesifik dan tidak ada clue package unit seperti: "Carton/CTN/CTN/CT", "Pallet/plt", "Bal/Bale", "PXCT/PK"  dll, maka return null.
-6. ATURAN MERGED-CELL (berlaku untuk `pl_package_count`, `pl_nw`, `pl_gw`, `pl_volume`):
-
-    Definisi "grup merged": dua atau lebih baris item berurutan yang SECARA VISUAL
-    berbagi SATU baris nilai pada kolom PACKING PKGS / N.W. KGS / G.W. KGS / VOL/PKGS.
-    Ciri-cirinya: kolom-kolom tersebut hanya berisi angka di SATU baris fisik, sedangkan
-    baris-baris item lain di grup itu kosong pada kolom tersebut.
-
-    Contoh tata letak nyata (perhatikan: nilai package/NW/GW/VOL hanya muncul SEKALI
-    untuk SDXJESHIMAL002 + SDXXYSHIMAL001 secara bersamaan):
-
-      ITEM              QTY  UNIT  QTY/PKGS  PKGS  NW/PKGS  NW KGS  GW/PKGS  GW KGS  VOL
-      SDXJESHIMAL002    90   PCS   90        ──┐
-      SDXXYSHIMAL001    100  PCS   100       ──┴── 1    5.00    5.00    6.00    6.00   0.05
-
-    Aturan ekstraksi:
-    - Item PERTAMA dalam grup: ambil nilai apa adanya dari baris merged
-        → pl_package_count = 1, pl_nw = 5.00, pl_gw = 6.00, pl_volume = 1 * 0.05 = 0.05
-    - Item KEDUA dan seterusnya: WAJIB diisi 0 untuk keempat field
-        → pl_package_count = 0, pl_nw = 0, pl_gw = 0, pl_volume = 0
-    - DILARANG menggantikan nilai kosong dengan angka dari kolom lain (QTY, QTY/PKGS,
-      NW/PKGS, atau GW/PKGS BUKAN sumber untuk pl_package_count / pl_nw / pl_gw).
-    - DILARANG membagi rata nilai merged ke semua item di grup.
-    - DILARANG menyalin nilai merged ke item kedua dst.
-
-    Sumber kolom yang BENAR untuk tiap field:
-    - `pl_package_count` ← kolom "PACKING PKGS" SAJA (bukan QTY, bukan QTY/PKGS)
-    - `pl_nw`            ← kolom "N.W. KGS" SAJA   (bukan N.W./PKGS)
-    - `pl_gw`            ← kolom "G.W. KGS" SAJA   (bukan G.W./PKGS)
-    - `pl_volume`        ← kolom "VOL/PKGS" × pl_package_count baris itu
-                           (untuk item kedua dst dalam grup, otomatis = 0)
-
-    Untuk item TUNGGAL (bukan bagian grup merged), ambil nilai langsung dari kolomnya
-    masing-masing seperti biasa, dan hitung pl_volume = VOL/PKGS × pl_package_count.
+6. `pl_package_count`: 
+    - Ekstrak nilai angka jumlah kemasan spesifik per item dari kolom "PACKING" (misalnya angka "20").
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
+        Contoh:
+        |   ITEM  |  PACKING PKGS    |
+        |   A     |                  |
+        |         |        20        |
+        |   B     |                  |
+        Maka:
+        - Line item A: amount = 20
+        - Line item B: amount = 0 dan BUKAN 20
+7. `pl_nw`: 
+    - Ekstrak nilai angka dari kolom "N.W. KGS" dan BUKAN "N.W./PKGS".
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
+        Contoh:
+        |   ITEM  |  NW KGS    |
+        |   A     |            |
+        |         |     5      |
+        |   B     |            |
+        Maka:
+        - Line item A: amount = 5
+        - Line item B: amount = 0 dan BUKAN 5
+8. `pl_gw`: 
+    - Ekstrak nilai angka dari kolom "G.W. KGS" dan BUKAN "G.W./PKGS".
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
+        Contoh:
+        |   ITEM  |  GW KGS    |
+        |   A     |            |
+        |         |     6      |
+        |   B     |            |
+        Maka:
+        - Line item A: amount = 6
+        - Line item B: amount = 0 dan BUKAN 6
+9. `pl_volume`: 
+    - Ekstrak nilai angka dari kolom volume "VOL/PKGS" yang kemudian di-KALIKAN dengan value pl_package_count line tersebut.
+        Contoh:
+        Packing PKGS: 20
+        VOL/PKGS: 0.05
+        Maka pl_volume untuk line item tersebut adalah 20 * 0.05 = 1.00.
+    - Apabila ada beberapa line item yang tergabung dalam satu AMOUNT (amount) merged-cell, maka AMOUNT yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
+        Contoh:
+        |   ITEM  |     PACKING PKGS   |    VOL/KGS  |
+        |   A     |                    |             |
+        |         |         20         |     0.05    |
+        |   B     |                    |             |
+        Maka:
+        - Line item A: amount = 0.05 * 20 = 1.00
+        - Line item B: amount = 0 dan BUKAN 1.00 ataupun 0.05
 
 BILL OF LADING (BL):
 1. `bl_description`: 
