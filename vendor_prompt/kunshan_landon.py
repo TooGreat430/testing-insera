@@ -2,7 +2,7 @@ KUNSHAN_LANDON_PROMPT = """
 
 CLUE PENTING:
 
-DARI KIRI KE KANAN, URUTAN KOLOM SEMUA DOKUMEN ADALAH SEBAGAI BERIKUT:
+URUTAN KOLOM PADA DOKUMEN INVOICE (INV) — DARI KIRI KE KANAN (9 kolom):
 1. Marks
 2. PO Number
 3. Item
@@ -12,6 +12,25 @@ DARI KIRI KE KANAN, URUTAN KOLOM SEMUA DOKUMEN ADALAH SEBAGAI BERIKUT:
 7. Unit
 8. Unit Price
 9. Amount
+
+URUTAN KOLOM PADA DOKUMEN PACKING LIST (PL) — DARI KIRI KE KANAN (12 kolom):
+1.  Marks
+2.  PO Number
+3.  Item
+4.  Material
+5.  Descriptions
+6.  QTY        ← angka quantity baris
+7.  UNIT       ← satuan quantity (PCS/SET/PCE/PRS/BT/dst)
+8.  Packing    ← jumlah kemasan untuk baris ini (umumnya angka kecil: 1, 2, 3, dst)
+9.  N.W        ← net weight baris
+10. G.W        ← gross weight baris
+11. VOL        ← volume baris
+12. C/NO#      ← RENTANG nomor karton untuk baris ini (contoh: "1-10", "1-58", "1-280")
+
+PERINGATAN PENTING TENTANG KOLOM C/NO# (kolom ke-12, paling kanan):
+- C/NO# berisi RENTANG nomor karton dalam format "X-Y" (contoh: "1-10" artinya karton ke-1 sampai karton ke-10).
+- C/NO# BUKAN jumlah kemasan dan TIDAK BOLEH digunakan untuk mengisi pl_package_count.
+- C/NO# hanya muncul sekali untuk sekelompok baris yang berbagi rentang karton yang sama, jadi banyak baris memiliki C/NO# kosong.
 
 INVOICE (INV):
 
@@ -62,7 +81,19 @@ PACKING LIST (PL):
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
 5. `pl_package_unit`: Simpulkan sebagai "CTNS" atau "CARTONS" berdasarkan header kolom kemasan.
-6. `pl_package_count`: Ekstrak dari kolom "Packing".
+6. `pl_package_count`:
+    - Ekstrak HANYA dari kolom "Packing" (kolom ke-8 dari kiri, BERADA DI ANTARA kolom "UNIT" (kolom 7) dan kolom "N.W" (kolom 9)).
+    - Value berupa angka tunggal yang umumnya kecil (1, 2, 3, 4, 6, 10, 27, 40, dst), BUKAN rentang.
+    - DILARANG KERAS mengambil dari kolom "C/NO#" (kolom paling kanan / kolom ke-12) yang berisi rentang karton seperti "1-10", "1-58", "1-280".
+    - Jika kolom "Packing" tampak kosong untuk baris tersebut (misalnya baris yang berbagi blok C/NO# dengan baris di atasnya), TETAP BACA ULANG karena nilai Packing per baris hampir selalu terisi pada vendor ini.
+    - CONTOH KASUS JEBAKAN (HARUS DIPAHAMI):
+      Baris asli pada Packing List:
+        "79 | 45330414 | 9 | FRXUAB12250000 | REPLACEABLE DROP OUT... | 20 | PCS | 1 | 0.30 | 0.50 | 0.010 | 1-10"
+      Penjelasan kolom:
+        QTY=20, UNIT=PCS, Packing=1, N.W=0.30, G.W=0.50, VOL=0.010, C/NO#=1-10
+      Maka pl_package_count = 1 (dari kolom Packing).
+      SALAH: pl_package_count = 10 (mengambil ujung kanan dari rentang C/NO# "1-10").
+      SALAH: pl_package_count = 1-10 (mengambil string rentang C/NO# secara langsung).
 7. `pl_nw`: Ekstrak nilai angka dari kolom "N.W.".
 8. `pl_gw`: Ekstrak nilai angka dari kolom "G.W.".
 9. `pl_volume`: Ekstrak nilai angka dari kolom "VOL".
