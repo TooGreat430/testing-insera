@@ -1,6 +1,9 @@
 KARET_DELI_PROMPT = """
 INVOICE (INV):
-1. `inv_customer_po_no`: Ekstrak dari teks di dalam kolom "Description Uraian" yang berawalan "PO.INS-" atau "PO. INS-". Ambil HANYA angka PO-nya saja (misalnya dari "PO.INS-45318349/NEW LABEL", ekstrak "45318349").
+1. `inv_customer_po_no`:
+    BENTUK STANDAR — Ekstrak dari teks di dalam kolom "Description Uraian" yang berawalan "PO.INS-" atau "PO. INS-". Ambil HANYA angka PO-nya saja (misalnya dari "PO.INS-45318349/NEW LABEL", ekstrak "45318349").
+    BENTUK NON-STANDAR (KASUS KLAIM / K100) — Beberapa baris menggunakan format PO berbeda dengan separator "/" (BUKAN strip "-") dan mengandung tanggal + kode huruf, contoh: "PO.INS/01/01/26/K100/NEW LABEL". Untuk bentuk ini, ekstrak SELURUH string PO termasuk garis miring dan kode huruf (tanpa awalan "PO." dan tanpa suffix "/NEW LABEL"). Contoh: dari "PO.INS/01/01/26/K100/NEW LABEL" → inv_customer_po_no = "INS/01/01/26/K100".
+    JANGAN melewati / menolak baris dengan format PO non-standar; tetap ekstrak full identifier-nya.
 2. `inv_spart_item_no`: Ekstrak dari teks di dalam kolom "Description Uraian" yang berawalan abjad alfabet diikuti dengan strip (-) dan angka (misalnya "DL-540", "SA-206", atau "S-199"). Jika terdapat lebih dari satu pola yang cocok, ambil yang pertama kali muncul di teks.
 3. `inv_description`: Ekstrak teks lengkap dari kolom "Description Uraian" (termasuk ukuran ban dan jenisnya, abaikan teks keterangan PO di dalamnya jika memungkinkan).
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada invoice ini.
@@ -10,7 +13,33 @@ INVOICE (INV):
 8. `inv_amount`: Ekstrak nilai angka dari kolom "Amount Jumlah".
 
 PACKING LIST (PL):
-1. `pl_customer_po_no`: Ekstrak dari teks di dalam kolom "Description Uraian" yang berawalan "PO.INS-" (misalnya "45318349").
+
+STRUKTUR FILE PL — PENTING:
+Satu file Packing List Karet Deli BISA mengandung BEBERAPA sub-section, masing-masing untuk invoice yang berbeda. Pola yang HARUS DIKENALI:
+    - Header utama di atas: "No. : INS-XXX/YY" (contoh "INS-009/26") → menentukan parent invoice file.
+    - Setelah daftar baris utama, biasanya muncul "TOTAL X.XX PCS / Y.YY SETS" sebagai pemisah.
+    - DI BAWAH pemisah itu BISA muncul SUB-SECTION HEADER bentuk "INS-XXX/YY/ZZZ" (contoh: "INS-009/26/K100", dimana ZZZ adalah kode klaim seperti K100, RH, dst).
+    - Setelah sub-section header, ada 1+ baris item yang HARUS diekstrak sebagai pl_* normal.
+    - Setelah sub-section, bisa muncul "CLAIM : CLMxxxxxx" dan "TOTAL X.XX PCS" lagi.
+    - Paling akhir biasanya ada "GRAND TOTAL ...".
+
+DILARANG KERAS melewatkan baris di bawah sub-section header — meskipun letaknya setelah baris "TOTAL ... PCS / ... SETS", baris-baris itu tetap valid item PL dan WAJIB diekstrak.
+
+Contoh nyata dari dokumen ini:
+    ... (55+ baris utama untuk INS-009/26) ...
+    TOTAL 30,037.00 PCS / 400.00 SETS              ← pemisah, BUKAN akhir dokumen
+    INS-009/26/K100                                ← SUB-SECTION HEADER (jangan abaikan!)
+    {  =  1.00 PCS BLS 700X35C SA-234 BK @25 (TANPA BD & LDH) (PO.INS/01/01/26/K100/NEW LABEL)
+    CLAIM : CLM25120243
+    TOTAL 1.00 PCS
+    GRAND TOTAL 30,038.00 PCS / 400.00 SETS
+
+Baris "1.00 PCS BLS 700X35C..." di atas WAJIB diekstrak menjadi 1 row PL dengan pl_quantity=1.00, pl_description sesuai, dan pl_customer_po_no = "INS/01/01/26/K100" (lihat aturan PO non-standar di bawah).
+
+1. `pl_customer_po_no`:
+    BENTUK STANDAR — Ekstrak dari teks di dalam kolom "Description Uraian" yang berawalan "PO.INS-" diikuti angka 8 digit (misalnya "45318349").
+    BENTUK NON-STANDAR (KASUS KLAIM / K100) — Untuk baris di bawah sub-section header (lihat STRUKTUR FILE PL di atas), format PO sering pakai "/" sebagai separator dengan tanggal dan kode huruf, contoh "PO.INS/01/01/26/K100/NEW LABEL". Untuk bentuk ini, ekstrak full string PO tanpa awalan "PO." dan tanpa "/NEW LABEL". Contoh: "PO.INS/01/01/26/K100/NEW LABEL" → pl_customer_po_no = "INS/01/01/26/K100".
+    Nilai ini HARUS persis sama dengan inv_customer_po_no di sisi invoice (rule simetris).
 2. `pl_item_no`: Ekstrak dari teks di dalam kolom "Description Uraian" yang berawalan abjad alfabet diikuti dengan strip (-) dan angka (misalnya "DL-540", "SA-206", atau "S-199"). Jika terdapat lebih dari satu pola yang cocok, ambil yang pertama kali muncul di teks.
 3. `pl_description`: Ekstrak teks dari kolom "Description Uraian".
 4. `pl_quantity`:

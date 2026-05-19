@@ -6,6 +6,9 @@ def _is_shimano_inc_vendor_id(vendor_id: str = "default") -> bool:
 def _is_kunshan_landon_vendor_id(vendor_id: str = "default") -> bool:
     return str(vendor_id or "default").strip().lower() == "kunshan_landon"
 
+def _is_karet_deli_vendor_id(vendor_id: str = "default") -> bool:
+    return str(vendor_id or "default").strip().lower() == "karet_deli"
+
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -361,6 +364,36 @@ CONTOH KONKRET (format dokumen kunshan_landon):
     → pl_total_volume   = 43.590
 """
 
+    karet_deli_header_rule = ""
+    if _is_karet_deli_vendor_id(vendor_id):
+        karet_deli_header_rule = """
+
+ATURAN KHUSUS VENDOR karet_deli — MULTI-SECTION PACKING LIST:
+
+Karet Deli kadang menempatkan beberapa Packing List di dalam SATU file PDF (multi-section). Pola yang harus dikenali pada body file Packing List:
+    Header utama (atas dokumen):     "No. : INS-XXX/YY"           contoh: "INS-009/26"
+    Sub-section header (di tengah):  "INS-XXX/YY/ZZZ"             contoh: "INS-009/26/K100"
+                                                                  dimana ZZZ adalah kode tambahan (K100, WTB/HB, dst).
+    Pemisah antar section biasanya berupa baris "TOTAL X.XX PCS / Y.YY SETS" dan kadang "CLAIM : CLMxxxxxx".
+
+PRINSIP PENENTUAN pl_invoice_no — IKUTI INV_INVOICE_NO YANG SEDANG DIPROSES:
+    1. Pertama, EKSTRAK inv_invoice_no dari file Invoice (mengikuti aturan invoice number umum).
+    2. Lalu, CARI di body file Packing List apakah ada sub-section header yang EXACT MATCH dengan inv_invoice_no tersebut.
+        - Jika ditemukan sub-section "INS-XXX/YY/ZZZ" yang sama persis dengan inv_invoice_no → SET pl_invoice_no = sub-section tersebut.
+        - Jika tidak ada sub-section yang cocok, gunakan header utama file PL ("No. : ...") sebagai pl_invoice_no.
+
+CONTOH KONKRET:
+    Skenario A — Invoice file dengan inv_invoice_no = "INS-009/26", PL file punya header utama "INS-009/26" (di body-nya ada sub-section "INS-009/26/K100" tapi BUKAN milik invoice ini)
+        → pl_invoice_no = "INS-009/26" (header utama, BUKAN sub-section K100).
+    Skenario B — Invoice file dengan inv_invoice_no = "INS-009/26/K100", PL file yang sama (yang berisi sub-section "INS-009/26/K100" di body)
+        → pl_invoice_no = "INS-009/26/K100" (dari sub-section di body, BUKAN header utama file).
+
+DILARANG KERAS:
+    - Memilih sub-section yang tidak cocok dengan inv_invoice_no.
+    - Mengabaikan sub-section yang valid dan justru memaksa pakai header utama padahal inv_invoice_no menunjuk ke sub-section.
+    - Memilih header utama saat inv_invoice_no jelas-jelas merujuk ke sub-section yang ada di body.
+"""
+
     template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
@@ -450,7 +483,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
-{shimano_header_rule}{kunshan_landon_header_rule}
+{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -694,7 +727,12 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
      → isi dengan "null".
   - Jangan mengarang atau menebak.
 """
-    return template.replace("{shimano_header_rule}", shimano_header_rule).replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
+    return (
+        template
+        .replace("{shimano_header_rule}", shimano_header_rule)
+        .replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
+        .replace("{karet_deli_header_rule}", karet_deli_header_rule)
+    )
 
 def build_detail_prompt_from_index(
     total_row: int,
