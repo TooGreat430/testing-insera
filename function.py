@@ -7355,7 +7355,7 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
         if not merged_detail_rows:
             raise Exception("Tidak ada hasil detail gabungan")
-            
+
         if forced_vendor_id == "karet_deli":
             unique_rows = []
             seen_sigs = set()
@@ -10845,6 +10845,39 @@ def _run_detail_jobs(
 
     return rows
 
+def _drop_empty_rows_for_haomeng(rows: list, vendor_id: str):
+    """
+    Menghapus row halusinasi khusus vendor Haomeng 
+    jika inv_spart_item_no DAN inv_description kosong/null.
+    """
+    if normalize_vendor_id(vendor_id) != "haomeng":
+        return rows
+        
+    cleaned_rows = []
+    dropped_count = 0
+    
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+            
+        inv_item = str(row.get("inv_spart_item_no") or "").strip().lower()
+        inv_desc = str(row.get("inv_description") or "").strip().lower()
+        
+        is_item_empty = (inv_item == "" or inv_item == "null")
+        is_desc_empty = (inv_desc == "" or inv_desc == "null")
+        
+        # Jika KEDUANYA kosong, abaikan baris ini (drop)
+        if is_item_empty and is_desc_empty:
+            dropped_count += 1
+            continue
+            
+        cleaned_rows.append(row)
+        
+    if dropped_count > 0:
+        print(f"[HAOMENG_CLEANUP] Berhasil menghapus {dropped_count} baris halusinasi (item & desc kosong).")
+        
+    return cleaned_rows
+
 def run_ocr(
     invoice_name,
     uploaded_pdf_paths,
@@ -11202,6 +11235,12 @@ def run_ocr(
                 f"Detail row count changed after recheck. "
                 f"expected={total_row}, actual={len(all_rows)}"
             )
+        
+        # =========================================
+        # HAOMENG: DROP EMPTY ROWS (HALUSINASI)
+        # Harus ditaruh di sini agar lolos pengecekan Exception di atas
+        # =========================================
+        all_rows = _drop_empty_rows_for_haomeng(all_rows, vendor_id)
 
         # =========================================
         # SHIMANO INC ONLY: HS# extraction
