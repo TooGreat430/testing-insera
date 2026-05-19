@@ -332,7 +332,33 @@ ATURAN KHUSUS VENDOR shimano_inc:
         kunshan_landon_header_rule = """
 
 ATURAN KHUSUS VENDOR kunshan_landon:
-CLUE PENTING: pl_total_quantity dan inv_total_quantity diekstrak HANYA dari kolom 'QTY' yang berada di paling bawah. DILARANG KERAS mengambil nilai header dari kolom lain! PASTIKAN ANDA TIDAK MENGAMBIL NILAI DARI KOLOM PACKING!
+
+CARA MEMBACA BARIS TOTAL (SANGAT PENTING):
+- Pada dokumen Invoice (INV) dan Packing List (PL), baris total berada di paling bawah tabel dan diawali dengan penanda "C/NO." pada kolom Marks (kolom paling kiri).
+- Urutan kolom pada baris total mengikuti urutan kolom tabel:
+    INVOICE: [Marks="C/NO."] [PO Number] [Item] [Material] [Descriptions] [Quantity=<TOTAL QTY>] [Unit] [Unit price] [Amount=<TOTAL AMOUNT>]
+    PACKING LIST: [Marks="C/NO."] [PO Number] [Item] [Material] [Descriptions] [QTY=<TOTAL QTY>] [UNIT] [Packing=<TOTAL PACKAGE>] [N.W=<TOTAL NW>] [G.W=<TOTAL GW>] [VOL=<TOTAL VOL>]
+
+ATURAN inv_total_quantity dan pl_total_quantity:
+- WAJIB diambil dari kolom "Quantity" / "QTY" pada baris total (baris "C/NO.") di paling bawah tabel.
+- Nilai ini adalah penjumlahan seluruh quantity line item, sehingga biasanya berupa angka besar (5 digit atau lebih, contoh: 879946).
+- DILARANG KERAS mengambil dari kolom Packing (yang berisi total CARTONS, contoh: 984).
+- DILARANG KERAS mengambil dari kalimat naratif seperti "TOTAL: PACKED IN NINE HUNDRED EIGHTY FOUR ( 984 ) PKGS ONLY" atau "984 PKGS = 2 PALLET, 72 BAGS, 910 CARTONS". Kalimat tersebut HANYA menyebut total package, BUKAN total quantity.
+
+ATURAN pl_total_package:
+- Diambil dari kolom "Packing" pada baris total (contoh: 984), ATAU dari kalimat naratif "TOTAL: PACKED IN ... ( 984 ) PKGS ONLY".
+- Nilai ini TIDAK BOLEH sama dengan pl_total_quantity. Jika hasil ekstraksi pl_total_quantity == pl_total_package, berarti pl_total_quantity SALAH dan harus diperbaiki dengan mengambil angka pada kolom Quantity/QTY (umumnya jauh lebih besar).
+
+CONTOH KONKRET (format dokumen kunshan_landon):
+- Baris total Invoice: "C/NO. 879946   US$ 85,731.38"
+    → inv_total_quantity = 879946
+    → inv_total_amount   = 85731.38
+- Baris total Packing List: "879946  984  14036.01  14966.96  43.590"
+    → pl_total_quantity = 879946
+    → pl_total_package  = 984
+    → pl_total_nw       = 14036.01
+    → pl_total_gw       = 14966.96
+    → pl_total_volume   = 43.590
 """
 
     template = """
