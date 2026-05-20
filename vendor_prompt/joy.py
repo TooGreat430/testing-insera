@@ -67,67 +67,22 @@ DILARANG KERAS MENGGABUNGKAN VALUE NUMERIK DARI SATU LINE ITEM KE LINE ITEM LAIN
 9. `pl_volume`: Ekstrak nilai angka dari kolom "TOTAL CBM".
 
 BILL OF LADING (BL):
-1. bl_description dan bl_hs_code:
-   - Field bl_description dan bl_hs_code merupakan SATU PAKET dan WAJIB selalu terisi (TIDAK BOLEH NULL).
-   - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL) saja, TIDAK BOLEH mengambil dari dokumen lain.
+1. `bl_description`: 
+    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
+2. `bl_hs_code`: 
+    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
+        Contoh:
+        FRAME PART A-F3306-1 HS NUMBER: 8714.91
+        FRAME PART A-HG009 HS NUMBER: 8714.91
+        FRAME PART A-HG011 HS NUMBER: 8714.91
+        FRAME PART A-HG045 HS NUMBER: 8714.91
+        FRAME TUBING HS NUMBER: 8714.91
 
-   =========================
-   LOGIC MAPPING (BERURUTAN)
-   =========================
-   - STEP 1 - Mapping berdasarkan inv_description:
-     - Cari apakah inv_description MATCH dengan kode barang pada deskripsi item pada BL.
-     - Jika ditemukan:
-       - bl_description = description item pada BL yang sesuai
-       - bl_hs_code = HS CODE yang terkait dengan bl_description tersebut
-  - STEP 2 - Jika STEP 2 tidak ditemukan:
-     - Karena bl_description dan bl_hs_code TIDAK BOLEH NULL,
-   - Maka PILIH SECARA ACAK (RANDOM) satu pasangan data dari item BL:
-     - bl_description = salah satu description item dari BL
-     - bl_hs_code = HS CODE yang sesuai dengan item tersebut
-   - JANGAN MEMBUAT BL DESCRIPTION DAN BL HS CODE BARU YANG TIDAK ADA DI DOKUMEN BILL OF LADING (BL). GUNAKAN RANDOM ITEM YANG ADA SAJA DI DOKUMEN BILL OF LADING (BL).
-     Contoh:
-     DATA DI BL SEPERTI INI:
-     HUB 751DSE HS NUMBER: 8714.93
-     HUB 753DSE HS NUMBER: 8714.93
-     HUB 752DSE HS NUMBER: 8714.93
-     HUB 754DSE HS NUMBER: 8714.93
-     HUB D761DSE HS NUMBER: 8714.93
-     
-     JANGAN BUAT DATA BARU SEPERTI = HUB 431BK, YANG TIDAK ADA PADA DOKUMEN BILL OF LADING SEBAGAI HASIL EKSTRAKSI DAN MAPPING.
-   =========================
-   ATURAN PENTING
-   =========================
-   - Tidak boleh mengosongkan field (NO NULL VALUE).
-   - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
-   - Sumber data hanya boleh dari dokumen Bill of Lading (BL) saja.
-   - Tidak boleh membuat atau mengarang data di luar dari dokumen Bill of Lading (BL).
-   - Tidak boleh mengambil HS CODE dari item yang berbeda dengan bl_description.
-   - Prioritas mapping:
-       1. inv_description (utama)
-       3. random BL item (last resort, WAJIB jika tidak match)
-
-   =========================
-   CONTOH
-   =========================
-   BL:
-     - HUB 751DSE HS NUMBER: 8714.93
-     - HUB 753DSE HS NUMBER: 8714.93
-     - HUB 752DSE HS NUMBER: 8714.93
-     - HUB 754DSE HS NUMBER: 8714.93
-     - HUB D761DSE HS NUMBER: 8714.93
-
-   Case 1:
-     inv_description = 751DSE ANO.BLACK 32X14 W/O LOGO 9X108X100 270:112 ANO.BLACK W/O LOGO W/WARNING LOGO
-     → MATCH STEP 1 (751DSE MATCH dengan HUB 751DSE)
-     → bl_description = HUB 751DSE
-     → bl_hs_code = 8714.93
-
-   Case 2:
-     inv_description = 431 BK 32X14 W/O LOGO 69L 9X108X100 270:112 ANO.BLACK W/O LOGO W/WARNING LOGO
-     inv_description tidak ada di BL
-     → STEP 3 (RANDOM)
-     → bl_description = HUB 753DSE (contoh random)
-     → bl_hs_code = 8714.93
+        Maka:
+        Pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja.
+        Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
+        bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
+    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
 
 CERTIFICATE OF ORIGIN (COO):
 1. `coo_seq`:
