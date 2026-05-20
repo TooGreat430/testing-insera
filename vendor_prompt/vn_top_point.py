@@ -66,7 +66,7 @@ Baris GRAND TOTAL di paling bawah PL: 23754 PCS, 153 CTN, 3 pallets, NW=1618.99,
         * Mengambil nilai 3 (grand total pallets) sebagai pl_package_count baris manapun.
         * Membagi/distribusi proporsional nilai carton ke setiap baris invoice.
 
-    CONTOH KONKRET untuk dokumen ini (3 pallet, 24 baris invoice):
+    CONTOH KONKRET (3 pallet, 24 baris invoice):
         Pallet TP01 (CTN=44):
             → Baris invoice #1 (HG078, item pertama yang ada di TP01): pl_package_count = 44
             → Baris #2 (IS18PHG02), #3 (IS18PRE03-1): pl_package_count = 0
