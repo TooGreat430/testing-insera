@@ -1952,8 +1952,8 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
                 src_doc = fitz.open(single_page_pdf)
                 text = src_doc[0].get_text()
                 
-                # Tangkap pola seperti INS-009/26 atau INS-009/26/K100
-                matches = re.findall(r"\b(INS[-0-9A-Z/]+)\b", text, flags=re.IGNORECASE)
+                # Regex diperketat: hanya ambil pola INS-XXX/XX (contoh: INS-009/26 atau INS-009/26/K100)
+                matches = re.findall(r"\b(INS-\d{3}/\d{2}(?:/[A-Z0-9]+)?)\b", text, flags=re.IGNORECASE)
                 for m in matches:
                     norm_m = _preprocess_invoice_no_for_grouping(m)
                     if norm_m and len(norm_m) > 5:
@@ -1978,7 +1978,8 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
 
     norm_vendor = normalize_vendor_id(vendor_id)
-    if norm_vendor in {"shimano_singapore", "shimano_inc"}:
+    # Bypass LLM Trace khusus vendor berikut, langsung ke page fallback
+    if norm_vendor in {"shimano_singapore", "shimano_inc", "karet_deli"}:
         print(f"[GROUPING][{doc_type.upper()}] Bypass LLM Trace khusus vendor {norm_vendor}, langsung ke page fallback")
         return _split_pdf_by_invoice_no_page_fallback(local_pdf_path, doc_type, vendor_id=vendor_id)
 
@@ -1990,7 +1991,7 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
                 local_pdf_path=local_pdf_path, 
                 doc_type=doc_type, 
                 traced_refs=traced_refs,
-                vendor_id=vendor_id  # <--- TAMBAHAN
+                vendor_id=vendor_id
             )
             if traced_entries:
                 print(f"[GROUPING][PRIMARY_TRACE_OK][{doc_type.upper()}] file='{os.path.basename(local_pdf_path)}'")
