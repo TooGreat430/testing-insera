@@ -1908,6 +1908,7 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
         target_key = _get_grouping_target_key(doc_type)
         doc_label = _get_doc_label_for_prompt(doc_type)
 
+        # 1. Prompt dipertajam untuk mencari sub-invoice / claim
         prompt = f"""
         ROLE:
         Anda mengekstrak SEMUA nomor invoice referensi dari SATU HALAMAN dokumen {doc_label}.
@@ -1915,6 +1916,11 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
 
         TUGAS:
         Ambil SEMUA nilai invoice reference yang valid dari halaman ini. Kembalikan sebagai array of objects.
+
+        ATURAN KHUSUS PENTING:
+        - Selain nomor utama di header, periksa juga baris-baris item di bagian tengah/bawah halaman.
+        - Terkadang ada nomor sub-invoice atau claim (contoh format: /K100, dll) yang menyempil tanpa label "Invoice No". 
+        - Jika Anda melihat string yang polanya mirip dengan invoice number utama (misalnya INS-...), WAJIB ekstrak string tersebut sebagai invoice number tersendiri.
 
         OUTPUT HANYA JSON ARRAY:
         [
@@ -1937,6 +1943,27 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
                 norm = _preprocess_invoice_no_for_grouping(raw_inv)
                 if norm:
                     keys.add(norm)
+                    
+        # 2. REGEX SAFETY NET KHUSUS KARET DELI
+        # Jika LLM gagal menangkap invoice yang nyempil, Regex ini akan memaksa ambil.
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            try:
+                import pymupdf as fitz
+                import re
+                src_doc = fitz.open(single_page_pdf)
+                text = src_doc[0].get_text()
+                
+                # Tangkap pola seperti INS-009/26 atau INS-009/26/K100
+                matches = re.findall(r"\b(INS[-0-9A-Z/]+)\b", text, flags=re.IGNORECASE)
+                for m in matches:
+                    norm_m = _preprocess_invoice_no_for_grouping(m)
+                    if norm_m and len(norm_m) > 5:
+                        keys.add(norm_m)
+                        
+                src_doc.close()
+            except Exception as e:
+                print(f"[EXTRACT_MULTIPLE_INVOICE] Regex safety net failed: {e}")
+
         return list(keys)
     finally:
         try:
