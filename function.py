@@ -2270,23 +2270,24 @@ def _split_pdf_by_invoice_no_page_fallback(local_pdf_path: str, doc_type: str, v
     
     if is_karet_deli:
         page_invoice_keys = []
-        last_known_keys = []
+        
+        # PERBAIKAN: Ambil main key dokumen untuk fallback halaman kosong
+        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, doc_type, vendor_id=vendor_id)
+        main_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
         
         for idx in range(total_pages):
             keys = _extract_multiple_invoice_no_from_single_page_for_split(local_pdf_path, idx, doc_type, vendor_id)
             valid_keys = [k for k in keys if k and k != "NULL"]
             
-            if not valid_keys and last_known_keys:
-                valid_keys = last_known_keys
-            if not valid_keys and idx == 0:
-                doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(local_pdf_path, doc_type, vendor_id=vendor_id)
-                only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
-                if only_key:
-                    valid_keys = [only_key]
+            # PERBAIKAN: Jika kosong, fallback ke main_key. 
+            # DILARANG pakai last_known_keys agar sub-invoice tidak bocor ke halaman berikutnya.
+            if not valid_keys:
+                if main_key:
+                    valid_keys = [main_key]
+                    
             if not valid_keys:
                 raise Exception(f"Gagal menentukan invoice number untuk file '{os.path.basename(local_pdf_path)}' ({doc_type}) hal {idx + 1}")
             
-            last_known_keys = valid_keys
             page_invoice_keys.append(valid_keys)
             
         inv_to_pages = {}
@@ -7384,24 +7385,40 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             raise Exception("Tidak ada hasil detail gabungan")
 
         if forced_vendor_id == "karet_deli":
+            # PERBAIKAN: Urutkan agar baris dengan inv_amount (bukan ghost row dari ekstrak parsial PL) diutamakan
+            merged_detail_rows.sort(
+                key=lambda r: (
+                    _to_float(r.get("inv_amount")) or 0.0,
+                    _to_float(r.get("inv_unit_price")) or 0.0
+                ),
+                reverse=True
+            )
+            
             unique_rows = []
             seen_sigs = set()
             for r in merged_detail_rows:
                 if not isinstance(r, dict):
                     continue
-                inv_no = _preprocess_invoice_no_for_grouping(r.get("inv_invoice_no"))
-                pl_no = _preprocess_invoice_no_for_grouping(r.get("pl_invoice_no"))
-                item_no = str(r.get("inv_spart_item_no") or "").strip()
-                qty = _to_float(r.get("inv_quantity"))
-                desc = str(r.get("inv_description") or "").strip()[:50]
                 
-                sig = (inv_no, pl_no, item_no, qty, desc)
+                # Buang suffix sub-invoice (seperti /K100 atau /WTB) agar signature match dengan base invoice-nya
+                inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
+                inv_no_base = inv_no_raw.split('/K')[0].split('/W')[0].strip()
+                
+                item_no = str(r.get("inv_spart_item_no") or r.get("pl_item_no") or "").strip()
+                qty = _to_float(r.get("inv_quantity") or r.get("pl_quantity"))
+                desc = str(r.get("inv_description") or "").strip().upper()[:30]
+                
+                sig = (inv_no_base, item_no, qty, desc)
                 if sig not in seen_sigs:
                     seen_sigs.add(sig)
                     unique_rows.append(r)
                     
             merged_detail_rows = unique_rows
-            print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication")
+            
+            # Kembalikan ke urutan awal berdasarkan _detail_row_no jika ada
+            merged_detail_rows.sort(key=lambda r: int(r.get("_detail_row_no") or 999999))
+            
+            print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication using strong signature")
 
         if bl_path:
             # Majority BL header antar invoice group.
