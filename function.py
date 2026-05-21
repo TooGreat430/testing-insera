@@ -35,7 +35,11 @@ from detail import (
     DETAIL_LINE_NUM_FIELDS,
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,
 )
-from row import ROW_SYSTEM_INSTRUCTION, SHIMANO_ROW_INSTRUCTION_APPENDIX
+from row import (
+    ROW_SYSTEM_INSTRUCTION,
+    SHIMANO_ROW_INSTRUCTION_APPENDIX,
+    SHIMANO_INDEX_INSTRUCTION_APPENDIX,
+)
 from vendor_detection import (
     load_vendor_prompt_text,
     normalize_vendor_id,
@@ -4024,10 +4028,19 @@ def _get_index_chunk_size_for_total_row(total_row: int) -> int:
     return 0
 
 
-def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int) -> str:
+def _build_index_chunk_prompt(
+    total_row: int,
+    first_index: int,
+    last_index: int,
+    vendor_id: str = "default",
+) -> str:
     """
     Bungkus build_index_prompt dengan kontrak chunk eksplisit
     supaya Gemini hanya mengembalikan idx {first_index}..{last_index}.
+
+    Khusus shimano_inc / shimano_singapore, tempelkan
+    SHIMANO_INDEX_INSTRUCTION_APPENDIX di akhir prompt untuk
+    menjelaskan format BLOK SHIMANO. Vendor lain tidak ada perubahan.
     """
     base = build_index_prompt(total_row)
     expected_count = last_index - first_index + 1
@@ -4046,7 +4059,12 @@ KONTRAK CHUNK INDEX — WAJIB DIIKUTI:
 - Tetap gunakan urutan kemunculan di Invoice (sequential, tidak boleh skip, tidak boleh duplikat).
 - Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown, tanpa code fence.
 """
-    return base + chunk_contract
+
+    vendor_appendix = ""
+    if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+        vendor_appendix = SHIMANO_INDEX_INSTRUCTION_APPENDIX
+
+    return base + chunk_contract + vendor_appendix
 
 
 def _call_gemini_index_chunked(
@@ -4079,6 +4097,7 @@ def _call_gemini_index_chunked(
             total_row=total_row,
             first_index=first_index,
             last_index=last_index,
+            vendor_id=vendor_id,
         )
 
         chunk_items = _call_gemini_json_uri(
@@ -11554,9 +11573,18 @@ def run_ocr(
                 chunk_size=index_chunk_size,
             )
         else:
+            # Default: pakai build_index_prompt apa adanya (vendor lain
+            # tidak terpengaruh).
+            # Khusus shimano_inc / shimano_singapore, tempelkan appendix
+            # yang menjelaskan format BLOK SHIMANO supaya Gemini tidak
+            # balikin array kosong / halusinasi (lihat row.py).
+            single_shot_index_prompt = build_index_prompt(total_row)
+            if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+                single_shot_index_prompt = single_shot_index_prompt + SHIMANO_INDEX_INSTRUCTION_APPENDIX
+
             index_items = _call_gemini_json_uri(
                 file_uri_detail,
-                build_index_prompt(total_row),
+                single_shot_index_prompt,
                 expect_array=True,
                 retries=3,
                 vendor_id=vendor_id
