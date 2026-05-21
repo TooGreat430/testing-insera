@@ -3990,24 +3990,36 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
 # =========================================================
 # CHUNKED INDEX EXTRACTION
 # =========================================================
-# Untuk dokumen dengan banyak line item (mis. chengs ~380 row),
-# index extraction tidak boleh dilakukan dalam satu shot karena
-# output JSON array akan melebihi max_output_tokens dan ter-truncate
-# sehingga Gemini gagal menghasilkan JSON valid setelah retry.
+# Untuk dokumen dengan banyak line item, index extraction tidak boleh
+# dilakukan dalam satu shot karena output JSON array akan melebihi
+# max_output_tokens dan ter-truncate sehingga Gemini gagal menghasilkan
+# JSON valid setelah retry.
 # Solusi: pecah jadi beberapa chunk dengan range idx yang eksplisit,
 # lalu gabungkan hasilnya.
+#
+# Trigger berbasis JUMLAH LINE ITEM (bukan vendor), supaya dokumen besar
+# dari vendor apa pun otomatis ter-cover tanpa perlu maintain whitelist.
 
-def _get_index_chunk_size_for_vendor(vendor_id: str = "default") -> int:
+INDEX_CHUNK_TOTAL_ROW_THRESHOLD = 90
+INDEX_CHUNK_SIZE = 60
+
+
+def _get_index_chunk_size_for_total_row(total_row: int) -> int:
     """
     Chunk size untuk INDEX extraction (bukan detail extraction).
 
-    Default 0 = single-shot (perilaku lama).
-    Khusus chengs (banyak line item dan output index padat),
-    pakai 60 supaya tiap chunk JSON pendek dan aman terhadap
+    Return 0 = single-shot (perilaku lama, untuk dokumen kecil).
+    Return INDEX_CHUNK_SIZE = chunked, dipakai kalau total_row melebihi
+    threshold supaya tiap chunk JSON pendek dan aman terhadap
     max_output_tokens.
     """
-    if normalize_vendor_id(vendor_id) == "chengs":
-        return 60
+    try:
+        n = int(total_row)
+    except (TypeError, ValueError):
+        return 0
+
+    if n > INDEX_CHUNK_TOTAL_ROW_THRESHOLD:
+        return INDEX_CHUNK_SIZE
 
     return 0
 
@@ -11512,16 +11524,19 @@ def run_ocr(
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
         # NEW: INDEX extraction (anchor line item)
-        # Untuk vendor dengan banyak line item (mis. chengs ~380 row),
+        # Untuk dokumen dengan banyak line item (total_row > threshold),
         # output JSON index dalam satu shot melebihi max_output_tokens
         # sehingga Gemini ter-truncate dan retry gagal.
-        # Pakai chunked extraction kalau vendor mendeklarasikan chunk size > 0.
-        index_chunk_size = _get_index_chunk_size_for_vendor(vendor_id)
+        # Pakai chunked extraction kalau total_row melewati threshold.
+        # Trigger berbasis jumlah row, BUKAN vendor, supaya dokumen besar
+        # dari vendor apa pun otomatis ter-cover.
+        index_chunk_size = _get_index_chunk_size_for_total_row(total_row)
 
         if index_chunk_size > 0:
             print(
                 f"[INDEX_CHUNK_MODE] vendor_id={vendor_id} "
-                f"total_row={total_row} chunk_size={index_chunk_size}"
+                f"total_row={total_row} chunk_size={index_chunk_size} "
+                f"threshold={INDEX_CHUNK_TOTAL_ROW_THRESHOLD}"
             )
             index_items = _call_gemini_index_chunked(
                 file_uri=file_uri_detail,
