@@ -1918,8 +1918,9 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
 
         ATURAN KHUSUS PENTING:
         - Selain nomor utama di header, periksa juga baris-baris item di bagian tengah/bawah halaman.
-        - Terkadang ada nomor sub-invoice atau claim (contoh format: /K100, dll) yang menyempil tanpa label "Invoice No". 
+        - Terkadang ada nomor sub-invoice atau claim (contoh format: /K100, dll) yang menyempil tanpa label "Invoice No".
         - Jika Anda melihat string yang polanya mirip dengan invoice number utama (misalnya INS-...), WAJIB ekstrak string tersebut sebagai invoice number tersendiri.
+        - WAJIB ekstrak invoice number SECARA UTUH termasuk SELURUH suffix bertingkat (contoh: "INS-009/26/WTB/HB" — jangan dipotong jadi "INS-009/26/WTB" atau "INS-009/26"). Suffix seperti "/HB" atau "/HL" di akhir WAJIB ikut diekstrak karena membedakan invoice yang berbeda.
 
         OUTPUT HANYA JSON ARRAY:
         [
@@ -1952,8 +1953,9 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
                 src_doc = fitz.open(single_page_pdf)
                 text = src_doc[0].get_text()
                 
-                # Regex diperketat: hanya ambil pola INS-XXX/XX (contoh: INS-009/26 atau INS-009/26/K100)
-                matches = re.findall(r"\b(INS-\d{3}/\d{2}(?:/[A-Z0-9]+)?)\b", text, flags=re.IGNORECASE)
+                # Regex menangkap pola INS-XXX/XX dengan suffix bertingkat (contoh: INS-009/26, INS-009/26/K100, INS-009/26/WTB/HB, INS-009/26/WTB/HL).
+                # Penting: kuantor `*` agar segmen suffix bisa lebih dari satu — kalau hanya `?`, "INS-009/26/WTB/HB" akan terpotong jadi "INS-009/26/WTB" dan HB/HL ter-merge jadi satu group.
+                matches = re.findall(r"\b(INS-\d{3}/\d{2}(?:/[A-Z0-9]+)*)\b", text, flags=re.IGNORECASE)
                 for m in matches:
                     norm_m = _preprocess_invoice_no_for_grouping(m)
                     if norm_m and len(norm_m) > 5:
@@ -7393,31 +7395,39 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 ),
                 reverse=True
             )
-            
+
             unique_rows = []
             seen_sigs = set()
             for r in merged_detail_rows:
                 if not isinstance(r, dict):
                     continue
-                
-                # Buang suffix sub-invoice (seperti /K100 atau /WTB) agar signature match dengan base invoice-nya
+
+                # Buang suffix /K (kasus K100 sub-section yang share PL parent) agar duplikat antar parent vs sub-PDF ter-dedup.
+                # JANGAN buang suffix /W — invoice seperti INS-009/26/WTB/HB dan INS-009/26/WTB/HL adalah invoice TERPISAH (file PDF berbeda), bukan sub-section dari INS-009/26.
                 inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
-                inv_no_base = inv_no_raw.split('/K')[0].split('/W')[0].strip()
-                
+                inv_no_base = inv_no_raw.split('/K')[0].strip()
+
+                # Sertakan PO number agar dua baris berbeda dengan item_no/qty/desc identik tapi PO berbeda tidak ter-dedup.
+                po_no = str(r.get("inv_customer_po_no") or r.get("pl_customer_po_no") or "").strip().upper()
                 item_no = str(r.get("inv_spart_item_no") or r.get("pl_item_no") or "").strip()
                 qty = _to_float(r.get("inv_quantity") or r.get("pl_quantity"))
                 desc = str(r.get("inv_description") or "").strip().upper()[:30]
-                
-                sig = (inv_no_base, item_no, qty, desc)
+
+                sig = (inv_no_base, po_no, item_no, qty, desc)
                 if sig not in seen_sigs:
                     seen_sigs.add(sig)
                     unique_rows.append(r)
-                    
+
             merged_detail_rows = unique_rows
-            
-            # Kembalikan ke urutan awal berdasarkan _detail_row_no jika ada
-            merged_detail_rows.sort(key=lambda r: int(r.get("_detail_row_no") or 999999))
-            
+
+            # Kembalikan ke urutan: kelompokkan per invoice_no dulu, lalu sesuai urutan asli di PDF (via _detail_row_no).
+            merged_detail_rows.sort(
+                key=lambda r: (
+                    str(r.get("inv_invoice_no") or "").strip().upper(),
+                    int(r.get("_detail_row_no") or 999999),
+                )
+            )
+
             print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication using strong signature")
 
         if bl_path:
