@@ -3966,6 +3966,111 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
 
     raise Exception("Gemini gagal menghasilkan JSON setelah retry")
 
+
+# =========================================================
+# CHUNKED INDEX EXTRACTION
+# =========================================================
+# Untuk dokumen dengan banyak line item (mis. chengs ~380 row),
+# index extraction tidak boleh dilakukan dalam satu shot karena
+# output JSON array akan melebihi max_output_tokens dan ter-truncate
+# sehingga Gemini gagal menghasilkan JSON valid setelah retry.
+# Solusi: pecah jadi beberapa chunk dengan range idx yang eksplisit,
+# lalu gabungkan hasilnya.
+
+def _get_index_chunk_size_for_vendor(vendor_id: str = "default") -> int:
+    """
+    Chunk size untuk INDEX extraction (bukan detail extraction).
+
+    Default 0 = single-shot (perilaku lama).
+    Khusus chengs (banyak line item dan output index padat),
+    pakai 60 supaya tiap chunk JSON pendek dan aman terhadap
+    max_output_tokens.
+    """
+    if normalize_vendor_id(vendor_id) == "chengs":
+        return 60
+
+    return 0
+
+
+def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int) -> str:
+    """
+    Bungkus build_index_prompt dengan kontrak chunk eksplisit
+    supaya Gemini hanya mengembalikan idx {first_index}..{last_index}.
+    """
+    base = build_index_prompt(total_row)
+    expected_count = last_index - first_index + 1
+    expected_indices = list(range(first_index, last_index + 1))
+
+    chunk_contract = f"""
+
+KONTRAK CHUNK INDEX — WAJIB DIIKUTI:
+- total_row sebenarnya = {total_row}.
+- Anda HANYA boleh mengeluarkan line item idx dari {first_index} sampai {last_index} (inclusive).
+- Output HARUS berupa JSON ARRAY berisi TEPAT {expected_count} object.
+- Object pertama WAJIB memiliki "idx" = {first_index}.
+- Object terakhir WAJIB memiliki "idx" = {last_index}.
+- Nilai "idx" tiap object WAJIB termasuk dalam set berikut: {expected_indices}.
+- DILARANG menyertakan idx < {first_index} atau idx > {last_index}.
+- Tetap gunakan urutan kemunculan di Invoice (sequential, tidak boleh skip, tidak boleh duplikat).
+- Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown, tanpa code fence.
+"""
+    return base + chunk_contract
+
+
+def _call_gemini_index_chunked(
+    file_uri: str,
+    total_row: int,
+    vendor_id: str,
+    chunk_size: int,
+) -> list:
+    """
+    Panggil Gemini untuk index extraction secara chunked.
+    Mengembalikan list gabungan dari semua chunk, urut sesuai idx.
+    """
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size harus > 0, dapat {chunk_size}")
+
+    all_items = []
+    first_index = 1
+    chunk_no = 1
+
+    while first_index <= total_row:
+        last_index = min(first_index + chunk_size - 1, total_row)
+
+        print(
+            f"[INDEX_CHUNK] chunk_no={chunk_no} "
+            f"first_index={first_index} last_index={last_index} "
+            f"total_row={total_row}"
+        )
+
+        prompt = _build_index_chunk_prompt(
+            total_row=total_row,
+            first_index=first_index,
+            last_index=last_index,
+        )
+
+        chunk_items = _call_gemini_json_uri(
+            file_uri,
+            prompt,
+            expect_array=True,
+            retries=3,
+            vendor_id=vendor_id,
+        )
+
+        if not isinstance(chunk_items, list):
+            raise Exception(
+                f"Index chunk bukan list. "
+                f"chunk_no={chunk_no} first_index={first_index} last_index={last_index}"
+            )
+
+        all_items.extend(chunk_items)
+
+        first_index = last_index + 1
+        chunk_no += 1
+
+    return all_items
+
+
 def _build_detail_batch_contract_prompt(
     batch_no: int,
     expected_indices: list,
@@ -7420,13 +7525,16 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
             merged_detail_rows = unique_rows
 
-            # Kembalikan ke urutan: kelompokkan per invoice_no dulu, lalu sesuai urutan asli di PDF (via _detail_row_no).
-            merged_detail_rows.sort(
-                key=lambda r: (
-                    str(r.get("inv_invoice_no") or "").strip().upper(),
-                    int(r.get("_detail_row_no") or 999999),
-                )
-            )
+            # Kembalikan ke urutan: kelompokkan per invoice_no dulu, lalu ascending by inv_seq (urutan line item di PDF).
+            def _karet_deli_sort_key(r):
+                inv_no = str(r.get("inv_invoice_no") or "").strip().upper()
+                seq_val = _to_float(r.get("inv_seq"))
+                if seq_val is None:
+                    # Fallback ke _detail_row_no jika inv_seq tidak ada, baris tanpa keduanya didorong ke akhir.
+                    seq_val = float(int(r.get("_detail_row_no") or 999999))
+                return (inv_no, seq_val)
+
+            merged_detail_rows.sort(key=_karet_deli_sort_key)
 
             print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication using strong signature")
 
@@ -11157,13 +11265,31 @@ def run_ocr(
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
         # NEW: INDEX extraction (anchor line item)
-        index_items = _call_gemini_json_uri(
-            file_uri_detail,
-            build_index_prompt(total_row),
-            expect_array=True,
-            retries=3,
-            vendor_id=vendor_id
-        )
+        # Untuk vendor dengan banyak line item (mis. chengs ~380 row),
+        # output JSON index dalam satu shot melebihi max_output_tokens
+        # sehingga Gemini ter-truncate dan retry gagal.
+        # Pakai chunked extraction kalau vendor mendeklarasikan chunk size > 0.
+        index_chunk_size = _get_index_chunk_size_for_vendor(vendor_id)
+
+        if index_chunk_size > 0:
+            print(
+                f"[INDEX_CHUNK_MODE] vendor_id={vendor_id} "
+                f"total_row={total_row} chunk_size={index_chunk_size}"
+            )
+            index_items = _call_gemini_index_chunked(
+                file_uri=file_uri_detail,
+                total_row=total_row,
+                vendor_id=vendor_id,
+                chunk_size=index_chunk_size,
+            )
+        else:
+            index_items = _call_gemini_json_uri(
+                file_uri_detail,
+                build_index_prompt(total_row),
+                expect_array=True,
+                retries=3,
+                vendor_id=vendor_id
+            )
 
         # fallback safety
         if not isinstance(index_items, list) or not index_items:
