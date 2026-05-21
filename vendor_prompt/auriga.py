@@ -134,19 +134,39 @@ Struktur umum packing list AURIGA:
 - Dokumen berjudul "PACKING LIST".
 - Header utama:
   PACKING NO | DESCRIPTION | QUANTITY | NET WEIGHT | GROSS WEIGHT | MEASURE
-- Pada vendor AURIGA, satu blok item packing list biasanya berisi:
-  1) line pertama = packing range + customer PO + quantity + net weight + gross weight + measure
-  2) line kedua = part number + quantity + net weight + gross weight + measure
-  3) line-line berikutnya = description barang
-- Contoh pola:
-  - "1-1 45324574 @38PR @7.174KG @7.974KG @0.025"
-  - "BRLTTJL510TS01 @38PR @7.174KG @7.974KG @0.025"
-  - lalu beberapa line description
-- Terkadang satu item logical terpecah ke beberapa packing range yang berurutan.
+
+STRUKTUR DUAL @-LINE PER BLOK (SANGAT PENTING — sumber utama kesalahan):
+Setiap blok item packing list AURIGA memiliki DUA baris angka yang sama-sama diawali simbol "@":
+  Baris ke-1 (BARIS PER-CARTON): muncul di line yang sama dengan "PACKING NO" + customer PO.
+    Berisi nilai PER SATU CARTON (rate per carton), bukan total row.
+    Contoh: "2-253 45325077 @50PC @10.078KG @11.066KG @0.024" → @50PC = 50 PC per carton.
+  Baris ke-2 (BARIS TOTAL): muncul di line yang sama dengan part number (di bawah baris ke-1).
+    Berisi nilai TOTAL untuk SELURUH range carton di baris itu (per-carton × jumlah carton).
+    Contoh: "BRKTTMDM280F08 @12600PC @2539.656KG @2788.632KG @6.048" → @12600PC = total.
+
+ATURAN MUTLAK pengisian pl_quantity / pl_nw / pl_gw / pl_volume:
+  → AMBIL HANYA DARI BARIS KE-2 (BARIS TOTAL).
+  → DILARANG KERAS menggunakan baris ke-1 (per-carton) untuk field ini.
+  → DILARANG KERAS menjumlahkan baris ke-1 + baris ke-2 dalam blok yang sama (itu akan menghasilkan double-counting).
+  Verifikasi visual: pada blok dengan range >1 carton, nilai baris ke-2 jauh lebih besar dari baris ke-1 (misal @12600PC vs @50PC). Selalu pilih yang besar.
+  Pada blok dengan range 1 carton (mis. "1-1" atau "261-261"), baris ke-1 dan baris ke-2 BERNILAI SAMA — tetap ambil baris ke-2 (atau salah satu, karena identik).
+
+Terkadang satu item logical terpecah ke beberapa packing range yang berurutan (umumnya 1 range "besar" + 1 range "ekor" 1-carton untuk sisa quantity).
   Contoh:
-  - 254-260 ... BRKTTMDC510R01 @350PC ...
-  - 261-261 ... BRKTTMDC510R01 @3PC ...
-  Kedua row ini tetap item yang sama jika part number, PO, dan description-nya sama.
+  - "254-260 45325077 ... @50PC ..." → per-carton baris ke-1
+    "BRKTTMDC510R01 @350PC @57.575KG @64.491KG @0.168" → TOTAL baris ke-2 (7 ctn × 50PC = 350 PC)
+  - "261-261 45325077 ... @3PC ..." → per-carton baris ke-1 (juga = total karena 1 carton)
+    "BRKTTMDC510R01 @3PC @0.494KG @0.624KG @0.004" → TOTAL baris ke-2
+  Kedua blok ini adalah item yang sama (part number + PO + description match) → digabung jadi 1 baris invoice yang quantity-nya 353 PC, 8 carton, 58.069 KG NW, 65.115 KG GW.
+
+ATURAN PENCOCOKAN INV ↔ PL PER-PO (PENTING):
+Beberapa part number yang sama muncul di banyak PO (mis. BRKTTMDC400F09 ada di PO 45325077 dan PO 45325086, BRKTTHDM280RF001 ada di PO 45325078 dan PO 45325082).
+  → Saat mencocokkan baris invoice ke PL, WAJIB cocokkan kombinasi (pl_customer_po_no + pl_item_no), bukan hanya pl_item_no.
+  → DILARANG KERAS menjumlahkan blok PL dari PO yang BERBEDA ke baris invoice yang sama.
+  Contoh konkret:
+    - Invoice item 4 (PO 45325077, MD-C400, 791 PC): hanya gabungkan PL "262-276" (PO 45325077) + "277-277" (PO 45325077) → 16 carton.
+    - Invoice item 44 (PO 45325086, MD-C400, 294 PC): hanya gabungkan PL "2338-2342" (PO 45325086) + "2343-2343" (PO 45325086) → 6 carton.
+    SALAH: mencampur "262-276" + "277-277" + "2338-2342" + "2343-2343" → 22 carton (double-count antar PO).
 
 1. pl_customer_po_no
    - Ambil customer PO number dari angka yang muncul setelah "PACKING NO" pada line pertama blok item.
@@ -193,14 +213,17 @@ Struktur umum packing list AURIGA:
      - "BRAKE SET; TEKTRO; MD-C400 (MIRA);BRIGHT BLACK,MECHANICAL DISK BRAKE,ALLOY,W/O ROTOR,ORGANIC COMPOUND PAD,W/O ADAPTOR"
 
 4. pl_quantity
-   - Ambil nilai quantity dari blok packing list.
+   - Ambil nilai quantity dari BARIS KE-2 (BARIS TOTAL) blok packing list. JANGAN dari baris ke-1 (per-carton).
    - Ambil angka numeriknya saja.
    - Jangan ambil unitnya di field ini.
-   - Jika satu logical item terpecah ke beberapa packing rows namun masih item yang sama, jumlahkan quantity-nya.
+   - Jika satu logical item terpecah ke beberapa packing rows namun masih item yang sama DAN PO yang sama, jumlahkan quantity TOTAL-nya.
    - Contoh:
-     - "@38PR" -> 38
-     - "@12600PC" -> 12600
-     - "@350PC" + "@3PC" -> 353
+     - Blok "1-1": baris ke-2 "@38PR" → 38 (untuk range 1 carton, baris ke-1 dan ke-2 nilainya sama).
+     - Blok "2-253": baris ke-1 "@50PC" (per-carton, ABAIKAN), baris ke-2 "@12600PC" → ambil 12600.
+     - Blok "254-260" + "261-261" (PO sama, item sama): baris ke-2 "@350PC" + baris ke-2 "@3PC" → 353.
+   - SALAH (jangan lakukan):
+     - Mengambil "@50PC" sebagai pl_quantity untuk blok "2-253" (itu per-carton, hasilnya akan jauh lebih kecil dari quantity invoice).
+     - Menjumlahkan "@50PC" + "@12600PC" dalam blok yang sama (itu double-count).
 
 5. pl_package_unit
    - pl_package_unit hanya boleh diambil dari bukti package, bukan dari quantity unit.
@@ -216,47 +239,58 @@ Struktur umum packing list AURIGA:
      sebagai pl_package_unit.
 
 6. pl_package_count
-   - Ambil jumlah package fisik dari range "PACKING NO".
-   - Hitung secara inclusive.
+   - Ambil jumlah package fisik dari range "PACKING NO" SAJA. JANGAN turunkan dari pl_quantity / per-carton rate.
+   - Hitung secara inclusive: pl_package_count = (angka akhir range) − (angka awal range) + 1.
    - Contoh:
-     - "1-1" -> 1
-     - "2-253" -> 252
-     - "254-260" -> 7
-   - Jika satu logical item terpecah ke beberapa packing rows namun masih item yang sama, jumlahkan seluruh package_count-nya.
+     - "1-1"     → 1 − 1 + 1 = 1
+     - "2-253"   → 253 − 2 + 1 = 252
+     - "254-260" → 260 − 254 + 1 = 7
+     - "571-677" → 677 − 571 + 1 = 107
+     - "678-678" → 678 − 678 + 1 = 1
+   - PERIKSA dua digit pertama dan dua digit terakhir range dengan teliti. OCR rentan tertukar antara 6↔7, 6↔8, 1↔7, 0↔8 pada digit akhir. Bila hasil pl_package_count tidak konsisten dengan pl_quantity / per-carton rate (misal 121 carton padahal 2693 PC dengan @25PC/ctn seharusnya 108), kemungkinan besar salah baca digit range — periksa ulang.
+   - Cross-check: pl_quantity ≈ pl_package_count × (per-carton value dari baris ke-1). Toleransi kecil bila ada blok "ekor" 1-carton dengan rate berbeda.
+   - Jika satu logical item terpecah ke beberapa packing rows DENGAN PO YANG SAMA, jumlahkan seluruh package_count-nya.
    - Contoh:
-     - "254-260" + "261-261" -> 7 + 1 = 8
+     - "254-260" (PO 45325077) + "261-261" (PO 45325077) → 7 + 1 = 8
+   - DILARANG KERAS:
+     - Mengambil per-carton rate (mis. "@50PC") sebagai pl_package_count.
+     - Menjumlahkan range carton dari PO yang BERBEDA (lihat aturan per-PO di atas).
+
+VERIFIKASI GRAND-TOTAL PL (WAJIB sebelum finalisasi):
+  → Total seluruh pl_package_count dari semua baris invoice HARUS = nilai "SAY TOTAL ... CTN ONLY" di akhir PL (untuk dokumen ini = 2,414).
+  → Total seluruh pl_nw dari semua baris invoice HARUS ≈ baris "TOTAL" di akhir PL (untuk dokumen ini = 13716.117 KG).
+  → Total seluruh pl_gw dari semua baris invoice HARUS ≈ baris "TOTAL" di akhir PL (untuk dokumen ini = 15221.215 KG).
+  → Total seluruh pl_volume HARUS ≈ baris "TOTAL" di akhir PL (untuk dokumen ini = 42.007 M3).
+  Bila sum-of-rows MELEBIHI grand total: ada baris yang double-count (kemungkinan terbesar: ikut menjumlahkan baris ke-1 per-carton, atau mencampur PO yang berbeda). Periksa ulang.
+  Bila sum-of-rows KURANG dari grand total: ada blok PL yang terlewat (mungkin blok "ekor" 1-carton yang belum digabung ke baris invoice yang sesuai).
 
 7. pl_nw
-   - Ambil dari kolom "NET WEIGHT".
-   - Nilai harus numeric saja.
-   - Hapus suffix unit seperti KG.
+   - Ambil dari kolom "NET WEIGHT" pada BARIS KE-2 (BARIS TOTAL) blok. JANGAN dari baris ke-1 (per-carton).
+   - Nilai harus numeric saja. Hapus suffix unit seperti KG.
    - Contoh:
-     - "@7.174KG" -> 7.174
-     - "@2539.656KG" -> 2539.656
-   - Jika satu logical item terpecah ke beberapa rows, jumlahkan seluruh N.W.-nya.
-   - Contoh:
-     - "@57.575KG" + "@0.494KG" -> 58.069
+     - Blok "2-253": baris ke-1 "@10.078KG" (per-carton, ABAIKAN), baris ke-2 "@2539.656KG" → 2539.656.
+     - Blok "1-1": baris ke-2 "@7.174KG" → 7.174 (untuk range 1 carton, baris ke-1 = baris ke-2).
+   - Jika satu logical item terpecah ke beberapa rows (PO sama, item sama), jumlahkan TOTAL N.W.-nya.
+     - "@57.575KG" + "@0.494KG" → 58.069
+   - DILARANG KERAS menjumlahkan baris ke-1 + baris ke-2 dalam blok yang sama (double-count).
 
 8. pl_gw
-   - Ambil dari kolom "GROSS WEIGHT".
-   - Nilai harus numeric saja.
-   - Hapus suffix unit seperti KG.
+   - Ambil dari kolom "GROSS WEIGHT" pada BARIS KE-2 (BARIS TOTAL) blok. JANGAN dari baris ke-1 (per-carton).
+   - Nilai harus numeric saja. Hapus suffix unit seperti KG.
    - Contoh:
-     - "@7.974KG" -> 7.974
-     - "@2788.632KG" -> 2788.632
-   - Jika satu logical item terpecah ke beberapa rows, jumlahkan seluruh G.W.-nya.
-   - Contoh:
-     - "@64.491KG" + "@0.624KG" -> 65.115
+     - Blok "2-253": baris ke-1 "@11.066KG" (per-carton, ABAIKAN), baris ke-2 "@2788.632KG" → 2788.632.
+   - Jika satu logical item terpecah ke beberapa rows (PO sama, item sama), jumlahkan TOTAL G.W.-nya.
+     - "@64.491KG" + "@0.624KG" → 65.115
+   - DILARANG KERAS menjumlahkan baris ke-1 + baris ke-2 dalam blok yang sama (double-count).
 
 9. pl_volume
-   - Ambil dari kolom "MEASURE".
+   - Ambil dari kolom "MEASURE" pada BARIS KE-2 (BARIS TOTAL) blok. JANGAN dari baris ke-1 (per-carton).
    - Nilai harus numeric saja.
    - Contoh:
-     - "@0.025" -> 0.025
-     - "@6.048" -> 6.048
-   - Jika satu logical item terpecah ke beberapa rows, jumlahkan seluruh volume-nya.
-   - Contoh:
-     - "@0.168" + "@0.004" -> 0.172
+     - Blok "2-253": baris ke-1 "@0.024" (per-carton, ABAIKAN), baris ke-2 "@6.048" → 6.048.
+   - Jika satu logical item terpecah ke beberapa rows (PO sama, item sama), jumlahkan TOTAL volume-nya.
+     - "@0.168" + "@0.004" → 0.172
+   - DILARANG KERAS menjumlahkan baris ke-1 + baris ke-2 dalam blok yang sama (double-count).
 
 
 BILL OF LADING (BL)
