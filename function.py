@@ -5129,12 +5129,45 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
     per_input_results = []
 
     for row in detail_rows or []:
+        
+        # --- NEW: DESCRIPTION FIRST WORD FALLBACK ---
+        original_inv_item = row.get("inv_spart_item_no")
+        original_pl_item = row.get("pl_item_no")
+        
+        is_inv_null = _is_null(original_inv_item)
+        is_pl_null = _is_null(original_pl_item)
+        
+        used_desc_fallback = False
+        
+        # Jika kedua item_no null, ambil kata pertama dari description
+        if is_inv_null and is_pl_null:
+            desc = row.get("inv_description")
+            if _is_null(desc):
+                desc = row.get("pl_description")
+            
+            if not _is_null(desc):
+                words = str(desc).strip().split()
+                if words:
+                    first_word = words[0]
+                    row["inv_spart_item_no"] = first_word
+                    row["pl_item_no"] = first_word
+                    used_desc_fallback = True
+
         mapped_rows, success = _map_single_detail_row_to_po(
             row=row,
             po_article_index=po_article_index,
             po_desc_index=po_desc_index,
             remaining_state=remaining_state,
         )
+        
+        # Revert (biarkan null kembali) jika mapping PO tetap gagal
+        if used_desc_fallback and not success:
+            row["inv_spart_item_no"] = original_inv_item
+            row["pl_item_no"] = original_pl_item
+            for r in mapped_rows:
+                r["inv_spart_item_no"] = original_inv_item
+                r["pl_item_no"] = original_pl_item
+        # ---------------------------------------------
         
         # --- NEW: GENERIC PO ITEM FALLBACK ---
         if not success and use_po_fallback:
