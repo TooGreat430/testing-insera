@@ -35,11 +35,7 @@ from detail import (
     DETAIL_LINE_NUM_FIELDS,
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,
 )
-from row import (
-    ROW_SYSTEM_INSTRUCTION,
-    SHIMANO_ROW_INSTRUCTION_APPENDIX,
-    SHIMANO_INDEX_INSTRUCTION_APPENDIX,
-)
+from row import ROW_SYSTEM_INSTRUCTION
 from vendor_detection import (
     load_vendor_prompt_text,
     normalize_vendor_id,
@@ -4028,19 +4024,10 @@ def _get_index_chunk_size_for_total_row(total_row: int) -> int:
     return 0
 
 
-def _build_index_chunk_prompt(
-    total_row: int,
-    first_index: int,
-    last_index: int,
-    vendor_id: str = "default",
-) -> str:
+def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int) -> str:
     """
     Bungkus build_index_prompt dengan kontrak chunk eksplisit
     supaya Gemini hanya mengembalikan idx {first_index}..{last_index}.
-
-    Khusus shimano_inc / shimano_singapore, tempelkan
-    SHIMANO_INDEX_INSTRUCTION_APPENDIX di akhir prompt untuk
-    menjelaskan format BLOK SHIMANO. Vendor lain tidak ada perubahan.
     """
     base = build_index_prompt(total_row)
     expected_count = last_index - first_index + 1
@@ -4059,12 +4046,7 @@ KONTRAK CHUNK INDEX — WAJIB DIIKUTI:
 - Tetap gunakan urutan kemunculan di Invoice (sequential, tidak boleh skip, tidak boleh duplikat).
 - Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown, tanpa code fence.
 """
-
-    vendor_appendix = ""
-    if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
-        vendor_appendix = SHIMANO_INDEX_INSTRUCTION_APPENDIX
-
-    return base + chunk_contract + vendor_appendix
+    return base + chunk_contract
 
 
 def _call_gemini_index_chunked(
@@ -4097,7 +4079,6 @@ def _call_gemini_index_chunked(
             total_row=total_row,
             first_index=first_index,
             last_index=last_index,
-            vendor_id=vendor_id,
         )
 
         chunk_items = _call_gemini_json_uri(
@@ -11388,17 +11369,42 @@ def run_ocr(
         # ==========================================
         # PREPROCESS HANYA INVOICE + PACKING LIST
         # ==========================================
-        invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-            normalized_pdf_paths[0],
-            "invoice"
-        )
-        temp_local_paths.append(invoice_onepage_pdf)
+        # Default: merge semua halaman invoice/PL jadi 1 page panjang.
+        # Pre-processing ini menolong Gemini melihat seluruh tabel sekaligus
+        # untuk vendor dengan format tabular standar (chengs dkk).
+        #
+        # Khusus shimano_inc / shimano_singapore: SKIP merge ini. Format
+        # invoice SHIMANO berbasis BLOK vertikal (PART#/PRODUCT CD/S.PART#
+        # di kanan + CTN NO. sub-rows + baris TOTAL per blok), dengan 30+
+        # halaman per invoice. Saat di-merge jadi satu page yang sangat
+        # tinggi, Gemini bingung membedakan blok-blok individual dan
+        # cenderung balikin halusinasi atau array kosong. Mengirim PDF
+        # multi-page asli membiarkan Gemini membaca tiap halaman secara
+        # alami.
+        _skip_onepage_preprocess = normalize_vendor_id(forced_vendor_id) in {
+            "shimano_inc",
+            "shimano_singapore",
+        }
 
-        packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-            normalized_pdf_paths[1],
-            "packing"
-        )
-        temp_local_paths.append(packing_onepage_pdf)
+        if _skip_onepage_preprocess:
+            print(
+                f"[PREPROCESS] vendor_id={forced_vendor_id}: skip one-page "
+                "merge, kirim PDF multi-page asli ke Gemini."
+            )
+            invoice_onepage_pdf = normalized_pdf_paths[0]
+            packing_onepage_pdf = normalized_pdf_paths[1]
+        else:
+            invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+                normalized_pdf_paths[0],
+                "invoice"
+            )
+            temp_local_paths.append(invoice_onepage_pdf)
+
+            packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+                normalized_pdf_paths[1],
+                "packing"
+            )
+            temp_local_paths.append(packing_onepage_pdf)
 
         preprocessed_detail_inputs = [
             invoice_onepage_pdf,
@@ -11535,16 +11541,7 @@ def run_ocr(
         )
 
         # GET TOTAL ROW FROM GEMINI
-        # Default: pakai ROW_SYSTEM_INSTRUCTION apa adanya (vendor lain tidak
-        # ada perubahan perilaku sama sekali).
-        # Khusus shimano_inc / shimano_singapore, tempelkan appendix yang
-        # menjelaskan format BLOK SHIMANO supaya Gemini tidak salah hitung
-        # (lihat row.py untuk detail aturan).
-        row_prompt_for_total = ROW_SYSTEM_INSTRUCTION
-        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
-            row_prompt_for_total = ROW_SYSTEM_INSTRUCTION + SHIMANO_ROW_INSTRUCTION_APPENDIX
-
-        data_row = _call_gemini_json_uri(file_uri_detail, row_prompt_for_total, expect_array=False, retries=3, vendor_id=vendor_id)
+        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -11573,18 +11570,9 @@ def run_ocr(
                 chunk_size=index_chunk_size,
             )
         else:
-            # Default: pakai build_index_prompt apa adanya (vendor lain
-            # tidak terpengaruh).
-            # Khusus shimano_inc / shimano_singapore, tempelkan appendix
-            # yang menjelaskan format BLOK SHIMANO supaya Gemini tidak
-            # balikin array kosong / halusinasi (lihat row.py).
-            single_shot_index_prompt = build_index_prompt(total_row)
-            if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
-                single_shot_index_prompt = single_shot_index_prompt + SHIMANO_INDEX_INSTRUCTION_APPENDIX
-
             index_items = _call_gemini_json_uri(
                 file_uri_detail,
-                single_shot_index_prompt,
+                build_index_prompt(total_row),
                 expect_array=True,
                 retries=3,
                 vendor_id=vendor_id
