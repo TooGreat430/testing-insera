@@ -11811,6 +11811,25 @@ def run_ocr(
             for r in all_rows
             if isinstance(r, dict) and not _is_null(r.get("inv_customer_po_no"))
         }
+
+        # KUNSHAN_LANDON: tambahkan kandidat PO yang tersangkut di awal
+        # inv_description ke daftar PO yang akan di-fetch dari PO master.
+        # Tanpa ini, _stream_filter_po_lines tidak akan memuat PO target
+        # (mis. "45324149") sehingga recovery di _map_po_to_details
+        # tidak punya data untuk mencocokkan dan otomatis di-rollback.
+        if _is_kunshan_landon_vendor(vendor_id):
+            for r in all_rows:
+                if not isinstance(r, dict):
+                    continue
+                candidate = _kunshan_landon_extract_po_from_description(
+                    r.get("inv_description")
+                )
+                if not candidate:
+                    continue
+                if _norm_po_number(candidate) == _norm_po_number(r.get("inv_customer_po_no")):
+                    continue
+                po_numbers.add(candidate)
+
         po_lines = _stream_filter_po_lines(po_numbers)
         print("PO NUMBERS:", po_numbers)
         print("PO LINES FOUND:", len(po_lines))
