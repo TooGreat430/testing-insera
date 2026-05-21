@@ -35,7 +35,7 @@ from detail import (
     DETAIL_LINE_NUM_FIELDS,
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,
 )
-from row import ROW_SYSTEM_INSTRUCTION
+from row import ROW_SYSTEM_INSTRUCTION, SHIMANO_ROW_INSTRUCTION_APPENDIX
 from vendor_detection import (
     load_vendor_prompt_text,
     normalize_vendor_id,
@@ -11516,7 +11516,16 @@ def run_ocr(
         )
 
         # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id)
+        # Default: pakai ROW_SYSTEM_INSTRUCTION apa adanya (vendor lain tidak
+        # ada perubahan perilaku sama sekali).
+        # Khusus shimano_inc / shimano_singapore, tempelkan appendix yang
+        # menjelaskan format BLOK SHIMANO supaya Gemini tidak salah hitung
+        # (lihat row.py untuk detail aturan).
+        row_prompt_for_total = ROW_SYSTEM_INSTRUCTION
+        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+            row_prompt_for_total = ROW_SYSTEM_INSTRUCTION + SHIMANO_ROW_INSTRUCTION_APPENDIX
+
+        data_row = _call_gemini_json_uri(file_uri_detail, row_prompt_for_total, expect_array=False, retries=3, vendor_id=vendor_id)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
