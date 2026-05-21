@@ -5118,6 +5118,147 @@ def _fallback_po_item_by_qty_price(row: dict, po_lines: list) -> bool:
 
     return False
 
+
+# =========================================================
+# KUNSHAN_LANDON: RECOVER PO YANG TERSANGKUT DI inv_description
+# =========================================================
+# Kasus nyata kunshan_landon: Gemini gagal mengekstrak inv_customer_po_no
+# karena PO number tersangkut di awal description, mis.
+#   "45324149/CLM 26030220 HANGER BASKET, LANDON, -, SILVER,-, ..."
+# Setelah _fill_forward, inv_customer_po_no malah inherit PO baris atasnya
+# yang salah, sehingga PO mapping gagal.
+# Recovery: kalau PO mapping pertama gagal, coba parse PO dari awal
+# inv_description (selalu diawali '4'). Kalau re-map sukses dengan PO baru,
+# update inv_customer_po_no & pl_customer_po_no, lalu bersihkan
+# inv_description.
+
+_KUNSHAN_LANDON_PO_PREFIX_REGEX = re.compile(r"^\s*(4\d+)")
+
+
+def _is_kunshan_landon_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) == "kunshan_landon"
+
+
+def _kunshan_landon_extract_po_from_description(desc):
+    """
+    Ambil leading digits (yang diawali '4') dari description.
+    Kembalikan string PO candidate, atau "" jika tidak match.
+
+    Contoh:
+      "45324149/CLM 26030220 HANGER BASKET..." -> "45324149"
+      "HANGER BASKET..."                       -> ""
+    """
+    if not isinstance(desc, str):
+        return ""
+    m = _KUNSHAN_LANDON_PO_PREFIX_REGEX.match(desc)
+    if not m:
+        return ""
+    return m.group(1)
+
+
+def _kunshan_landon_clean_description_after_po_recovery(desc) -> str:
+    """
+    Setelah PO recovery sukses, bersihkan inv_description.
+
+    Aturan:
+    1. Hapus kata pertama (sampai dan termasuk spasi pertama).
+    2. Jika sisa string diawali digit, hapus kata berikutnya. Ulangi sampai
+       sisa string diawali huruf alfabet (atau string habis).
+
+    Contoh:
+      "45324149/CLM 26030220 DESKRIPSI" -> "DESKRIPSI"
+    """
+    if not isinstance(desc, str):
+        return ""
+
+    s = desc.lstrip()
+
+    # Step 1: hapus kata pertama
+    space_idx = s.find(" ")
+    if space_idx == -1:
+        return ""
+    s = s[space_idx + 1:].lstrip()
+
+    # Step 2: terus hapus kata sampai diawali alfabet
+    while s and s[0].isdigit():
+        space_idx = s.find(" ")
+        if space_idx == -1:
+            return ""
+        s = s[space_idx + 1:].lstrip()
+
+    return s
+
+
+def _kunshan_landon_recover_po_from_description(
+    row: dict,
+    po_article_index,
+    po_desc_index,
+    remaining_state,
+):
+    """
+    Jalankan recovery PO khusus kunshan_landon.
+    Returns (mapped_rows, success_bool).
+
+    - mapped_rows: hasil dari _map_single_detail_row_to_po setelah recovery,
+      atau None kalau recovery tidak dilakukan.
+    - success_bool: True hanya kalau PO baru ditemukan DAN re-map sukses.
+    Kalau gagal, state row di-rollback ke nilai semula.
+    """
+    if not isinstance(row, dict):
+        return None, False
+
+    original_inv_desc = row.get("inv_description")
+    candidate_po = _kunshan_landon_extract_po_from_description(original_inv_desc)
+    if not candidate_po:
+        return None, False
+
+    candidate_po_norm = _norm_po_number(candidate_po)
+    if not candidate_po_norm:
+        return None, False
+
+    # Tidak ada gunanya retry kalau candidate sama persis dengan PO aktif.
+    current_inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+    if candidate_po_norm == current_inv_po_norm:
+        return None, False
+
+    original_inv_po = row.get("inv_customer_po_no")
+    original_pl_po = row.get("pl_customer_po_no")
+
+    row["inv_customer_po_no"] = candidate_po
+    if not _is_null(original_pl_po):
+        row["pl_customer_po_no"] = candidate_po
+
+    mapped_rows, success = _map_single_detail_row_to_po(
+        row=row,
+        po_article_index=po_article_index,
+        po_desc_index=po_desc_index,
+        remaining_state=remaining_state,
+    )
+
+    if not success:
+        # PO yang di-recover tidak match dengan PO master -> rollback total.
+        row["inv_customer_po_no"] = original_inv_po
+        row["pl_customer_po_no"] = original_pl_po
+        return mapped_rows, False
+
+    # Re-map sukses -> bersihkan inv_description.
+    cleaned_desc = _kunshan_landon_clean_description_after_po_recovery(original_inv_desc)
+    if cleaned_desc:
+        row["inv_description"] = cleaned_desc
+
+    # Propagate ke setiap row hasil (kalau CHILD PO split, ada lebih dari 1).
+    for r in mapped_rows:
+        if not isinstance(r, dict):
+            continue
+        r["inv_customer_po_no"] = row["inv_customer_po_no"]
+        if not _is_null(original_pl_po):
+            r["pl_customer_po_no"] = row["pl_customer_po_no"]
+        r["inv_description"] = row["inv_description"]
+        r["_kunshan_landon_po_recovered_from_description"] = True
+
+    return mapped_rows, True
+
+
 def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
     remaining_state = {}
@@ -5168,7 +5309,22 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                 r["inv_spart_item_no"] = original_inv_item
                 r["pl_item_no"] = original_pl_item
         # ---------------------------------------------
-        
+
+        # --- NEW: KUNSHAN_LANDON PO RECOVERY FROM DESCRIPTION ---
+        # Kalau PO mapping gagal, coba parse PO dari awal inv_description.
+        # Lihat _kunshan_landon_recover_po_from_description untuk detail.
+        if not success and _is_kunshan_landon_vendor(vendor_id):
+            recovered_rows, recovered_success = _kunshan_landon_recover_po_from_description(
+                row=row,
+                po_article_index=po_article_index,
+                po_desc_index=po_desc_index,
+                remaining_state=remaining_state,
+            )
+            if recovered_success:
+                mapped_rows = recovered_rows
+                success = True
+        # --------------------------------------------------------
+
         # --- NEW: GENERIC PO ITEM FALLBACK ---
         if not success and use_po_fallback:
             if _fallback_po_item_by_qty_price(row, po_lines):
