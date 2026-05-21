@@ -1938,8 +1938,9 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
 
         ATURAN KHUSUS PENTING:
         - Selain nomor utama di header, periksa juga baris-baris item di bagian tengah/bawah halaman.
-        - Terkadang ada nomor sub-invoice atau claim (contoh format: /K100, dll) yang menyempil tanpa label "Invoice No". 
+        - Terkadang ada nomor sub-invoice atau claim (contoh format: /K100, dll) yang menyempil tanpa label "Invoice No".
         - Jika Anda melihat string yang polanya mirip dengan invoice number utama (misalnya INS-...), WAJIB ekstrak string tersebut sebagai invoice number tersendiri.
+        - WAJIB ekstrak invoice number SECARA UTUH termasuk SELURUH suffix bertingkat (contoh: "INS-009/26/WTB/HB" — jangan dipotong jadi "INS-009/26/WTB" atau "INS-009/26"). Suffix seperti "/HB" atau "/HL" di akhir WAJIB ikut diekstrak karena membedakan invoice yang berbeda.
 
         OUTPUT HANYA JSON ARRAY:
         [
@@ -1972,8 +1973,9 @@ def _extract_multiple_invoice_no_from_single_page_for_split(src_pdf_path: str, p
                 src_doc = fitz.open(single_page_pdf)
                 text = src_doc[0].get_text()
                 
-                # Regex diperketat: hanya ambil pola INS-XXX/XX (contoh: INS-009/26 atau INS-009/26/K100)
-                matches = re.findall(r"\b(INS-\d{3}/\d{2}(?:/[A-Z0-9]+)?)\b", text, flags=re.IGNORECASE)
+                # Regex menangkap pola INS-XXX/XX dengan suffix bertingkat (contoh: INS-009/26, INS-009/26/K100, INS-009/26/WTB/HB, INS-009/26/WTB/HL).
+                # Penting: kuantor `*` agar segmen suffix bisa lebih dari satu — kalau hanya `?`, "INS-009/26/WTB/HB" akan terpotong jadi "INS-009/26/WTB" dan HB/HL ter-merge jadi satu group.
+                matches = re.findall(r"\b(INS-\d{3}/\d{2}(?:/[A-Z0-9]+)*)\b", text, flags=re.IGNORECASE)
                 for m in matches:
                     norm_m = _preprocess_invoice_no_for_grouping(m)
                     if norm_m and len(norm_m) > 5:
@@ -3983,6 +3985,111 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
             raise
 
     raise Exception("Gemini gagal menghasilkan JSON setelah retry")
+
+
+# =========================================================
+# CHUNKED INDEX EXTRACTION
+# =========================================================
+# Untuk dokumen dengan banyak line item (mis. chengs ~380 row),
+# index extraction tidak boleh dilakukan dalam satu shot karena
+# output JSON array akan melebihi max_output_tokens dan ter-truncate
+# sehingga Gemini gagal menghasilkan JSON valid setelah retry.
+# Solusi: pecah jadi beberapa chunk dengan range idx yang eksplisit,
+# lalu gabungkan hasilnya.
+
+def _get_index_chunk_size_for_vendor(vendor_id: str = "default") -> int:
+    """
+    Chunk size untuk INDEX extraction (bukan detail extraction).
+
+    Default 0 = single-shot (perilaku lama).
+    Khusus chengs (banyak line item dan output index padat),
+    pakai 60 supaya tiap chunk JSON pendek dan aman terhadap
+    max_output_tokens.
+    """
+    if normalize_vendor_id(vendor_id) == "chengs":
+        return 60
+
+    return 0
+
+
+def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int) -> str:
+    """
+    Bungkus build_index_prompt dengan kontrak chunk eksplisit
+    supaya Gemini hanya mengembalikan idx {first_index}..{last_index}.
+    """
+    base = build_index_prompt(total_row)
+    expected_count = last_index - first_index + 1
+    expected_indices = list(range(first_index, last_index + 1))
+
+    chunk_contract = f"""
+
+KONTRAK CHUNK INDEX — WAJIB DIIKUTI:
+- total_row sebenarnya = {total_row}.
+- Anda HANYA boleh mengeluarkan line item idx dari {first_index} sampai {last_index} (inclusive).
+- Output HARUS berupa JSON ARRAY berisi TEPAT {expected_count} object.
+- Object pertama WAJIB memiliki "idx" = {first_index}.
+- Object terakhir WAJIB memiliki "idx" = {last_index}.
+- Nilai "idx" tiap object WAJIB termasuk dalam set berikut: {expected_indices}.
+- DILARANG menyertakan idx < {first_index} atau idx > {last_index}.
+- Tetap gunakan urutan kemunculan di Invoice (sequential, tidak boleh skip, tidak boleh duplikat).
+- Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown, tanpa code fence.
+"""
+    return base + chunk_contract
+
+
+def _call_gemini_index_chunked(
+    file_uri: str,
+    total_row: int,
+    vendor_id: str,
+    chunk_size: int,
+) -> list:
+    """
+    Panggil Gemini untuk index extraction secara chunked.
+    Mengembalikan list gabungan dari semua chunk, urut sesuai idx.
+    """
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size harus > 0, dapat {chunk_size}")
+
+    all_items = []
+    first_index = 1
+    chunk_no = 1
+
+    while first_index <= total_row:
+        last_index = min(first_index + chunk_size - 1, total_row)
+
+        print(
+            f"[INDEX_CHUNK] chunk_no={chunk_no} "
+            f"first_index={first_index} last_index={last_index} "
+            f"total_row={total_row}"
+        )
+
+        prompt = _build_index_chunk_prompt(
+            total_row=total_row,
+            first_index=first_index,
+            last_index=last_index,
+        )
+
+        chunk_items = _call_gemini_json_uri(
+            file_uri,
+            prompt,
+            expect_array=True,
+            retries=3,
+            vendor_id=vendor_id,
+        )
+
+        if not isinstance(chunk_items, list):
+            raise Exception(
+                f"Index chunk bukan list. "
+                f"chunk_no={chunk_no} first_index={first_index} last_index={last_index}"
+            )
+
+        all_items.extend(chunk_items)
+
+        first_index = last_index + 1
+        chunk_no += 1
+
+    return all_items
+
 
 def _build_detail_batch_contract_prompt(
     batch_no: int,
@@ -7413,31 +7520,42 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 ),
                 reverse=True
             )
-            
+
             unique_rows = []
             seen_sigs = set()
             for r in merged_detail_rows:
                 if not isinstance(r, dict):
                     continue
-                
-                # Buang suffix sub-invoice (seperti /K100 atau /WTB) agar signature match dengan base invoice-nya
+
+                # Buang suffix /K (kasus K100 sub-section yang share PL parent) agar duplikat antar parent vs sub-PDF ter-dedup.
+                # JANGAN buang suffix /W — invoice seperti INS-009/26/WTB/HB dan INS-009/26/WTB/HL adalah invoice TERPISAH (file PDF berbeda), bukan sub-section dari INS-009/26.
                 inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
-                inv_no_base = inv_no_raw.split('/K')[0].split('/W')[0].strip()
-                
+                inv_no_base = inv_no_raw.split('/K')[0].strip()
+
+                # Sertakan PO number agar dua baris berbeda dengan item_no/qty/desc identik tapi PO berbeda tidak ter-dedup.
+                po_no = str(r.get("inv_customer_po_no") or r.get("pl_customer_po_no") or "").strip().upper()
                 item_no = str(r.get("inv_spart_item_no") or r.get("pl_item_no") or "").strip()
                 qty = _to_float(r.get("inv_quantity") or r.get("pl_quantity"))
                 desc = str(r.get("inv_description") or "").strip().upper()[:30]
-                
-                sig = (inv_no_base, item_no, qty, desc)
+
+                sig = (inv_no_base, po_no, item_no, qty, desc)
                 if sig not in seen_sigs:
                     seen_sigs.add(sig)
                     unique_rows.append(r)
-                    
+
             merged_detail_rows = unique_rows
-            
-            # Kembalikan ke urutan awal berdasarkan _detail_row_no jika ada
-            merged_detail_rows.sort(key=lambda r: int(r.get("_detail_row_no") or 999999))
-            
+
+            # Kembalikan ke urutan: kelompokkan per invoice_no dulu, lalu ascending by inv_seq (urutan line item di PDF).
+            def _karet_deli_sort_key(r):
+                inv_no = str(r.get("inv_invoice_no") or "").strip().upper()
+                seq_val = _to_float(r.get("inv_seq"))
+                if seq_val is None:
+                    # Fallback ke _detail_row_no jika inv_seq tidak ada, baris tanpa keduanya didorong ke akhir.
+                    seq_val = float(int(r.get("_detail_row_no") or 999999))
+                return (inv_no, seq_val)
+
+            merged_detail_rows.sort(key=_karet_deli_sort_key)
+
             print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication using strong signature")
 
         if bl_path:
@@ -11205,13 +11323,31 @@ def run_ocr(
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
         # NEW: INDEX extraction (anchor line item)
-        index_items = _call_gemini_json_uri(
-            file_uri_detail,
-            build_index_prompt(total_row),
-            expect_array=True,
-            retries=3,
-            vendor_id=vendor_id
-        )
+        # Untuk vendor dengan banyak line item (mis. chengs ~380 row),
+        # output JSON index dalam satu shot melebihi max_output_tokens
+        # sehingga Gemini ter-truncate dan retry gagal.
+        # Pakai chunked extraction kalau vendor mendeklarasikan chunk size > 0.
+        index_chunk_size = _get_index_chunk_size_for_vendor(vendor_id)
+
+        if index_chunk_size > 0:
+            print(
+                f"[INDEX_CHUNK_MODE] vendor_id={vendor_id} "
+                f"total_row={total_row} chunk_size={index_chunk_size}"
+            )
+            index_items = _call_gemini_index_chunked(
+                file_uri=file_uri_detail,
+                total_row=total_row,
+                vendor_id=vendor_id,
+                chunk_size=index_chunk_size,
+            )
+        else:
+            index_items = _call_gemini_json_uri(
+                file_uri_detail,
+                build_index_prompt(total_row),
+                expect_array=True,
+                retries=3,
+                vendor_id=vendor_id
+            )
 
         # fallback safety
         if not isinstance(index_items, list) or not index_items:

@@ -9,6 +9,9 @@ def _is_kunshan_landon_vendor_id(vendor_id: str = "default") -> bool:
 def _is_karet_deli_vendor_id(vendor_id: str = "default") -> bool:
     return str(vendor_id or "default").strip().lower() == "karet_deli"
 
+def _is_fox_vendor_id(vendor_id: str = "default") -> bool:
+    return str(vendor_id or "default").strip().lower() == "fox"
+
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -393,6 +396,15 @@ DILARANG KERAS:
     - Mengabaikan sub-section yang valid dan justru memaksa pakai header utama padahal inv_invoice_no menunjuk ke sub-section.
     - Memilih header utama saat inv_invoice_no jelas-jelas merujuk ke sub-section yang ada di body.
 """
+
+    fox_header_rule = ""
+    if _is_fox_vendor_id(vendor_id):
+        fox_header_rule = """
+ATURAN KHUSUS VENDOR FOX:
+Untuk dokumen Invoice ambil dari "Commercial Invoice #:" (Contoh: Commercial Invoice #: 91609521).
+Untuk dokumen Packing List ambil dari "Delivery:" (Contoh: Delivery: 91609521).
+maka inv_invoice_no = 91609521 dan pl_invoice_no = 91609521.
+        """
 
     template = """
 ROLE:
