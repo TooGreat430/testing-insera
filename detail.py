@@ -395,6 +395,16 @@ DILARANG KERAS:
     - Memilih sub-section yang tidak cocok dengan inv_invoice_no.
     - Mengabaikan sub-section yang valid dan justru memaksa pakai header utama padahal inv_invoice_no menunjuk ke sub-section.
     - Memilih header utama saat inv_invoice_no jelas-jelas merujuk ke sub-section yang ada di body.
+
+ATURAN KHUSUS INVOICE TOTAL AMOUNT:
+- Ambil total amount dari value numerik "Brutto" yang biasanya terletak di bagian akhir/bawah dokumen Invoice.
+  Contoh:
+  Brutto Rp. 661,789,200.00
+  Diskon Rp. 0.00
+  Total tanpa PPN Rp. 661,789,200.00
+  PPN Rp. 72,796,812.00
+  Total dengan PPN Rp. 734,586,012.00
+  maka inv_total_amount = 661,789,200.00 (Brutto), BUKAN 734,586,012.00 (total dengan PPN).
 """
 
     fox_header_rule = ""
