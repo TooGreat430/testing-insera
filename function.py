@@ -333,6 +333,26 @@ ZERO_CONTINUATION_MATCH_DESCRIPTION_FIELDS = [
     "pl_volume",
 ]
 
+def _create_sliced_pdf_for_batch(input_pdf: str, start_page_idx: int, end_page_idx: int) -> str:
+    """Memotong PDF dari halaman start_page_idx hingga end_page_idx (0-based)"""
+    reader = PdfReader(input_pdf)
+    writer = PdfWriter()
+    total_pages = len(reader.pages)
+    
+    start_page_idx = max(0, start_page_idx)
+    end_page_idx = min(total_pages - 1, end_page_idx)
+    
+    for i in range(start_page_idx, end_page_idx + 1):
+        writer.add_page(reader.pages[i])
+        
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=f"_sliced_{start_page_idx}_{end_page_idx}.pdf")
+    out.close()
+    
+    with open(out.name, "wb") as f:
+        writer.write(f)
+        
+    return out.name
+
 def _is_zero_continuation_row(row: dict) -> bool:
     """
     True hanya jika SEMUA field numeric utama bernilai 0.
@@ -9623,11 +9643,6 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     return rows
 
 def _build_detail_recheck_batches(rows_payload: list, normal_batch_size: int):
-    """
-    Untuk total issue, jangan potong sembarang per 5 row.
-    Semua row dalam invoice group total issue harus dikirim bareng
-    supaya Gemini bisa membedakan row mana yang salah.
-    """
     total_groups = {}
     normal_items = []
 
@@ -9642,12 +9657,19 @@ def _build_detail_recheck_batches(rows_payload: list, normal_batch_size: int):
             normal_items.append(item)
 
     batches = []
+    
+    # Batas aman maksimum row dalam 1 prompt untuk Total Issue
+    MAX_TOTAL_BATCH_SIZE = 35
 
-    # Total issue batch: per invoice group.
+    # Total issue batch: per invoice group dengan batasan chunking
     for _, group_items in total_groups.items():
-        batches.append(group_items)
+        if len(group_items) > MAX_TOTAL_BATCH_SIZE:
+            for i in range(0, len(group_items), MAX_TOTAL_BATCH_SIZE):
+                batches.append(group_items[i:i + MAX_TOTAL_BATCH_SIZE])
+        else:
+            batches.append(group_items)
 
-    # Non-total batch: tetap pakai chunk biasa.
+    # Non-total batch: tetap pakai chunk biasa
     for i in range(0, len(normal_items), normal_batch_size):
         batches.append(normal_items[i:i + normal_batch_size])
 
@@ -9723,7 +9745,16 @@ def _repair_zero_negative_total_issue_response(batch: list, repaired_batch: list
 
     return repaired_out
 
-def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list, vendor_id: str = "default", vendor_prompt_text: str = ""):
+def _call_gemini_detail_line_recheck_once(
+    file_uri: str, 
+    rows: list, 
+    vendor_id: str = "default", 
+    vendor_prompt_text: str = "",
+    total_row: int = 0,
+    index_items: list = None,
+    local_pdf_path: str = None,
+    run_prefix: str = None
+):
     rows_payload = _build_detail_line_recheck_rows_payload(rows)
     if not rows_payload:
         return []
@@ -9736,7 +9767,7 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list, vendor_id: 
 
     batch_size = max(1, min(configured_batch_size, 5))
 
-    def _call_recheck_batch(batch: list, label: str, strict_total_retry: bool = False):
+    def _call_recheck_batch(batch: list, label: str, strict_total_retry: bool = False, uri_override: str = file_uri):
         for batch_idx, item in enumerate(batch or []):
             if not isinstance(item, dict):
                 continue
@@ -9756,7 +9787,7 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list, vendor_id: 
             zero_retry_count = max(0, attempt - 1)
             try:
                 repaired_batch = _call_gemini_json_uri(
-                    file_uri,
+                    uri_override, # <--- MENGGUNAKAN URI OVERRIDE SLICED PDF
                     _build_detail_line_recheck_prompt(
                         batch,
                         strict_total_retry=(strict_total_retry or attempt > 1),
@@ -9780,15 +9811,42 @@ def _call_gemini_detail_line_recheck_once(file_uri: str, rows: list, vendor_id: 
         return []
 
     batches = _build_detail_recheck_batches(rows_payload, normal_batch_size=batch_size)
+    total_pdf_pages = _count_pdf_pages(local_pdf_path) if local_pdf_path else 0
+
     for batch_index, batch in enumerate(batches, start=1):
         label = f"batch={batch_index}"
+        current_uri = file_uri
+        
+        # === LOGIC TRIGGER >= 90 LINE ITEMS UNTUK RECHECK ===
+        if total_row >= 90 and index_items and local_pdf_path and run_prefix:
+            row_nos = [int(item["_detail_row_no"]) for item in batch if item.get("_detail_row_no")]
+            pages = []
+            
+            for r_no in row_nos:
+                if 0 <= r_no - 1 < len(index_items):
+                    idx_item = index_items[r_no - 1]
+                    p = int(idx_item.get("page_no") or idx_item.get("page") or 0)
+                    if p > 0: 
+                        pages.append(p)
+            
+            if pages:
+                min_p, max_p = min(pages), max(pages)
+                start_idx = max(0, min_p - 1 - 1)
+                end_idx = min(total_pdf_pages - 1, max_p - 1 + 1)
+                
+                sliced_local = _create_sliced_pdf_for_batch(local_pdf_path, start_idx, end_idx)
+                current_uri = _upload_temp_pdf_to_gcs(
+                    sliced_local, run_prefix, name=f"recheck_batch_{batch_index}_{start_idx}_{end_idx}"
+                )
+
         try:
-            r_batch = _call_recheck_batch(batch, label=label, strict_total_retry=False)
+            r_batch = _call_recheck_batch(batch, label=label, strict_total_retry=False, uri_override=current_uri)
             if r_batch:
                 repaired_rows.extend(r_batch)
         except Exception as e:
             print(f"[RECHECK_BATCH_FAIL] {label} gagal sepenuhnya: {e}")
             continue
+            
     return repaired_rows
 
 def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
@@ -10820,7 +10878,7 @@ def _run_detail_jobs(
         futures = [
             ex.submit(
                 _run_one_detail_batch,
-                input_uri,
+                job.get("file_uri", input_uri), # <--- UBAH BARIS INI
                 run_prefix,
                 job["batch_no"],
                 job["prompt"],
@@ -11175,25 +11233,19 @@ def run_ocr(
             f"vendor_id={vendor_id} "
             f"batch_size={detail_batch_size}"
         )
+
         jobs = []
         first_index = 1
         batch_no = 1
+        total_detail_pages = _count_pdf_pages(merged_pdf_detail)
 
         while first_index <= total_row:
             last_index = min(first_index + detail_batch_size - 1, total_row)
-
             index_slice = index_items[first_index - 1:last_index]  # 1-based -> 0-based
             expected_indices = list(range(first_index, last_index + 1))
 
             if len(index_slice) != len(expected_indices):
-                raise Exception(
-                    f"Index slice mismatch. "
-                    f"batch_no={batch_no}, "
-                    f"first_index={first_index}, "
-                    f"last_index={last_index}, "
-                    f"index_slice_len={len(index_slice)}, "
-                    f"expected_len={len(expected_indices)}"
-                )
+                raise Exception(f"Index slice mismatch. batch_no={batch_no}")
 
             prompt = build_detail_prompt_from_index(
                 total_row=total_row,
@@ -11204,8 +11256,44 @@ def run_ocr(
                 vendor_prompt_text=vendor_prompt_text
             )
 
+            # === LOGIC TRIGGER >= 90 LINE ITEMS ===
+            batch_file_uri = base_detail_input_uri  # Default uri (Full PDF)
+            
+            if total_row >= 90:
+                pages = [
+                    int(x.get("page_no") or x.get("page", 0)) 
+                    for x in index_slice 
+                    if x.get("page_no") or x.get("page")
+                ]
+                
+                if pages:
+                    min_p = min(pages)
+                    max_p = max(pages)
+                    
+                    # Potong dengan overlap +/- 1 halaman sebagai safety net
+                    start_idx = max(0, min_p - 1 - 1) 
+                    end_idx = min(total_detail_pages - 1, max_p - 1 + 1)
+                    
+                    sliced_local = _create_sliced_pdf_for_batch(merged_pdf_detail, start_idx, end_idx)
+                    temp_local_paths.append(sliced_local)
+                    
+                    batch_file_uri = _upload_temp_pdf_to_gcs(
+                        sliced_local,
+                        run_prefix,
+                        name=f"detail_batch_{batch_no}_{start_idx}_{end_idx}"
+                    )
+                    
+                    prompt += (
+                        f"\n\nPERHATIAN GUARDRAIL INDEKS:\n"
+                        f"Anda sedang membaca POTONGAN DOKUMEN (Halaman fisik ke-{start_idx+1} sampai {end_idx+1}). "
+                        f"JANGAN mereset indeks hitungan Anda dari 1! "
+                        f"Tugas Anda HANYA mengekstrak line item ke-{first_index} sampai {last_index} "
+                        f"secara berurutan menggunakan _expected_index yang diberikan."
+                    )
+
             jobs.append({
                 "batch_no": batch_no,
+                "file_uri": batch_file_uri,
                 "prompt": prompt,
                 "first_index": first_index,
                 "last_index": last_index,
@@ -11255,6 +11343,10 @@ def run_ocr(
             all_rows,
             vendor_id=vendor_id,
             vendor_prompt_text=vendor_prompt_text,
+            total_row=total_row,
+            index_items=index_items,
+            local_pdf_path=merged_pdf_detail,
+            run_prefix=run_prefix
         )
 
         if repaired_rows:
