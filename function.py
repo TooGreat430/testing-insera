@@ -486,6 +486,81 @@ def _pick_best_total_value(existing_value, candidate_value):
     return existing_num
 
 
+# Field total yang per-rule HARUS sama untuk semua row dalam 1 invoice_no.
+# Multi-pass extraction (karet_deli multi-section PL, LLM non-determinism)
+# kadang menghasilkan nilai berbeda per baris untuk field-field ini —
+# misal pl_total_quantity di 1 baris 30437, baris lain 30438. Canonical-kan.
+INVOICE_TOTAL_HEADER_FIELDS = (
+    "inv_total_quantity",
+    "inv_total_amount",
+    "inv_total_nw",
+    "inv_total_gw",
+    "inv_total_volume",
+    "inv_total_package",
+    "pl_total_quantity",
+    "pl_total_amount",
+    "pl_total_nw",
+    "pl_total_gw",
+    "pl_total_volume",
+    "pl_total_package",
+)
+
+
+def _canonicalize_invoice_total_headers(rows: list):
+    """
+    Untuk tiap inv_invoice_no group, pilih satu nilai canonical per
+    total-header field, lalu tulis balik ke seluruh row di group itu.
+
+    Strategi: majority vote (nilai paling sering muncul menang),
+    tie-break ke magnitude lebih besar (defensif terhadap row partial
+    extraction yang berisi 0/null/angka tidak lengkap).
+    Null values diabaikan saat voting.
+    """
+    if not isinstance(rows, list) or not rows:
+        return rows
+
+    grouped = _group_rows_by_invoice_no(rows)
+
+    canonical_by_group = {}
+
+    for group_key, group_rows in grouped.items():
+        canonical = {}
+
+        for field in INVOICE_TOTAL_HEADER_FIELDS:
+            counts = {}
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+                v = _to_float(row.get(field))
+                if v is None:
+                    continue
+                counts[v] = counts.get(v, 0) + 1
+
+            if not counts:
+                continue
+
+            sorted_vals = sorted(
+                counts.items(),
+                key=lambda kv: (kv[1], abs(kv[0])),
+                reverse=True,
+            )
+            canonical[field] = sorted_vals[0][0]
+
+        canonical_by_group[group_key] = canonical
+
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        group_key = _get_detail_total_group_key(row, idx)
+        canonical = canonical_by_group.get(group_key)
+        if not canonical:
+            continue
+        for field, value in canonical.items():
+            row[field] = value
+
+    return rows
+
+
 def _aggregate_total_fields_from_detail_rows(detail_rows: list) -> dict:
     """
     Agregasi field-field yang mengandung 'total':
@@ -7786,6 +7861,12 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     unique_rows.append(r)
 
             merged_detail_rows = unique_rows
+
+            # Samakan header total per invoice_no — multi-pass extraction kadang
+            # menghasilkan inv_total_amount / pl_total_quantity yang berbeda di
+            # baris-baris dari invoice yang sama. Per rule, satu invoice_no
+            # WAJIB punya satu set header total.
+            _canonicalize_invoice_total_headers(merged_detail_rows)
 
             # Kembalikan ke urutan: kelompokkan per invoice_no dulu, lalu ascending by inv_seq (urutan line item di PDF).
             def _karet_deli_sort_key(r):
