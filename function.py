@@ -7887,12 +7887,9 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 if not isinstance(r, dict):
                     continue
 
-                # Buang suffix /K (kasus K100 sub-section yang share PL parent) agar duplikat antar parent vs sub-PDF ter-dedup.
-                # JANGAN buang suffix /W — invoice seperti INS-009/26/WTB/HB dan INS-009/26/WTB/HL adalah invoice TERPISAH (file PDF berbeda), bukan sub-section dari INS-009/26.
                 inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
                 inv_no_base = inv_no_raw.split('/K')[0].strip()
 
-                # Sertakan PO number agar dua baris berbeda dengan item_no/qty/desc identik tapi PO berbeda tidak ter-dedup.
                 po_no = str(r.get("inv_customer_po_no") or r.get("pl_customer_po_no") or "").strip().upper()
                 item_no = str(r.get("inv_spart_item_no") or r.get("pl_item_no") or "").strip()
                 qty = _to_float(r.get("inv_quantity") or r.get("pl_quantity"))
@@ -7911,18 +7908,68 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             # WAJIB punya satu set header total.
             _canonicalize_invoice_total_headers(merged_detail_rows)
 
-            # Kembalikan ke urutan: kelompokkan per invoice_no dulu, lalu ascending by inv_seq (urutan line item di PDF).
             def _karet_deli_sort_key(r):
                 inv_no = str(r.get("inv_invoice_no") or "").strip().upper()
                 seq_val = _to_float(r.get("inv_seq"))
                 if seq_val is None:
-                    # Fallback ke _detail_row_no jika inv_seq tidak ada, baris tanpa keduanya didorong ke akhir.
                     seq_val = float(int(r.get("_detail_row_no") or 999999))
                 return (inv_no, seq_val)
 
             merged_detail_rows.sort(key=_karet_deli_sort_key)
 
             print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication using strong signature")
+
+            # =================================================================
+            # FIX: HEAL DATA SETELAH DEDUPLIKASI (HEADER BOLONG & TOTAL ERROR)
+            # =================================================================
+            
+            # 1. Fix Header Bolong (Forward Fill per Invoice)
+            header_cache = {}
+            for r in merged_detail_rows:
+                inv_no = r.get("inv_invoice_no")
+                v_name = r.get("inv_vendor_name")
+                v_addr = r.get("inv_vendor_address")
+                
+                # Cari baris yang punya header valid untuk dijadikan patokan
+                if inv_no and v_name and v_name != "null":
+                    header_cache[inv_no] = {"name": v_name, "addr": v_addr}
+            
+            for r in merged_detail_rows:
+                inv_no = r.get("inv_invoice_no")
+                if inv_no in header_cache:
+                    if _is_null(r.get("inv_vendor_name")):
+                        r["inv_vendor_name"] = header_cache[inv_no]["name"]
+                    if _is_null(r.get("inv_vendor_address")):
+                        r["inv_vendor_address"] = header_cache[inv_no]["addr"]
+
+            # 2. Fix Total Mismatch Error Nyasar (Re-Validasi dari Data Bersih)
+            for r in merged_detail_rows:
+                if not isinstance(r, dict): continue
+                msgs = _split_match_description_messages(r.get("match_description"))
+                
+                # Hapus error mismatch bawaan dari ghost group
+                kept_msgs = [m for m in msgs if "total_" not in m.lower()]
+                
+                if kept_msgs:
+                    r["match_description"] = "; ".join(kept_msgs)
+                else:
+                    r["match_score"] = "true"
+                    r["match_description"] = "null"
+
+            # Kelompokkan data yang sudah bersih per invoice untuk divalidasi ulang
+            rows_by_inv = {}
+            for r in merged_detail_rows:
+                inv_no = str(r.get("inv_invoice_no") or "unknown").strip()
+                rows_by_inv.setdefault(inv_no, []).append(r)
+
+            # Hitung ulang sum dan berikan error total yang benar-benar akurat
+            for inv_no, group_rows in rows_by_inv.items():
+                _validate_invoice_rows(group_rows)
+                _validate_packing_rows(group_rows)
+            
+            # Pastikan status final (TRUE/FALSE) sinkron dengan error terupdate
+            _finalize_match_fields(merged_detail_rows)
+            # =================================================================
 
         if bl_path:
             # Majority BL header antar invoice group.
