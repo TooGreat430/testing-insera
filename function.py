@@ -3622,25 +3622,40 @@ def _split_match_description_messages(value):
     return [part.strip() for part in re.split(r"\s*;\s*", s) if part and part.strip()]
 
 
+_TOTAL_ISSUE_REGEX = re.compile(
+    r"\btotal[_\s\-]*(quantity|amount|nw|gw|volume|package|qty|weight|nett|gross)\b"
+    r"[^a-z0-9]*"
+    r"(mismatch|tidak\s*(?:sesuai|cocok|sama|match)|≠|!=|diff|berbeda)",
+    flags=re.IGNORECASE,
+)
+
+_TOTAL_PREFIX_REGEX = re.compile(r"^\s*total\b[\s:_\-]", flags=re.IGNORECASE)
+
+
 def _is_total_issue_message(msg: str) -> bool:
-    s = str(msg or "").strip().lower()
+    s = str(msg or "").strip()
 
     if not s:
         return False
 
-    if s.startswith("total:"):
+    # "total: ..." atau "Total - ..." dianggap total-level issue.
+    if _TOTAL_PREFIX_REGEX.match(s):
         return True
 
-    total_keywords = [
+    if _TOTAL_ISSUE_REGEX.search(s):
+        return True
+
+    # Safety net: variasi wording yang belum kena regex tapi jelas total-level.
+    s_low = s.lower()
+    legacy_keywords = (
         "total_quantity mismatch",
         "total_amount mismatch",
         "total_nw mismatch",
         "total_gw mismatch",
         "total_volume mismatch",
         "total_package mismatch",
-    ]
-
-    return any(keyword in s for keyword in total_keywords)
+    )
+    return any(kw in s_low for kw in legacy_keywords)
 
 
 def _row_has_non_total_issue(row: dict) -> bool:
@@ -3826,13 +3841,14 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         for row in rows:
             if isinstance(row, dict):
                 row["confidence_label"] = "positive"
+                row["_confidence_label_source"] = "no_total_issue"
         return rows
 
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
-        match_score = str(row.get("match_score", "")).strip().upper() # Ambil uppercase
+        match_score = str(row.get("match_score", "")).strip().upper()
         invoice_group = _get_detail_total_group_key(row, idx)
 
         row_has_total_issue = (
@@ -3843,25 +3859,50 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
 
         if not row_has_total_issue:
             row["confidence_label"] = "positive"
+            row["_confidence_label_source"] = "row_no_total_issue"
             continue
 
         # HARD RULE: TRUE dan CHILD PO tidak boleh negative.
-        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI
+        if match_score in ("TRUE", "CHILD PO"):
             row["confidence_label"] = "positive"
+            row["_confidence_label_source"] = "hard_rule_match_true"
             continue
 
-        row["confidence_label"] = "positive"
-        
         if row.get("_gemini_total_issue_negative"):
             row["confidence_label"] = "negative"
+            row["_confidence_label_source"] = "gemini_total_issue_negative"
             continue
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
         if isinstance(changed_fields, list) and changed_fields:
             row["confidence_label"] = "negative"
+            row["_confidence_label_source"] = "gemini_recheck_changed_fields"
             continue
 
         row["confidence_label"] = "positive"
+        row["_confidence_label_source"] = "default_positive_no_gemini_signal"
+
+    # =====================================================
+    # SANITY CHECK:
+    # Group yang punya total issue tapi 0 row negative.
+    # Bisa terjadi kalau Gemini recheck gagal / return semua positive.
+    # Log warning supaya reviewer tahu group itu perlu dicek manual.
+    # =====================================================
+    group_negative_count = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("confidence_label", "")).strip().lower() != "negative":
+            continue
+        gk = _get_detail_total_group_key(row, 0)
+        group_negative_count[gk] = group_negative_count.get(gk, 0) + 1
+
+    for group_key in confidence_total_groups:
+        if group_negative_count.get(group_key, 0) == 0:
+            print(
+                f"[CONFIDENCE_WARN] group='{group_key}' has total issue but 0 negative rows — "
+                f"Gemini recheck mungkin gagal menentukan kandidat; review manual disarankan."
+            )
 
     return rows
 
