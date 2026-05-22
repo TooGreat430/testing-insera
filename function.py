@@ -486,6 +486,81 @@ def _pick_best_total_value(existing_value, candidate_value):
     return existing_num
 
 
+# Field total yang per-rule HARUS sama untuk semua row dalam 1 invoice_no.
+# Multi-pass extraction (karet_deli multi-section PL, LLM non-determinism)
+# kadang menghasilkan nilai berbeda per baris untuk field-field ini —
+# misal pl_total_quantity di 1 baris 30437, baris lain 30438. Canonical-kan.
+INVOICE_TOTAL_HEADER_FIELDS = (
+    "inv_total_quantity",
+    "inv_total_amount",
+    "inv_total_nw",
+    "inv_total_gw",
+    "inv_total_volume",
+    "inv_total_package",
+    "pl_total_quantity",
+    "pl_total_amount",
+    "pl_total_nw",
+    "pl_total_gw",
+    "pl_total_volume",
+    "pl_total_package",
+)
+
+
+def _canonicalize_invoice_total_headers(rows: list):
+    """
+    Untuk tiap inv_invoice_no group, pilih satu nilai canonical per
+    total-header field, lalu tulis balik ke seluruh row di group itu.
+
+    Strategi: majority vote (nilai paling sering muncul menang),
+    tie-break ke magnitude lebih besar (defensif terhadap row partial
+    extraction yang berisi 0/null/angka tidak lengkap).
+    Null values diabaikan saat voting.
+    """
+    if not isinstance(rows, list) or not rows:
+        return rows
+
+    grouped = _group_rows_by_invoice_no(rows)
+
+    canonical_by_group = {}
+
+    for group_key, group_rows in grouped.items():
+        canonical = {}
+
+        for field in INVOICE_TOTAL_HEADER_FIELDS:
+            counts = {}
+            for row in group_rows:
+                if not isinstance(row, dict):
+                    continue
+                v = _to_float(row.get(field))
+                if v is None:
+                    continue
+                counts[v] = counts.get(v, 0) + 1
+
+            if not counts:
+                continue
+
+            sorted_vals = sorted(
+                counts.items(),
+                key=lambda kv: (kv[1], abs(kv[0])),
+                reverse=True,
+            )
+            canonical[field] = sorted_vals[0][0]
+
+        canonical_by_group[group_key] = canonical
+
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        group_key = _get_detail_total_group_key(row, idx)
+        canonical = canonical_by_group.get(group_key)
+        if not canonical:
+            continue
+        for field, value in canonical.items():
+            row[field] = value
+
+    return rows
+
+
 def _aggregate_total_fields_from_detail_rows(detail_rows: list) -> dict:
     """
     Agregasi field-field yang mengandung 'total':
@@ -3622,25 +3697,40 @@ def _split_match_description_messages(value):
     return [part.strip() for part in re.split(r"\s*;\s*", s) if part and part.strip()]
 
 
+_TOTAL_ISSUE_REGEX = re.compile(
+    r"\btotal[_\s\-]*(quantity|amount|nw|gw|volume|package|qty|weight|nett|gross)\b"
+    r"[^a-z0-9]*"
+    r"(mismatch|tidak\s*(?:sesuai|cocok|sama|match)|≠|!=|diff|berbeda)",
+    flags=re.IGNORECASE,
+)
+
+_TOTAL_PREFIX_REGEX = re.compile(r"^\s*total\b[\s:_\-]", flags=re.IGNORECASE)
+
+
 def _is_total_issue_message(msg: str) -> bool:
-    s = str(msg or "").strip().lower()
+    s = str(msg or "").strip()
 
     if not s:
         return False
 
-    if s.startswith("total:"):
+    # "total: ..." atau "Total - ..." dianggap total-level issue.
+    if _TOTAL_PREFIX_REGEX.match(s):
         return True
 
-    total_keywords = [
+    if _TOTAL_ISSUE_REGEX.search(s):
+        return True
+
+    # Safety net: variasi wording yang belum kena regex tapi jelas total-level.
+    s_low = s.lower()
+    legacy_keywords = (
         "total_quantity mismatch",
         "total_amount mismatch",
         "total_nw mismatch",
         "total_gw mismatch",
         "total_volume mismatch",
         "total_package mismatch",
-    ]
-
-    return any(keyword in s for keyword in total_keywords)
+    )
+    return any(kw in s_low for kw in legacy_keywords)
 
 
 def _row_has_non_total_issue(row: dict) -> bool:
@@ -3826,13 +3916,14 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
         for row in rows:
             if isinstance(row, dict):
                 row["confidence_label"] = "positive"
+                row["_confidence_label_source"] = "no_total_issue"
         return rows
 
     for idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
 
-        match_score = str(row.get("match_score", "")).strip().upper() # Ambil uppercase
+        match_score = str(row.get("match_score", "")).strip().upper()
         invoice_group = _get_detail_total_group_key(row, idx)
 
         row_has_total_issue = (
@@ -3843,25 +3934,50 @@ def _finalize_audit_confidence_labels(rows: list, total_attribution=None):
 
         if not row_has_total_issue:
             row["confidence_label"] = "positive"
+            row["_confidence_label_source"] = "row_no_total_issue"
             continue
 
         # HARD RULE: TRUE dan CHILD PO tidak boleh negative.
-        if match_score in ("TRUE", "CHILD PO"): # <-- UBAH DISINI
+        if match_score in ("TRUE", "CHILD PO"):
             row["confidence_label"] = "positive"
+            row["_confidence_label_source"] = "hard_rule_match_true"
             continue
 
-        row["confidence_label"] = "positive"
-        
         if row.get("_gemini_total_issue_negative"):
             row["confidence_label"] = "negative"
+            row["_confidence_label_source"] = "gemini_total_issue_negative"
             continue
 
         changed_fields = row.get("_gemini_recheck_changed_fields")
         if isinstance(changed_fields, list) and changed_fields:
             row["confidence_label"] = "negative"
+            row["_confidence_label_source"] = "gemini_recheck_changed_fields"
             continue
 
         row["confidence_label"] = "positive"
+        row["_confidence_label_source"] = "default_positive_no_gemini_signal"
+
+    # =====================================================
+    # SANITY CHECK:
+    # Group yang punya total issue tapi 0 row negative.
+    # Bisa terjadi kalau Gemini recheck gagal / return semua positive.
+    # Log warning supaya reviewer tahu group itu perlu dicek manual.
+    # =====================================================
+    group_negative_count = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("confidence_label", "")).strip().lower() != "negative":
+            continue
+        gk = _get_detail_total_group_key(row, 0)
+        group_negative_count[gk] = group_negative_count.get(gk, 0) + 1
+
+    for group_key in confidence_total_groups:
+        if group_negative_count.get(group_key, 0) == 0:
+            print(
+                f"[CONFIDENCE_WARN] group='{group_key}' has total issue but 0 negative rows — "
+                f"Gemini recheck mungkin gagal menentukan kandidat; review manual disarankan."
+            )
 
     return rows
 
@@ -3990,24 +4106,36 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
 # =========================================================
 # CHUNKED INDEX EXTRACTION
 # =========================================================
-# Untuk dokumen dengan banyak line item (mis. chengs ~380 row),
-# index extraction tidak boleh dilakukan dalam satu shot karena
-# output JSON array akan melebihi max_output_tokens dan ter-truncate
-# sehingga Gemini gagal menghasilkan JSON valid setelah retry.
+# Untuk dokumen dengan banyak line item, index extraction tidak boleh
+# dilakukan dalam satu shot karena output JSON array akan melebihi
+# max_output_tokens dan ter-truncate sehingga Gemini gagal menghasilkan
+# JSON valid setelah retry.
 # Solusi: pecah jadi beberapa chunk dengan range idx yang eksplisit,
 # lalu gabungkan hasilnya.
+#
+# Trigger berbasis JUMLAH LINE ITEM (bukan vendor), supaya dokumen besar
+# dari vendor apa pun otomatis ter-cover tanpa perlu maintain whitelist.
 
-def _get_index_chunk_size_for_vendor(vendor_id: str = "default") -> int:
+INDEX_CHUNK_TOTAL_ROW_THRESHOLD = 90
+INDEX_CHUNK_SIZE = 60
+
+
+def _get_index_chunk_size_for_total_row(total_row: int) -> int:
     """
     Chunk size untuk INDEX extraction (bukan detail extraction).
 
-    Default 0 = single-shot (perilaku lama).
-    Khusus chengs (banyak line item dan output index padat),
-    pakai 60 supaya tiap chunk JSON pendek dan aman terhadap
+    Return 0 = single-shot (perilaku lama, untuk dokumen kecil).
+    Return INDEX_CHUNK_SIZE = chunked, dipakai kalau total_row melebihi
+    threshold supaya tiap chunk JSON pendek dan aman terhadap
     max_output_tokens.
     """
-    if normalize_vendor_id(vendor_id) == "chengs":
-        return 60
+    try:
+        n = int(total_row)
+    except (TypeError, ValueError):
+        return 0
+
+    if n > INDEX_CHUNK_TOTAL_ROW_THRESHOLD:
+        return INDEX_CHUNK_SIZE
 
     return 0
 
@@ -4089,6 +4217,49 @@ def _call_gemini_index_chunked(
         chunk_no += 1
 
     return all_items
+
+
+def _shimano_dedupe_index_items(index_items: list) -> list:
+    # Drop duplicate anchor rows yang muncul karena chunk boundary overlap.
+    # Key = (PART#, qty, amount, PO). Hanya non-empty key yang di-dedupe
+    # supaya row kosong (placeholder/null) tetap aman.
+    if not isinstance(index_items, list):
+        return index_items
+
+    seen_keys = set()
+    deduped = []
+    dropped = 0
+
+    for item in index_items:
+        if not isinstance(item, dict):
+            deduped.append(item)
+            continue
+
+        part_no = str(item.get("inv_spart_item_no") or "").strip().upper()
+        qty = _to_float(item.get("inv_quantity")) or 0
+        amount = _to_float(item.get("inv_amount")) or 0
+        po = _norm_po_number(item.get("inv_customer_po_no"))
+
+        key = (part_no, qty, amount, po)
+        # hanya treat sebagai duplicate kalau seluruh komponen key non-empty
+        is_full_key = bool(part_no) and qty > 0 and bool(po)
+
+        if is_full_key and key in seen_keys:
+            print(
+                f"[SHIMANO_DEDUPE] drop duplicate anchor: "
+                f"PART#={part_no} qty={qty} amount={amount} po={po}"
+            )
+            dropped += 1
+            continue
+
+        if is_full_key:
+            seen_keys.add(key)
+        deduped.append(item)
+
+    if dropped:
+        print(f"[SHIMANO_DEDUPE] total dropped={dropped} kept={len(deduped)}")
+
+    return deduped
 
 
 def _build_detail_batch_contract_prompt(
@@ -5118,6 +5289,147 @@ def _fallback_po_item_by_qty_price(row: dict, po_lines: list) -> bool:
 
     return False
 
+
+# =========================================================
+# KUNSHAN_LANDON: RECOVER PO YANG TERSANGKUT DI inv_description
+# =========================================================
+# Kasus nyata kunshan_landon: Gemini gagal mengekstrak inv_customer_po_no
+# karena PO number tersangkut di awal description, mis.
+#   "45324149/CLM 26030220 HANGER BASKET, LANDON, -, SILVER,-, ..."
+# Setelah _fill_forward, inv_customer_po_no malah inherit PO baris atasnya
+# yang salah, sehingga PO mapping gagal.
+# Recovery: kalau PO mapping pertama gagal, coba parse PO dari awal
+# inv_description (selalu diawali '4'). Kalau re-map sukses dengan PO baru,
+# update inv_customer_po_no & pl_customer_po_no, lalu bersihkan
+# inv_description.
+
+_KUNSHAN_LANDON_PO_PREFIX_REGEX = re.compile(r"^\s*(4\d+)")
+
+
+def _is_kunshan_landon_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) == "kunshan_landon"
+
+
+def _kunshan_landon_extract_po_from_description(desc):
+    """
+    Ambil leading digits (yang diawali '4') dari description.
+    Kembalikan string PO candidate, atau "" jika tidak match.
+
+    Contoh:
+      "45324149/CLM 26030220 HANGER BASKET..." -> "45324149"
+      "HANGER BASKET..."                       -> ""
+    """
+    if not isinstance(desc, str):
+        return ""
+    m = _KUNSHAN_LANDON_PO_PREFIX_REGEX.match(desc)
+    if not m:
+        return ""
+    return m.group(1)
+
+
+def _kunshan_landon_clean_description_after_po_recovery(desc) -> str:
+    """
+    Setelah PO recovery sukses, bersihkan inv_description.
+
+    Aturan:
+    1. Hapus kata pertama (sampai dan termasuk spasi pertama).
+    2. Jika sisa string diawali digit, hapus kata berikutnya. Ulangi sampai
+       sisa string diawali huruf alfabet (atau string habis).
+
+    Contoh:
+      "45324149/CLM 26030220 DESKRIPSI" -> "DESKRIPSI"
+    """
+    if not isinstance(desc, str):
+        return ""
+
+    s = desc.lstrip()
+
+    # Step 1: hapus kata pertama
+    space_idx = s.find(" ")
+    if space_idx == -1:
+        return ""
+    s = s[space_idx + 1:].lstrip()
+
+    # Step 2: terus hapus kata sampai diawali alfabet
+    while s and s[0].isdigit():
+        space_idx = s.find(" ")
+        if space_idx == -1:
+            return ""
+        s = s[space_idx + 1:].lstrip()
+
+    return s
+
+
+def _kunshan_landon_recover_po_from_description(
+    row: dict,
+    po_article_index,
+    po_desc_index,
+    remaining_state,
+):
+    """
+    Jalankan recovery PO khusus kunshan_landon.
+    Returns (mapped_rows, success_bool).
+
+    - mapped_rows: hasil dari _map_single_detail_row_to_po setelah recovery,
+      atau None kalau recovery tidak dilakukan.
+    - success_bool: True hanya kalau PO baru ditemukan DAN re-map sukses.
+    Kalau gagal, state row di-rollback ke nilai semula.
+    """
+    if not isinstance(row, dict):
+        return None, False
+
+    original_inv_desc = row.get("inv_description")
+    candidate_po = _kunshan_landon_extract_po_from_description(original_inv_desc)
+    if not candidate_po:
+        return None, False
+
+    candidate_po_norm = _norm_po_number(candidate_po)
+    if not candidate_po_norm:
+        return None, False
+
+    # Tidak ada gunanya retry kalau candidate sama persis dengan PO aktif.
+    current_inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+    if candidate_po_norm == current_inv_po_norm:
+        return None, False
+
+    original_inv_po = row.get("inv_customer_po_no")
+    original_pl_po = row.get("pl_customer_po_no")
+
+    row["inv_customer_po_no"] = candidate_po
+    if not _is_null(original_pl_po):
+        row["pl_customer_po_no"] = candidate_po
+
+    mapped_rows, success = _map_single_detail_row_to_po(
+        row=row,
+        po_article_index=po_article_index,
+        po_desc_index=po_desc_index,
+        remaining_state=remaining_state,
+    )
+
+    if not success:
+        # PO yang di-recover tidak match dengan PO master -> rollback total.
+        row["inv_customer_po_no"] = original_inv_po
+        row["pl_customer_po_no"] = original_pl_po
+        return mapped_rows, False
+
+    # Re-map sukses -> bersihkan inv_description.
+    cleaned_desc = _kunshan_landon_clean_description_after_po_recovery(original_inv_desc)
+    if cleaned_desc:
+        row["inv_description"] = cleaned_desc
+
+    # Propagate ke setiap row hasil (kalau CHILD PO split, ada lebih dari 1).
+    for r in mapped_rows:
+        if not isinstance(r, dict):
+            continue
+        r["inv_customer_po_no"] = row["inv_customer_po_no"]
+        if not _is_null(original_pl_po):
+            r["pl_customer_po_no"] = row["pl_customer_po_no"]
+        r["inv_description"] = row["inv_description"]
+        r["_kunshan_landon_po_recovered_from_description"] = True
+
+    return mapped_rows, True
+
+
 def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
     remaining_state = {}
@@ -5168,7 +5480,22 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                 r["inv_spart_item_no"] = original_inv_item
                 r["pl_item_no"] = original_pl_item
         # ---------------------------------------------
-        
+
+        # --- NEW: KUNSHAN_LANDON PO RECOVERY FROM DESCRIPTION ---
+        # Kalau PO mapping gagal, coba parse PO dari awal inv_description.
+        # Lihat _kunshan_landon_recover_po_from_description untuk detail.
+        if not success and _is_kunshan_landon_vendor(vendor_id):
+            recovered_rows, recovered_success = _kunshan_landon_recover_po_from_description(
+                row=row,
+                po_article_index=po_article_index,
+                po_desc_index=po_desc_index,
+                remaining_state=remaining_state,
+            )
+            if recovered_success:
+                mapped_rows = recovered_rows
+                success = True
+        # --------------------------------------------------------
+
         # --- NEW: GENERIC PO ITEM FALLBACK ---
         if not success and use_po_fallback:
             if _fallback_po_item_by_qty_price(row, po_lines):
@@ -7574,6 +7901,12 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     unique_rows.append(r)
 
             merged_detail_rows = unique_rows
+
+            # Samakan header total per invoice_no — multi-pass extraction kadang
+            # menghasilkan inv_total_amount / pl_total_quantity yang berbeda di
+            # baris-baris dari invoice yang sama. Per rule, satu invoice_no
+            # WAJIB punya satu set header total.
+            _canonicalize_invoice_total_headers(merged_detail_rows)
 
             def _karet_deli_sort_key(r):
                 inv_no = str(r.get("inv_invoice_no") or "").strip().upper()
@@ -11248,17 +11581,42 @@ def run_ocr(
         # ==========================================
         # PREPROCESS HANYA INVOICE + PACKING LIST
         # ==========================================
-        invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-            normalized_pdf_paths[0],
-            "invoice"
-        )
-        temp_local_paths.append(invoice_onepage_pdf)
+        # Default: merge semua halaman invoice/PL jadi 1 page panjang.
+        # Pre-processing ini menolong Gemini melihat seluruh tabel sekaligus
+        # untuk vendor dengan format tabular standar (chengs dkk).
+        #
+        # Khusus shimano_inc / shimano_singapore: SKIP merge ini. Format
+        # invoice SHIMANO berbasis BLOK vertikal (PART#/PRODUCT CD/S.PART#
+        # di kanan + CTN NO. sub-rows + baris TOTAL per blok), dengan 30+
+        # halaman per invoice. Saat di-merge jadi satu page yang sangat
+        # tinggi, Gemini bingung membedakan blok-blok individual dan
+        # cenderung balikin halusinasi atau array kosong. Mengirim PDF
+        # multi-page asli membiarkan Gemini membaca tiap halaman secara
+        # alami.
+        _skip_onepage_preprocess = normalize_vendor_id(forced_vendor_id) in {
+            "shimano_inc",
+            "shimano_singapore",
+        }
 
-        packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-            normalized_pdf_paths[1],
-            "packing"
-        )
-        temp_local_paths.append(packing_onepage_pdf)
+        if _skip_onepage_preprocess:
+            print(
+                f"[PREPROCESS] vendor_id={forced_vendor_id}: skip one-page "
+                "merge, kirim PDF multi-page asli ke Gemini."
+            )
+            invoice_onepage_pdf = normalized_pdf_paths[0]
+            packing_onepage_pdf = normalized_pdf_paths[1]
+        else:
+            invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+                normalized_pdf_paths[0],
+                "invoice"
+            )
+            temp_local_paths.append(invoice_onepage_pdf)
+
+            packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+                normalized_pdf_paths[1],
+                "packing"
+            )
+            temp_local_paths.append(packing_onepage_pdf)
 
         preprocessed_detail_inputs = [
             invoice_onepage_pdf,
@@ -11403,16 +11761,19 @@ def run_ocr(
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
         # NEW: INDEX extraction (anchor line item)
-        # Untuk vendor dengan banyak line item (mis. chengs ~380 row),
+        # Untuk dokumen dengan banyak line item (total_row > threshold),
         # output JSON index dalam satu shot melebihi max_output_tokens
         # sehingga Gemini ter-truncate dan retry gagal.
-        # Pakai chunked extraction kalau vendor mendeklarasikan chunk size > 0.
-        index_chunk_size = _get_index_chunk_size_for_vendor(vendor_id)
+        # Pakai chunked extraction kalau total_row melewati threshold.
+        # Trigger berbasis jumlah row, BUKAN vendor, supaya dokumen besar
+        # dari vendor apa pun otomatis ter-cover.
+        index_chunk_size = _get_index_chunk_size_for_total_row(total_row)
 
         if index_chunk_size > 0:
             print(
                 f"[INDEX_CHUNK_MODE] vendor_id={vendor_id} "
-                f"total_row={total_row} chunk_size={index_chunk_size}"
+                f"total_row={total_row} chunk_size={index_chunk_size} "
+                f"threshold={INDEX_CHUNK_TOTAL_ROW_THRESHOLD}"
             )
             index_items = _call_gemini_index_chunked(
                 file_uri=file_uri_detail,
@@ -11432,6 +11793,21 @@ def run_ocr(
         # fallback safety
         if not isinstance(index_items, list) or not index_items:
             raise Exception("INDEX line items kosong")
+
+        # SHIMANO: dedupe anchor rows yang ke-duplikat karena chunk boundary overlap.
+        # Gemini kadang mengulang block yang sama di akhir chunk N dan awal chunk N+1.
+        # Hanya aktif untuk shimano_inc / shimano_singapore supaya blast radius nol
+        # untuk vendor lain.
+        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+            before_dedupe = len(index_items)
+            index_items = _shimano_dedupe_index_items(index_items)
+            after_dedupe = len(index_items)
+            if before_dedupe != after_dedupe:
+                print(
+                    f"[SHIMANO_DEDUPE] index_items: "
+                    f"before={before_dedupe} after={after_dedupe} "
+                    f"dropped={before_dedupe - after_dedupe}"
+                )
 
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
         if len(index_items) != total_row:
@@ -11687,6 +12063,25 @@ def run_ocr(
             for r in all_rows
             if isinstance(r, dict) and not _is_null(r.get("inv_customer_po_no"))
         }
+
+        # KUNSHAN_LANDON: tambahkan kandidat PO yang tersangkut di awal
+        # inv_description ke daftar PO yang akan di-fetch dari PO master.
+        # Tanpa ini, _stream_filter_po_lines tidak akan memuat PO target
+        # (mis. "45324149") sehingga recovery di _map_po_to_details
+        # tidak punya data untuk mencocokkan dan otomatis di-rollback.
+        if _is_kunshan_landon_vendor(vendor_id):
+            for r in all_rows:
+                if not isinstance(r, dict):
+                    continue
+                candidate = _kunshan_landon_extract_po_from_description(
+                    r.get("inv_description")
+                )
+                if not candidate:
+                    continue
+                if _norm_po_number(candidate) == _norm_po_number(r.get("inv_customer_po_no")):
+                    continue
+                po_numbers.add(candidate)
+
         po_lines = _stream_filter_po_lines(po_numbers)
         print("PO NUMBERS:", po_numbers)
         print("PO LINES FOUND:", len(po_lines))

@@ -395,6 +395,34 @@ DILARANG KERAS:
     - Memilih sub-section yang tidak cocok dengan inv_invoice_no.
     - Mengabaikan sub-section yang valid dan justru memaksa pakai header utama padahal inv_invoice_no menunjuk ke sub-section.
     - Memilih header utama saat inv_invoice_no jelas-jelas merujuk ke sub-section yang ada di body.
+
+ATURAN KHUSUS INVOICE TOTAL AMOUNT:
+- Ambil total amount dari value numerik "Brutto" yang biasanya terletak di bagian akhir/bawah dokumen Invoice.
+  Contoh:
+  Brutto Rp. 661,789,200.00
+  Diskon Rp. 0.00
+  Total tanpa PPN Rp. 661,789,200.00
+  PPN Rp. 72,796,812.00
+  Total dengan PPN Rp. 734,586,012.00
+  maka inv_total_amount = 661,789,200.00 (Brutto), BUKAN 734,586,012.00 (total dengan PPN).
+
+ATURAN KHUSUS PACKING LIST TOTAL QUANTITY:
+- Ambil total quantity dari value numerik "Total" (Bukan dari "GRAND TOTAL") yang biasanya terletak tepat di bawah detail line item packing list.
+- Jumlahkan semua value numerik "Total" jika ada lebih dari 1 jenis quantity unit (contoh: PCS, SETS) untuk mendapatkan pl_total_quantity.
+- Dalam 1 packing list, dapat terdapat lebih dari 1 invoice number.  Ekstrak total quantity untuk masing-masing invoice number, untuk mengisi pl_total_quantity untuk masing-masing invoice number tersebut.
+  Contoh:
+  Dalam 1 file packing list terdapat 2 invoice number:
+  - Invoice number: INS-009/26
+      TOTAL 30,037.00 PCS
+            400.00 SETS
+  - Invoice number: INS-009/26/K100
+      TOTAL 1.00 PCS
+  
+  GRAND TOTAL 30,038.00 PCS
+              400.00 SETS
+
+  Maka untuk invoice number INS-009/26, pl_total_quantity = 30437 (hasil penjumlahan 30037 + 400), BUKAN hanya 30037, 400, atau 30438.
+  Dan untuk invoice number INS-009/26/K100, pl_total_quantity = 1, BUKAN 30438.
 """
 
     fox_header_rule = ""
