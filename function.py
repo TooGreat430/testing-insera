@@ -4219,6 +4219,49 @@ def _call_gemini_index_chunked(
     return all_items
 
 
+def _shimano_dedupe_index_items(index_items: list) -> list:
+    # Drop duplicate anchor rows yang muncul karena chunk boundary overlap.
+    # Key = (PART#, qty, amount, PO). Hanya non-empty key yang di-dedupe
+    # supaya row kosong (placeholder/null) tetap aman.
+    if not isinstance(index_items, list):
+        return index_items
+
+    seen_keys = set()
+    deduped = []
+    dropped = 0
+
+    for item in index_items:
+        if not isinstance(item, dict):
+            deduped.append(item)
+            continue
+
+        part_no = str(item.get("inv_spart_item_no") or "").strip().upper()
+        qty = _to_float(item.get("inv_quantity")) or 0
+        amount = _to_float(item.get("inv_amount")) or 0
+        po = _norm_po_number(item.get("inv_customer_po_no"))
+
+        key = (part_no, qty, amount, po)
+        # hanya treat sebagai duplicate kalau seluruh komponen key non-empty
+        is_full_key = bool(part_no) and qty > 0 and bool(po)
+
+        if is_full_key and key in seen_keys:
+            print(
+                f"[SHIMANO_DEDUPE] drop duplicate anchor: "
+                f"PART#={part_no} qty={qty} amount={amount} po={po}"
+            )
+            dropped += 1
+            continue
+
+        if is_full_key:
+            seen_keys.add(key)
+        deduped.append(item)
+
+    if dropped:
+        print(f"[SHIMANO_DEDUPE] total dropped={dropped} kept={len(deduped)}")
+
+    return deduped
+
+
 def _build_detail_batch_contract_prompt(
     batch_no: int,
     expected_indices: list,
@@ -11703,6 +11746,21 @@ def run_ocr(
         # fallback safety
         if not isinstance(index_items, list) or not index_items:
             raise Exception("INDEX line items kosong")
+
+        # SHIMANO: dedupe anchor rows yang ke-duplikat karena chunk boundary overlap.
+        # Gemini kadang mengulang block yang sama di akhir chunk N dan awal chunk N+1.
+        # Hanya aktif untuk shimano_inc / shimano_singapore supaya blast radius nol
+        # untuk vendor lain.
+        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+            before_dedupe = len(index_items)
+            index_items = _shimano_dedupe_index_items(index_items)
+            after_dedupe = len(index_items)
+            if before_dedupe != after_dedupe:
+                print(
+                    f"[SHIMANO_DEDUPE] index_items: "
+                    f"before={before_dedupe} after={after_dedupe} "
+                    f"dropped={before_dedupe - after_dedupe}"
+                )
 
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
         if len(index_items) != total_row:
