@@ -4219,6 +4219,43 @@ def _call_gemini_index_chunked(
     return all_items
 
 
+def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
+    # Hitung jumlah line item SHIMANO secara deterministik via pymupdf
+    # text extraction. Format SHIMANO BLOCK punya ~4 label per block
+    # (PART#, PRODUCT CD, HS#, SEQ#) — count median antar kandidat untuk
+    # robust terhadap quirk extraction per-label.
+    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+    try:
+        doc = fitz.open(invoice_pdf_path)
+        try:
+            full_text = "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+
+        # PART# tanpa "S." prefix (hindari S.PART# false match)
+        n_part = len(re.findall(r'(?<![A-Za-z.])PART#', full_text))
+        n_product_cd = len(re.findall(r'PRODUCT\s+CD', full_text))
+        n_hs = len(re.findall(r'(?<![A-Za-z])HS#', full_text))
+        n_seq = len(re.findall(r'(?<![A-Za-z])SEQ#', full_text))
+
+        candidates = [n_part, n_product_cd, n_hs, n_seq]
+        non_zero = sorted(c for c in candidates if c > 0)
+
+        print(
+            f"[SHIMANO_PART_COUNT] candidates: PART#={n_part} "
+            f"PRODUCT_CD={n_product_cd} HS#={n_hs} SEQ#={n_seq}"
+        )
+
+        if not non_zero:
+            return 0
+
+        median_value = non_zero[len(non_zero) // 2]
+        return int(median_value)
+    except Exception as e:
+        print(f"[SHIMANO_PART_COUNT] error: {e}")
+        return 0
+
+
 def _shimano_dedupe_index_items(index_items: list) -> list:
     # Drop duplicate anchor rows yang muncul karena chunk boundary overlap.
     # Key = (PART#, qty, amount, PO). Hanya non-empty key yang di-dedupe
@@ -11759,6 +11796,29 @@ def run_ocr(
             total_row = int(data_row["total_row"])
         else:
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
+
+        # SHIMANO: override total_row dengan deterministic PART# count via pymupdf.
+        # Gemini's row.py count untuk SHIMANO unreliable karena format BLOCK
+        # (bukan tabular) — variance tinggi run-to-run dan sering undercount,
+        # akibatnya chunked extraction kehilangan tail items.
+        # Hanya aktif untuk shimano_inc / shimano_singapore, vendor lain
+        # sama sekali tidak ter-sentuh.
+        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+            invoice_pdf_for_count = normalized_pdf_paths[0]
+            deterministic_total_row = _shimano_count_line_items_from_invoice_pdf(
+                invoice_pdf_for_count
+            )
+            if deterministic_total_row > 0:
+                print(
+                    f"[SHIMANO_PART_COUNT] override total_row: "
+                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
+                )
+                total_row = deterministic_total_row
+            else:
+                print(
+                    f"[SHIMANO_PART_COUNT] pymupdf count returned 0, "
+                    f"fallback ke gemini total_row={total_row}"
+                )
 
         # NEW: INDEX extraction (anchor line item)
         # Untuk dokumen dengan banyak line item (total_row > threshold),
