@@ -4117,21 +4117,36 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
 # dari vendor apa pun otomatis ter-cover tanpa perlu maintain whitelist.
 
 INDEX_CHUNK_TOTAL_ROW_THRESHOLD = 90
-INDEX_CHUNK_SIZE = 60
+INDEX_CHUNK_SIZE = 30
+
+# Karet Deli punya invoice 2-baris-per-item (deskripsi + baris PO) yang
+# sering bikin Gemini drift di single-shot extraction walaupun row count
+# kecil. Threshold lebih agresif + chunk lebih kecil = LLM lebih sedikit
+# kesempatan untuk skip/duplikat.
+KARET_DELI_INDEX_CHUNK_TOTAL_ROW_THRESHOLD = 30
+KARET_DELI_INDEX_CHUNK_SIZE = 20
 
 
-def _get_index_chunk_size_for_total_row(total_row: int) -> int:
+def _get_index_chunk_size_for_total_row(total_row: int, vendor_id: str = "default") -> int:
     """
     Chunk size untuk INDEX extraction (bukan detail extraction).
 
     Return 0 = single-shot (perilaku lama, untuk dokumen kecil).
-    Return INDEX_CHUNK_SIZE = chunked, dipakai kalau total_row melebihi
-    threshold supaya tiap chunk JSON pendek dan aman terhadap
-    max_output_tokens.
+    Return > 0 = chunked, dipakai kalau total_row melebihi threshold supaya
+    tiap chunk JSON pendek dan aman terhadap max_output_tokens, sekaligus
+    memperkecil kemungkinan LLM skip/duplikat di dalam batch besar.
+
+    Karet Deli pakai threshold + chunk size lebih kecil karena format
+    2-baris-per-item rentan drift bahkan di total_row sedang.
     """
     try:
         n = int(total_row)
     except (TypeError, ValueError):
+        return 0
+
+    if normalize_vendor_id(vendor_id) == "karet_deli":
+        if n > KARET_DELI_INDEX_CHUNK_TOTAL_ROW_THRESHOLD:
+            return KARET_DELI_INDEX_CHUNK_SIZE
         return 0
 
     if n > INDEX_CHUNK_TOTAL_ROW_THRESHOLD:
@@ -4160,9 +4175,136 @@ KONTRAK CHUNK INDEX — WAJIB DIIKUTI:
 - Nilai "idx" tiap object WAJIB termasuk dalam set berikut: {expected_indices}.
 - DILARANG menyertakan idx < {first_index} atau idx > {last_index}.
 - Tetap gunakan urutan kemunculan di Invoice (sequential, tidak boleh skip, tidak boleh duplikat).
+- Setiap object WAJIB mengisi "idx", "page", dan "page_index" sesuai aturan ANCHOR TRIO di schema utama.
+- "idx" naik tepat 1 per object, dari {first_index} sampai {last_index}.
+- "page_index" reset ke 1 setiap "page" berubah; dalam page yang sama "page_index" naik tepat 1 per item.
+- Gunakan "page" + "page_index" sebagai SELF-CHECK sebelum commit "idx" supaya tidak ada lompat / geser / duplikat.
 - Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown, tanpa code fence.
 """
     return base + chunk_contract
+
+
+def _validate_index_chunk(
+    chunk_items: list,
+    first_index: int,
+    last_index: int,
+) -> list:
+    # Validasi struktural chunk pakai trio (idx, page, page_index):
+    # - idx harus sequential first_index..last_index, exactly expected_count items
+    # - dalam grup page yang sama, page_index harus monoton naik tanpa gap
+    # - (page, page_index) tidak boleh duplikat
+    # Return list of issue strings; empty list = chunk valid.
+    issues = []
+    expected_count = last_index - first_index + 1
+
+    if not isinstance(chunk_items, list):
+        return [f"chunk bukan list (got {type(chunk_items).__name__})"]
+
+    if len(chunk_items) != expected_count:
+        issues.append(
+            f"jumlah salah: expected={expected_count} got={len(chunk_items)}"
+        )
+
+    seen_idx = set()
+    seen_page_pos = set()
+    last_page = None
+    last_page_index = None
+
+    for i, item in enumerate(chunk_items):
+        if not isinstance(item, dict):
+            issues.append(f"position {i}: bukan dict")
+            continue
+
+        try:
+            idx_val = int(item.get("idx"))
+        except (TypeError, ValueError):
+            issues.append(f"position {i}: idx invalid ({item.get('idx')!r})")
+            continue
+
+        expected_idx_at_pos = first_index + i
+        if idx_val != expected_idx_at_pos:
+            issues.append(
+                f"position {i}: idx={idx_val} expected={expected_idx_at_pos}"
+            )
+
+        if idx_val in seen_idx:
+            issues.append(f"position {i}: duplicate idx={idx_val}")
+        seen_idx.add(idx_val)
+
+        page = item.get("page")
+        page_index = item.get("page_index")
+
+        try:
+            page_int = int(page) if page is not None else None
+            page_index_int = int(page_index) if page_index is not None else None
+        except (TypeError, ValueError):
+            issues.append(
+                f"position {i} idx={idx_val}: page/page_index invalid "
+                f"(page={page!r} page_index={page_index!r})"
+            )
+            continue
+
+        if page_int is None or page_index_int is None:
+            issues.append(
+                f"position {i} idx={idx_val}: page/page_index missing"
+            )
+            last_page = page_int
+            last_page_index = page_index_int
+            continue
+
+        pp_key = (page_int, page_index_int)
+        if pp_key in seen_page_pos:
+            issues.append(
+                f"position {i} idx={idx_val}: duplicate (page, page_index)={pp_key}"
+            )
+        seen_page_pos.add(pp_key)
+
+        if last_page is not None:
+            if page_int == last_page:
+                # page sama → page_index harus naik tepat 1
+                if last_page_index is not None and page_index_int != last_page_index + 1:
+                    issues.append(
+                        f"position {i} idx={idx_val}: page_index melompat "
+                        f"(prev={last_page_index} now={page_index_int} di page={page_int})"
+                    )
+            elif page_int > last_page:
+                # page baru → page_index harus reset ke 1
+                if page_index_int != 1:
+                    issues.append(
+                        f"position {i} idx={idx_val}: page baru tapi page_index={page_index_int} "
+                        f"(seharusnya 1 saat page berubah dari {last_page} ke {page_int})"
+                    )
+            else:
+                issues.append(
+                    f"position {i} idx={idx_val}: page mundur "
+                    f"(prev={last_page} now={page_int})"
+                )
+
+        last_page = page_int
+        last_page_index = page_index_int
+
+    return issues
+
+
+def _build_index_chunk_retry_prompt(
+    total_row: int,
+    first_index: int,
+    last_index: int,
+    issues: list,
+) -> str:
+    # Prompt retry yang feedback issue terdeteksi ke Gemini supaya
+    # dia tahu apa yang harus diperbaiki.
+    base = _build_index_chunk_prompt(total_row, first_index, last_index)
+    issues_text = "\n".join(f"  - {it}" for it in issues[:20])
+    feedback = f"""
+
+PERBAIKAN — output sebelumnya melanggar kontrak. Issue yang terdeteksi:
+{issues_text}
+
+Mohon hasilkan ulang chunk ini dengan trio (idx, page, page_index) self-consistent
+dan tepat {last_index - first_index + 1} object dari idx={first_index} sampai idx={last_index}.
+"""
+    return base + feedback
 
 
 def _call_gemini_index_chunked(
@@ -4174,6 +4316,8 @@ def _call_gemini_index_chunked(
     """
     Panggil Gemini untuk index extraction secara chunked.
     Mengembalikan list gabungan dari semua chunk, urut sesuai idx.
+    Per-chunk validasi pakai trio (idx, page, page_index); kalau gagal,
+    retry chunk itu sekali dengan feedback issue terdeteksi.
     """
     if chunk_size <= 0:
         raise ValueError(f"chunk_size harus > 0, dapat {chunk_size}")
@@ -4211,12 +4355,112 @@ def _call_gemini_index_chunked(
                 f"chunk_no={chunk_no} first_index={first_index} last_index={last_index}"
             )
 
+        issues = _validate_index_chunk(chunk_items, first_index, last_index)
+
+        if issues:
+            print(
+                f"[INDEX_CHUNK_VALIDATE] chunk_no={chunk_no} attempt=1 "
+                f"issues={len(issues)}: {issues[:5]}"
+            )
+            # retry sekali dengan feedback
+            retry_prompt = _build_index_chunk_retry_prompt(
+                total_row=total_row,
+                first_index=first_index,
+                last_index=last_index,
+                issues=issues,
+            )
+            retry_items = _call_gemini_json_uri(
+                file_uri,
+                retry_prompt,
+                expect_array=True,
+                retries=3,
+                vendor_id=vendor_id,
+            )
+            if isinstance(retry_items, list):
+                retry_issues = _validate_index_chunk(retry_items, first_index, last_index)
+                if len(retry_issues) < len(issues):
+                    print(
+                        f"[INDEX_CHUNK_VALIDATE] chunk_no={chunk_no} attempt=2 "
+                        f"issues={len(retry_issues)} (was {len(issues)}) — using retry"
+                    )
+                    chunk_items = retry_items
+                else:
+                    print(
+                        f"[INDEX_CHUNK_VALIDATE] chunk_no={chunk_no} attempt=2 "
+                        f"issues={len(retry_issues)} (was {len(issues)}) — keeping original"
+                    )
+
         all_items.extend(chunk_items)
 
         first_index = last_index + 1
         chunk_no += 1
 
     return all_items
+
+
+def _karet_deli_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
+    # Hitung jumlah line item KARET DELI secara deterministik via pymupdf.
+    # Format Karet Deli: tiap line item invoice diakhiri tepat 1 referensi PO,
+    # baik bentuk standar "PO.INS-XXXXXXXX/NEW LABEL" maupun bentuk non-standar
+    # untuk klaim "PO.INS/01/01/26/K100/NEW LABEL".
+    # Gemini sering geser/skip sequence karena tiap item terdiri dari 2 baris
+    # (deskripsi + baris PO) dan banyak item bersebelahan beda PO tapi mirip
+    # deskripsi — counter ini jadi ground truth supaya extraction tidak drift.
+    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+    try:
+        doc = fitz.open(invoice_pdf_path)
+        try:
+            full_text = "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+
+        # Tangkap "PO.INS-" (standar) dan "PO.INS/" (non-standar K100/klaim).
+        # Word-boundary di depan supaya tidak ke-match dalam token lain.
+        matches = re.findall(r'\bPO\.INS[-/]', full_text, flags=re.IGNORECASE)
+        count = len(matches)
+
+        print(f"[KARET_DELI_PO_COUNT] PO.INS occurrences = {count}")
+        return count
+    except Exception as e:
+        print(f"[KARET_DELI_PO_COUNT] failed: {repr(e)}")
+        return 0
+
+
+def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
+    # Hitung jumlah line item SHIMANO secara deterministik via pymupdf
+    # text extraction. Format SHIMANO BLOCK punya ~4 label per block
+    # (PART#, PRODUCT CD, HS#, SEQ#) — count median antar kandidat untuk
+    # robust terhadap quirk extraction per-label.
+    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+    try:
+        doc = fitz.open(invoice_pdf_path)
+        try:
+            full_text = "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+
+        # PART# tanpa "S." prefix (hindari S.PART# false match)
+        n_part = len(re.findall(r'(?<![A-Za-z.])PART#', full_text))
+        n_product_cd = len(re.findall(r'PRODUCT\s+CD', full_text))
+        n_hs = len(re.findall(r'(?<![A-Za-z])HS#', full_text))
+        n_seq = len(re.findall(r'(?<![A-Za-z])SEQ#', full_text))
+
+        candidates = [n_part, n_product_cd, n_hs, n_seq]
+        non_zero = sorted(c for c in candidates if c > 0)
+
+        print(
+            f"[SHIMANO_PART_COUNT] candidates: PART#={n_part} "
+            f"PRODUCT_CD={n_product_cd} HS#={n_hs} SEQ#={n_seq}"
+        )
+
+        if not non_zero:
+            return 0
+
+        median_value = non_zero[len(non_zero) // 2]
+        return int(median_value)
+    except Exception as e:
+        print(f"[SHIMANO_PART_COUNT] error: {e}")
+        return 0
 
 
 def _shimano_dedupe_index_items(index_items: list) -> list:
@@ -11756,6 +12000,50 @@ def run_ocr(
         else:
             raise Exception(f"total_row tidak ditemukan di response: {data_row}")
 
+        # SHIMANO: override total_row dengan deterministic PART# count via pymupdf.
+        # Gemini's row.py count untuk SHIMANO unreliable karena format BLOCK
+        # (bukan tabular) — variance tinggi run-to-run dan sering undercount,
+        # akibatnya chunked extraction kehilangan tail items.
+        # Hanya aktif untuk shimano_inc / shimano_singapore, vendor lain
+        # sama sekali tidak ter-sentuh.
+        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+            invoice_pdf_for_count = normalized_pdf_paths[0]
+            deterministic_total_row = _shimano_count_line_items_from_invoice_pdf(
+                invoice_pdf_for_count
+            )
+            if deterministic_total_row > 0:
+                print(
+                    f"[SHIMANO_PART_COUNT] override total_row: "
+                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
+                )
+                total_row = deterministic_total_row
+            else:
+                print(
+                    f"[SHIMANO_PART_COUNT] pymupdf count returned 0, "
+                    f"fallback ke gemini total_row={total_row}"
+                )
+
+        # KARET DELI: override total_row dengan deterministic PO.INS count via pymupdf.
+        # Karet Deli punya 2 baris per item (deskripsi + PO) yang bikin Gemini
+        # sering drift / skip / duplikat sequence; ground truth dari count PO
+        # menjamin chunked extraction tidak kehilangan item.
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            invoice_pdf_for_count = normalized_pdf_paths[0]
+            deterministic_total_row = _karet_deli_count_line_items_from_invoice_pdf(
+                invoice_pdf_for_count
+            )
+            if deterministic_total_row > 0:
+                print(
+                    f"[KARET_DELI_PO_COUNT] override total_row: "
+                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
+                )
+                total_row = deterministic_total_row
+            else:
+                print(
+                    f"[KARET_DELI_PO_COUNT] pymupdf count returned 0, "
+                    f"fallback ke gemini total_row={total_row}"
+                )
+
         # NEW: INDEX extraction (anchor line item)
         # Untuk dokumen dengan banyak line item (total_row > threshold),
         # output JSON index dalam satu shot melebihi max_output_tokens
@@ -11763,7 +12051,7 @@ def run_ocr(
         # Pakai chunked extraction kalau total_row melewati threshold.
         # Trigger berbasis jumlah row, BUKAN vendor, supaya dokumen besar
         # dari vendor apa pun otomatis ter-cover.
-        index_chunk_size = _get_index_chunk_size_for_total_row(total_row)
+        index_chunk_size = _get_index_chunk_size_for_total_row(total_row, vendor_id=vendor_id)
 
         if index_chunk_size > 0:
             print(
@@ -11803,6 +12091,21 @@ def run_ocr(
                     f"[SHIMANO_DEDUPE] index_items: "
                     f"before={before_dedupe} after={after_dedupe} "
                     f"dropped={before_dedupe - after_dedupe}"
+                )
+
+        # KARET DELI: bandingkan hasil LLM vs deterministic count via PO.INS.
+        # Mismatch berarti LLM skip/duplikat baris — kelas bug "seq 2:500, seq 3:200,
+        # 300 hilang" yang user laporkan. Log warning supaya bisa ditelusuri dari log.
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            karet_deli_expected = _karet_deli_count_line_items_from_invoice_pdf(
+                normalized_pdf_paths[0]
+            )
+            if karet_deli_expected > 0 and len(index_items) != karet_deli_expected:
+                print(
+                    f"[KARET_DELI_INDEX_DRIFT] expected={karet_deli_expected} "
+                    f"got={len(index_items)} diff={len(index_items) - karet_deli_expected} "
+                    f"— Gemini index extraction skip/duplikat baris. "
+                    f"Periksa output untuk row hilang atau ghost row."
                 )
 
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
@@ -12309,6 +12612,8 @@ def run_ocr(
                 row.pop("idx", None)
                 row.pop("inv_page_no", None)
                 row.pop("pl_page_no", None)
+                row.pop("page", None)
+                row.pop("page_index", None)
 
         # =========================
         # FINAL RESULT OBJECT

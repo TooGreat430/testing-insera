@@ -291,8 +291,9 @@ SCHEMA OUTPUT (INDEX):
 [
   {{
     "idx": number,
+    "page": number,
+    "page_index": number,
 
-    "inv_page_no": number,
     "inv_customer_po_no": "string",
     "inv_spart_item_no": "string",
     "inv_description": "string",
@@ -307,6 +308,23 @@ SCHEMA OUTPUT (INDEX):
     "pl_description": "string",
     "pl_quantity": number
   }}
+]
+
+ANCHOR TRIO — WAJIB KONSISTEN UNTUK SETIAP OBJECT:
+- "idx": nomor index ASLI global (running 1..N seluruh dokumen, tidak skip, tidak duplikat, TIDAK reset per halaman).
+- "page": nomor halaman Invoice (1-based) tempat item itu muncul.
+- "page_index": nomor urut item DI DALAM halaman tersebut (mulai 1 di setiap halaman baru, naik 1 per item dalam halaman yang sama).
+- Ketiga field WAJIB self-consistent: saat "idx" naik 1, salah satu dari:
+  (a) "page" tetap, "page_index" +1 (item berikutnya di halaman yang sama), atau
+  (b) "page" +1, "page_index" reset ke 1 (item pertama di halaman berikutnya).
+- "page" + "page_index" dipakai sebagai SELF-VERIFICATION sebelum commit "idx" supaya tidak terjadi lompat / geser / duplikat idx.
+- Kalau ragu posisi suatu item, gunakan "page" dan "page_index" untuk grounding ke fisik dokumen sebelum mengisi "idx".
+
+CONTOH ANCHOR TRIO (3 item pertama dari invoice 2-halaman):
+[
+  {{"idx": 1, "page": 1, "page_index": 1, ...}},
+  {{"idx": 2, "page": 1, "page_index": 2, ...}},
+  {{"idx": 3, "page": 2, "page_index": 1, ...}}
 ]
 
 CATATAN:
