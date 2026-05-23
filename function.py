@@ -7872,7 +7872,12 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             raise Exception("Tidak ada hasil detail gabungan")
 
         if forced_vendor_id == "karet_deli":
-            # PERBAIKAN: Urutkan agar baris dengan inv_amount (bukan ghost row dari ekstrak parsial PL) diutamakan
+            # 1. Berikan stempel urutan asli dari ekstraksi sebelum baris diacak
+            for idx, r in enumerate(merged_detail_rows):
+                if isinstance(r, dict):
+                    r["_global_original_order"] = idx
+
+            # 2. Urutkan berdasarkan amount agar ghost row hilang
             merged_detail_rows.sort(
                 key=lambda r: (
                     _to_float(r.get("inv_amount")) or 0.0,
@@ -7901,23 +7906,12 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     unique_rows.append(r)
 
             merged_detail_rows = unique_rows
-
-            # Samakan header total per invoice_no — multi-pass extraction kadang
-            # menghasilkan inv_total_amount / pl_total_quantity yang berbeda di
-            # baris-baris dari invoice yang sama. Per rule, satu invoice_no
-            # WAJIB punya satu set header total.
             _canonicalize_invoice_total_headers(merged_detail_rows)
 
-            def _karet_deli_sort_key(r):
-                inv_no = str(r.get("inv_invoice_no") or "").strip().upper()
-                seq_val = _to_float(r.get("inv_seq"))
-                if seq_val is None:
-                    seq_val = float(int(r.get("_detail_row_no") or 999999))
-                return (inv_no, seq_val)
+            # 3. Kembalikan urutan baris ke posisi mutlak aslinya
+            merged_detail_rows.sort(key=lambda r: r.get("_global_original_order", 999999))
 
-            merged_detail_rows.sort(key=_karet_deli_sort_key)
-
-            print(f"[KARET_DELI_DEDUP] Reduced detail rows due to page duplication using strong signature")
+            print(f"[KARET_DELI_DEDUP] Reduced detail rows and restored exact original order")
 
             # =================================================================
             # FIX: HEAL DATA SETELAH DEDUPLIKASI (HEADER BOLONG & TOTAL ERROR)
@@ -10349,7 +10343,8 @@ def _call_gemini_detail_line_recheck_once(
         current_uri = file_uri
         
         # === LOGIC TRIGGER >= 90 LINE ITEMS UNTUK RECHECK ===
-        if total_row >= 90 and index_items and local_pdf_path and run_prefix:
+        is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
+        if (total_row >= 90 or is_karet_deli) and index_items and local_pdf_path and run_prefix:
             row_nos = [int(item["_detail_row_no"]) for item in batch if item.get("_detail_row_no")]
             pages = []
             
@@ -11596,6 +11591,7 @@ def run_ocr(
         _skip_onepage_preprocess = normalize_vendor_id(forced_vendor_id) in {
             "shimano_inc",
             "shimano_singapore",
+            "karet_deli",
         }
 
         if _skip_onepage_preprocess:
@@ -11851,7 +11847,8 @@ def run_ocr(
             # === LOGIC TRIGGER >= 90 LINE ITEMS ===
             batch_file_uri = base_detail_input_uri  # Default uri (Full PDF)
             
-            if total_row >= 90:
+            is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
+            if total_row >= 90 or is_karet_deli:
                 pages = [
                     int(x.get("page_no") or x.get("page", 0)) 
                     for x in index_slice 
