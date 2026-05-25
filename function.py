@@ -8095,8 +8095,20 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
             unique_rows = []
             seen_sigs = set()
+            dropped_null_anchor = 0
             for r in merged_detail_rows:
                 if not isinstance(r, dict):
+                    continue
+
+                # Drop row kalau inv_spart_item_no DAN inv_description dua-duanya null/kosong.
+                # Row seperti ini biasanya placeholder dari chunked extraction yang
+                # tidak ke-fill (misal _missing_from_chunk fallback) — tidak ada
+                # identitas item sama sekali, tidak ada gunanya di-keep.
+                if (
+                    _is_null(r.get("inv_spart_item_no"))
+                    and _is_null(r.get("inv_description"))
+                ):
+                    dropped_null_anchor += 1
                     continue
 
                 inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
@@ -8111,6 +8123,12 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 if sig not in seen_sigs:
                     seen_sigs.add(sig)
                     unique_rows.append(r)
+
+            if dropped_null_anchor:
+                print(
+                    f"[KARET_DELI_DEDUP] dropped {dropped_null_anchor} row(s) "
+                    f"dengan inv_spart_item_no & inv_description null"
+                )
 
             merged_detail_rows = unique_rows
             _canonicalize_invoice_total_headers(merged_detail_rows)
