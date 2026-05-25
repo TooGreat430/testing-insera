@@ -8133,7 +8133,67 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             merged_detail_rows = unique_rows
             _canonicalize_invoice_total_headers(merged_detail_rows)
 
-            # 3. Kembalikan urutan baris ke posisi mutlak aslinya
+            # 3. Second-pass dedup: catch qty-variance stragglers dari multi-pass
+            # extraction. Signature pakai (po, item, desc) TANPA qty, jadi
+            # variance qty antar-pass tidak bisa ngeloloskan duplikat lagi.
+            # Untuk safety supaya legitimate dupes (item sama muncul beberapa
+            # kali di invoice yang sama, biasanya adjacent dalam original order)
+            # tidak ke-drop, dedup hanya berlaku saat gap _global_original_order
+            # antar dupe > KARET_DELI_STRAGGLER_GAP_THRESHOLD (legitimate dupes
+            # biasanya gap=1, stragglers gap=50+).
+            KARET_DELI_STRAGGLER_GAP_THRESHOLD = 30
+
+            # Group rows by signature without qty
+            sig_groups = {}
+            for r in merged_detail_rows:
+                if not isinstance(r, dict):
+                    continue
+                inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
+                inv_no_base = inv_no_raw.split('/K')[0].strip()
+                po_no = str(r.get("inv_customer_po_no") or r.get("pl_customer_po_no") or "").strip().upper()
+                item_no = str(r.get("inv_spart_item_no") or r.get("pl_item_no") or "").strip()
+                desc = str(r.get("inv_description") or "").strip().upper()[:30]
+                if not po_no and not item_no and not desc:
+                    continue
+                key = (inv_no_base, po_no, item_no, desc)
+                sig_groups.setdefault(key, []).append(r)
+
+            stragglers_to_drop_ids = set()
+            for key, group in sig_groups.items():
+                if len(group) < 2:
+                    continue
+                # Sort by _global_original_order
+                group_sorted = sorted(
+                    group, key=lambda r: r.get("_global_original_order", 999999)
+                )
+                canonical = group_sorted[0]
+                canonical_order = canonical.get("_global_original_order", 0)
+                for dup in group_sorted[1:]:
+                    dup_order = dup.get("_global_original_order", 0)
+                    gap = dup_order - canonical_order
+                    if gap > KARET_DELI_STRAGGLER_GAP_THRESHOLD:
+                        stragglers_to_drop_ids.add(id(dup))
+                        print(
+                            f"[KARET_DELI_DEDUP] drop straggler: po={key[1]} "
+                            f"item={key[2]} canonical_order={canonical_order} "
+                            f"straggler_order={dup_order} gap={gap} "
+                            f"canonical_qty={canonical.get('inv_quantity')} "
+                            f"straggler_qty={dup.get('inv_quantity')}"
+                        )
+
+            if stragglers_to_drop_ids:
+                before_count = len(merged_detail_rows)
+                merged_detail_rows = [
+                    r for r in merged_detail_rows
+                    if id(r) not in stragglers_to_drop_ids
+                ]
+                print(
+                    f"[KARET_DELI_DEDUP] dropped {before_count - len(merged_detail_rows)} "
+                    f"straggler(s) dari multi-pass extraction (qty variance, gap > "
+                    f"{KARET_DELI_STRAGGLER_GAP_THRESHOLD})"
+                )
+
+            # 4. Kembalikan urutan baris ke posisi mutlak aslinya
             merged_detail_rows.sort(key=lambda r: r.get("_global_original_order", 999999))
 
             print(f"[KARET_DELI_DEDUP] Reduced detail rows and restored exact original order")
