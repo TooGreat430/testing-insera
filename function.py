@@ -35,7 +35,7 @@ from detail import (
     DETAIL_LINE_NUM_FIELDS,
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,
 )
-from row import ROW_SYSTEM_INSTRUCTION
+from row import ROW_SYSTEM_INSTRUCTION, KARET_DELI_ROW_SYSTEM_INSTRUCTION
 from vendor_detection import (
     load_vendor_prompt_text,
     normalize_vendor_id,
@@ -11993,7 +11993,13 @@ def run_ocr(
         )
 
         # GET TOTAL ROW FROM GEMINI
-        data_row = _call_gemini_json_uri(file_uri_detail, ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id)
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            prompt_to_use = KARET_DELI_ROW_SYSTEM_INSTRUCTION
+            print("[ROW_COUNT] Menggunakan prompt custom KARET_DELI_ROW_SYSTEM_INSTRUCTION")
+        else:
+            prompt_to_use = ROW_SYSTEM_INSTRUCTION
+            
+        data_row = _call_gemini_json_uri(file_uri_detail, prompt_to_use, expect_array=False, retries=3, vendor_id=vendor_id)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
