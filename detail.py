@@ -424,23 +424,46 @@ ATURAN KHUSUS INVOICE TOTAL AMOUNT:
   Total dengan PPN Rp. 734,586,012.00
   maka inv_total_amount = 661,789,200.00 (Brutto), BUKAN 734,586,012.00 (total dengan PPN).
 
-ATURAN KHUSUS PACKING LIST TOTAL QUANTITY:
-- Ambil total quantity dari value numerik "Total" (Bukan dari "GRAND TOTAL") yang biasanya terletak tepat di bawah detail line item packing list.
-- Jumlahkan semua value numerik "Total" jika ada lebih dari 1 jenis quantity unit (contoh: PCS, SETS) untuk mendapatkan pl_total_quantity.
-- Dalam 1 packing list, dapat terdapat lebih dari 1 invoice number.  Ekstrak total quantity untuk masing-masing invoice number, untuk mengisi pl_total_quantity untuk masing-masing invoice number tersebut.
-  Contoh:
-  Dalam 1 file packing list terdapat 2 invoice number:
-  - Invoice number: INS-009/26
-      TOTAL 30,037.00 PCS
-            400.00 SETS
-  - Invoice number: INS-009/26/K100
-      TOTAL 1.00 PCS
-  
-  GRAND TOTAL 30,038.00 PCS
-              400.00 SETS
+ATURAN KHUSUS PACKING LIST TOTAL QUANTITY (BACA DUA KALI — INI SUMBER UTAMA SALAH HITUNG):
 
-  Maka untuk invoice number INS-009/26, pl_total_quantity = 30437 (hasil penjumlahan 30037 + 400), BUKAN hanya 30037, 400, atau 30438.
-  Dan untuk invoice number INS-009/26/K100, pl_total_quantity = 1, BUKAN 30438.
+PRINSIP UTAMA:
+pl_total_quantity HARUS diambil dari baris "TOTAL" PER-SECTION (milik invoice number yang sedang diproses) — JANGAN PERNAH dari baris "GRAND TOTAL" yang muncul setelah seluruh section selesai.
+
+KENAPA ATURAN INI KRITIS:
+Bila pl_total_quantity terisi dari GRAND TOTAL (yang nilainya = penjumlahan semua section), sistem hilir akan mendeteksi selisih antara sum-of-line-items dengan pl_total_quantity, lalu "menyeimbangkan" dengan menambah angka kecil (mis. +1, +N) ke salah satu line item invoice secara acak. Akibatnya, baris invoice yang aslinya BENAR berubah menjadi SALAH. Mencegah pencampuran TOTAL-section dengan GRAND-TOTAL adalah WAJIB.
+
+CARA MEMBEDAKAN "TOTAL" SECTION vs "GRAND TOTAL" SECARA STRUKTURAL:
+    1. Baris "TOTAL X.XX <unit>" muncul SEGERA setelah baris-baris line item milik satu section, dan SEBELUM sub-section header berikutnya (jika ada) atau sebelum "GRAND TOTAL".
+    2. Baris "GRAND TOTAL X.XX <unit>" SELALU memakai kata "GRAND" secara eksplisit dan muncul PALING AKHIR di dokumen, setelah semua section / sub-section selesai.
+    3. Setiap section invoice diawali oleh header invoice utama ("No. : INS-XXX/YY") atau sub-section header ("INS-XXX/YY/ZZZ") dan diakhiri oleh baris TOTAL section-nya sendiri.
+
+ATURAN PENGAMBILAN per invoice_no:
+- Identifikasi DULU section yang milik inv_invoice_no yang sedang diproses (ikuti aturan pemetaan pl_invoice_no di atas).
+- Ambil HANYA nilai-nilai TOTAL yang berada DI DALAM section tersebut (yaitu baris "TOTAL <angka> <unit>" yang muncul SEBELUM section / sub-section berikutnya).
+- Jika section punya BEBERAPA unit berbeda (contoh: ada TOTAL PCS dan TOTAL SETS untuk section yang sama), JUMLAHKAN angka-angka tersebut → pl_total_quantity = sum.
+- Jika section hanya punya SATU unit, pl_total_quantity = angka tunggal itu saja. JANGAN tambahkan angka dari section lain meskipun unitnya sama.
+- Untuk sub-section (mis. K100, WTB/HB, dll.), pl_total_quantity HANYA dari baris TOTAL yang muncul tepat di akhir sub-section tersebut — JANGAN diwarisi dari section parent.
+
+POLA STRUKTUR YANG HARUS DIKENALI (generik, bukan untuk dokumen tertentu):
+    [Header invoice utama]
+    ... line item section 1 ...
+    TOTAL <X1> <unit_a>
+          <Y1> <unit_b>           ← TOTAL untuk section 1 (dapat multi-baris bila multi-unit)
+    [Sub-section header, jika ada]
+    ... line item sub-section ...
+    CLAIM : CLMxxxxxxxx           ← penanda klaim, opsional
+    TOTAL <X2> <unit_a>           ← TOTAL untuk sub-section
+    GRAND TOTAL <X1+X2> <unit_a>  ← BUKAN pl_total_quantity untuk SATUPUN invoice di file ini
+                <Y1> <unit_b>
+
+DILARANG KERAS:
+- Mengambil angka di baris "GRAND TOTAL" sebagai pl_total_quantity untuk invoice manapun, BAIK invoice utama MAUPUN sub-section. Kata "GRAND" adalah penanda mutlak field tersebut bukan target.
+- Memakai TOTAL section parent untuk mengisi pl_total_quantity sub-section (atau sebaliknya), karena masing-masing invoice_no punya section TOTAL sendiri.
+- Menambahkan SETS / PCS dari section lain ke pl_total_quantity sub-section yang section-nya sendiri tidak memuat unit tersebut.
+
+VERIFIKASI MANDIRI sebelum menulis nilai final:
+- Apakah angka yang akan dipakai berasal dari baris yang mengandung kata "GRAND"? Jika YA → tolak, cari TOTAL section yang benar di atasnya.
+- Apakah angka tersebut berada di dalam batas section milik inv_invoice_no yang sedang diproses (yaitu antara header section-nya dan section berikutnya)? Jika TIDAK → salah section, koreksi.
 """
 
     fox_header_rule = ""
