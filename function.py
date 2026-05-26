@@ -4947,10 +4947,17 @@ def _norm_po_number(x):
     s = re.sub(r"\D", "", s)  # ambil angka saja
     return s.lstrip("0")      # buang leading zero
 
-def _stream_filter_po_lines(target_po_numbers):
+def _stream_filter_po_lines(target_po_numbers, target_item_numbers=None):
     target_po_numbers = {
         _norm_po_number(x)
         for x in (target_po_numbers or set())
+        if x is not None
+    }
+    
+    # NEW: Siapkan target items
+    target_item_numbers = {
+        _norm_item_compare_key(x)
+        for x in (target_item_numbers or set())
         if x is not None
     }
 
@@ -4967,7 +4974,18 @@ def _stream_filter_po_lines(target_po_numbers):
             if po_no is None:
                 continue
 
-            if _norm_po_number(po_no) in target_po_numbers:
+            po_match = _norm_po_number(po_no) in target_po_numbers
+            
+            # NEW: Jika PO tidak match, cek apakah Item Number-nya ada di daftar target
+            item_match = False
+            if target_item_numbers and not po_match:
+                v_art = _norm_item_compare_key(item.get("vendor_article_no") or item.get("po_vendor_article_no"))
+                s_art = _norm_item_compare_key(item.get("sap_article_no") or item.get("po_sap_article_no"))
+                if (v_art and v_art in target_item_numbers) or (s_art and s_art in target_item_numbers):
+                    item_match = True
+
+            # Simpan baris jika PO match ATAU Item match
+            if po_match or item_match:
                 matched.append(item)
 
     return matched
