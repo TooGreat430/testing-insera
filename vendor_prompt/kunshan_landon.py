@@ -34,13 +34,7 @@ PERINGATAN PENTING TENTANG KOLOM C/NO# (kolom ke-12, paling kanan):
 
 INVOICE (INV):
 
-ATURAN UMUM BARIS F.O.C (Free of Charge) — PENTING UNTUK SELURUH FIELD INV PADA VENDOR INI:
-- Baris dengan amount = 0 atau ditandai sebagai "F.O.C" / "Free of Charge" / "FOC" pada vendor ini TETAP merupakan line item invoice yang SAH dan WAJIB diekstrak secara LENGKAP, sama seperti baris non-F.O.C lainnya.
-- F.O.C HANYA mempengaruhi nilai `inv_amount` (yang menjadi 0). Field-field lain (`inv_customer_po_no`, `inv_spart_item_no`, `inv_description`, `inv_quantity`, `inv_quantity_unit`, `inv_unit_price`) WAJIB tetap dibaca dari kolom masing-masing pada baris yang sama secara normal, persis seperti baris reguler.
-- DILARANG KERAS me-null-kan / mengosongkan / melewatkan ekstraksi field-field di atas hanya karena suatu baris berstatus F.O.C atau amount-nya 0. Walaupun amount 0, semua sel kolom lain di baris itu tetap berisi data yang valid dan harus diekstrak.
-- DILARANG KERAS menempelkan / merembeskan PO Number ke dalam `inv_description` sebagai workaround ketika PO Number tidak terbaca; PO Number HARUS keluar di field `inv_customer_po_no`-nya sendiri.
-
-1. `inv_customer_po_no`:
+1. `inv_customer_po_no`: 
     - Ekstrak HANYA dari kolom "PO Number" (Kolom ke-2 dari kiri, di sebelah kanan kolom "Marks" dan di sebelah kiri kolom "Item").
     - Value HARUS numerik 8 digit DAN HARUS DIMULAI dengan angka 4. (Bukan value numerik 1 digit seperti "8")
       Contoh: 45324149
@@ -48,10 +42,8 @@ ATURAN UMUM BARIS F.O.C (Free of Charge) — PENTING UNTUK SELURUH FIELD INV PAD
         PO Number: 45324149/CLM26030220
         Maka ekstrak value numerik sebelum tanda slash (/),
         Jadi inv_customer_po_no line tersebut = 45324149
-    - BERLAKU JUGA UNTUK BARIS F.O.C: Kolom "PO Number" pada baris F.O.C tetap diisi dengan PO 8 digit yang berawalan 4 yang sama seperti baris reguler. WAJIB diekstrak. Penanda "F.O.C" / strikethrough pada amount, atau amount = 0, TIDAK menggugurkan kewajiban membaca kolom PO Number.
     - DILARANG KERAS mengambil value PO Number selain dari kolom "PO Number".
     - DILARANG KERAS mengambil dari kolom "Item".
-    - DILARANG KERAS mengembalikan null untuk inv_customer_po_no hanya karena baris tersebut F.O.C / ber-amount 0; kolom "PO Number" untuk baris F.O.C visualnya identik dengan baris reguler — baca seperti biasa.
 
 2. `inv_spart_item_no`:
     - Ekstrak HANYA dari kolom "Material" (Kolom ke-4 dari kiri, di sebelah kanan kolom 'Item' dan di sebelah kiri kolom 'Descriptions).
