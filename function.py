@@ -5673,6 +5673,48 @@ def _kunshan_landon_recover_po_from_description(
 
     return mapped_rows, True
 
+def _fallback_po_no_by_item_no(row: dict, po_lines: list) -> bool:
+    """
+    Fallback jika PO No kosong tapi Item No ada.
+    Melacak Item No di data PO JSON untuk mendapatkan PO No-nya.
+    """
+    inv_item = _norm_item_compare_key(row.get("inv_spart_item_no") or row.get("pl_item_no"))
+    inv_qty = _to_float(row.get("inv_quantity"))
+
+    if not inv_item:
+        return False
+
+    candidates = []
+    for po in po_lines:
+        if not isinstance(po, dict):
+            continue
+            
+        po_vendor_article = _norm_item_compare_key(po.get("po_vendor_article_no") or po.get("vendor_article_no"))
+        po_sap_article = _norm_item_compare_key(po.get("po_sap_article_no") or po.get("sap_article_no"))
+        
+        # Jika item number cocok
+        if inv_item and inv_item in (po_vendor_article, po_sap_article):
+            candidates.append(po)
+
+    if not candidates:
+        return False
+
+    # Filter kandidat yang quantity-nya sama persis untuk menghindari tabrakan jika 1 item ada di banyak PO
+    qty_matched_candidates = [po for po in candidates if _to_float(po.get("po_quantity")) == inv_qty]
+    if qty_matched_candidates:
+        candidates = qty_matched_candidates
+
+    # Pastikan semua kandidat mengarah ke 1 PO Number yang sama
+    unique_po_nos = {_norm_po_number(po.get("po_no")) for po in candidates if po.get("po_no")}
+    
+    if len(unique_po_nos) == 1:
+        po_no_found = unique_po_nos.pop()
+        if po_no_found:
+            row["inv_customer_po_no"] = po_no_found
+            row["pl_customer_po_no"] = po_no_found
+            return True
+
+    return False
 
 def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
@@ -5724,6 +5766,18 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                 r["inv_spart_item_no"] = original_inv_item
                 r["pl_item_no"] = original_pl_item
         # ---------------------------------------------
+
+        # --- NEW: REVERSE FALLBACK (FIND PO BY ITEM NO) ---
+        if not success and _is_null(row.get("inv_customer_po_no")):
+            if _fallback_po_no_by_item_no(row, po_lines):
+                # Remap ulang karena PO Number sudah berhasil ditemukan
+                mapped_rows, success = _map_single_detail_row_to_po(
+                    row=row,
+                    po_article_index=po_article_index,
+                    po_desc_index=po_desc_index,
+                    remaining_state=remaining_state,
+                )
+        # --------------------------------------------------
 
         # --- NEW: KUNSHAN_LANDON PO RECOVERY FROM DESCRIPTION ---
         # Kalau PO mapping gagal, coba parse PO dari awal inv_description.
