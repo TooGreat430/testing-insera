@@ -436,11 +436,11 @@ ATURAN KHUSUS PACKING LIST TOTAL QUANTITY:
   - Invoice number: INS-009/26/K100
       TOTAL 1.00 PCS
   
-  GRAND TOTAL 30,038.00 PCS
-              400.00 SETS
+GRAND TOTAL 30,038.00 PCS
+            400.00 SETS
 
-  Maka untuk invoice number INS-009/26, pl_total_quantity = 30437 (hasil penjumlahan 30037 + 400), BUKAN hanya 30037, 400, atau 30438.
-  Dan untuk invoice number INS-009/26/K100, pl_total_quantity = 1, BUKAN 30438.
+Maka untuk invoice number INS-009/26, pl_total_quantity = 30437, BUKAN 30438.
+Dan untuk invoice number INS-009/26/K100, pl_total_quantity = 1, BUKAN 30438.
 """
 
     fox_header_rule = ""

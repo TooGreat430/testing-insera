@@ -4119,34 +4119,25 @@ def _call_gemini_json_uri(file_uri: str, prompt: str, expect_array: bool = False
 INDEX_CHUNK_TOTAL_ROW_THRESHOLD = 90
 INDEX_CHUNK_SIZE = 30
 
-# Karet Deli punya invoice 2-baris-per-item (deskripsi + baris PO) yang
-# sering bikin Gemini drift di single-shot extraction walaupun row count
-# kecil. Threshold lebih agresif + chunk lebih kecil = LLM lebih sedikit
-# kesempatan untuk skip/duplikat.
-KARET_DELI_INDEX_CHUNK_TOTAL_ROW_THRESHOLD = 30
-KARET_DELI_INDEX_CHUNK_SIZE = 20
-
 
 def _get_index_chunk_size_for_total_row(total_row: int, vendor_id: str = "default") -> int:
     """
     Chunk size untuk INDEX extraction (bukan detail extraction).
 
     Return 0 = single-shot (perilaku lama, untuk dokumen kecil).
-    Return > 0 = chunked, dipakai kalau total_row melebihi threshold supaya
-    tiap chunk JSON pendek dan aman terhadap max_output_tokens, sekaligus
-    memperkecil kemungkinan LLM skip/duplikat di dalam batch besar.
+    Return INDEX_CHUNK_SIZE = chunked, dipakai kalau total_row melebihi
+    threshold supaya tiap chunk JSON pendek dan aman terhadap
+    max_output_tokens.
 
-    Karet Deli pakai threshold + chunk size lebih kecil karena format
-    2-baris-per-item rentan drift bahkan di total_row sedang.
+    Catatan: parameter vendor_id diterima untuk forward-compat tapi saat ini
+    tidak mengubah threshold/size. Sebelumnya karet_deli sempat dipaksa pakai
+    chunk lebih kecil untuk menekan drift, tapi terbukti malah membuat Gemini
+    kehilangan konteks antar baris yang mirip dan menghasilkan row yang
+    tidak sesuai PDF. Default sudah cukup untuk dokumen di bawah threshold.
     """
     try:
         n = int(total_row)
     except (TypeError, ValueError):
-        return 0
-
-    if normalize_vendor_id(vendor_id) == "karet_deli":
-        if n > KARET_DELI_INDEX_CHUNK_TOTAL_ROW_THRESHOLD:
-            return KARET_DELI_INDEX_CHUNK_SIZE
         return 0
 
     if n > INDEX_CHUNK_TOTAL_ROW_THRESHOLD:
@@ -4398,32 +4389,157 @@ def _call_gemini_index_chunked(
     return all_items
 
 
-def _karet_deli_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
-    # Hitung jumlah line item KARET DELI secara deterministik via pymupdf.
-    # Format Karet Deli: tiap line item invoice diakhiri tepat 1 referensi PO,
-    # baik bentuk standar "PO.INS-XXXXXXXX/NEW LABEL" maupun bentuk non-standar
-    # untuk klaim "PO.INS/01/01/26/K100/NEW LABEL".
-    # Gemini sering geser/skip sequence karena tiap item terdiri dari 2 baris
-    # (deskripsi + baris PO) dan banyak item bersebelahan beda PO tapi mirip
-    # deskripsi — counter ini jadi ground truth supaya extraction tidak drift.
-    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+def _karet_deli_extract_pl_total_quantity(pl_pdf_path: str, target_invoice_no: str):
+    # Ekstrak pl_total_quantity karet_deli deterministik via PyMuPDF.
+    # Tujuan: hilangkan ketergantungan ke LLM non-determinism untuk total
+    # PL yang terstruktur jelas di dokumen. Contoh pola PL karet_deli:
+    #
+    #     No. : INS-009/26
+    #     ... [parent items] ...
+    #     TOTAL 30,037.00 PCS
+    #            400.00 SETS              ← lanjutan SETS untuk parent
+    #     INS-009/26/K100                 ← sub-section header
+    #     ... [K100 items] ...
+    #     CLAIM : CLM25120243
+    #     TOTAL 1.00 PCS                  ← total sub-section K100
+    #     GRAND TOTAL 30,038.00 PCS
+    #                  400.00 SETS
+    #
+    # Untuk target = parent ("INS-009/26") → sum 30037 + 400 = 30437.
+    # Untuk target = sub-section ("INS-009/26/K100") → sum 1 = 1.
+    # GRAND TOTAL DIABAIKAN.
+    #
+    # Return None kalau gagal parse (caller fallback ke nilai Gemini).
+    if not pl_pdf_path or not target_invoice_no:
+        return None
+
     try:
-        doc = fitz.open(invoice_pdf_path)
+        doc = fitz.open(pl_pdf_path)
         try:
             full_text = "\n".join(page.get_text() for page in doc)
         finally:
             doc.close()
-
-        # Tangkap "PO.INS-" (standar) dan "PO.INS/" (non-standar K100/klaim).
-        # Word-boundary di depan supaya tidak ke-match dalam token lain.
-        matches = re.findall(r'\bPO\.INS[-/]', full_text, flags=re.IGNORECASE)
-        count = len(matches)
-
-        print(f"[KARET_DELI_PO_COUNT] PO.INS occurrences = {count}")
-        return count
     except Exception as e:
-        print(f"[KARET_DELI_PO_COUNT] failed: {repr(e)}")
-        return 0
+        print(f"[KARET_DELI_PL_TOTAL] failed to read PDF '{pl_pdf_path}': {repr(e)}")
+        return None
+
+    target_norm = _preprocess_invoice_no_for_grouping(target_invoice_no)
+    if not target_norm:
+        return None
+
+    lines = full_text.split("\n")
+
+    # Cari "No. : INS-XXX/YY..." di area header dokumen.
+    doc_main_header = None
+    for line in lines[:40]:
+        m = re.search(r"\bNo\.\s*:\s*(INS-\d+/\d+(?:/[A-Z0-9]+)*)", line, flags=re.IGNORECASE)
+        if m:
+            doc_main_header = _preprocess_invoice_no_for_grouping(m.group(1))
+            break
+
+    # Cari standalone sub-section line yang persis cocok dengan target.
+    sub_section_re = re.compile(r"\s*(INS-\d+/\d+(?:/[A-Z0-9]+)+)\s*", flags=re.IGNORECASE)
+    target_inline_line = None
+    for i, line in enumerate(lines):
+        m = sub_section_re.fullmatch(line.strip())
+        if m and _preprocess_invoice_no_for_grouping(m.group(1)) == target_norm:
+            target_inline_line = i
+            break
+
+    # Tentukan mode parsing.
+    if doc_main_header == target_norm:
+        mode = "parent"
+    elif target_inline_line is not None:
+        mode = "sub_section"
+    elif len(target_norm.split("/")) == 2:
+        # Fallback: target berformat parent ("INS-XXX/YY") tapi header dokumen
+        # tidak terdeteksi (misal PL parent displit ke halaman terakhir tanpa header).
+        mode = "parent"
+    else:
+        return None
+
+    # Tentukan rentang baris untuk dipindai.
+    if mode == "parent":
+        start_idx = 0
+        end_idx = len(lines)
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if "GRAND TOTAL" in stripped.upper():
+                end_idx = i
+                break
+            m_sub = sub_section_re.fullmatch(stripped)
+            if m_sub and _preprocess_invoice_no_for_grouping(m_sub.group(1)) != target_norm:
+                end_idx = i
+                break
+    else:
+        start_idx = target_inline_line + 1
+        end_idx = len(lines)
+        for i in range(start_idx, len(lines)):
+            stripped = lines[i].strip()
+            if "GRAND TOTAL" in stripped.upper():
+                end_idx = i
+                break
+            m_other = sub_section_re.fullmatch(stripped)
+            if m_other and _preprocess_invoice_no_for_grouping(m_other.group(1)) != target_norm:
+                end_idx = i
+                break
+
+    # Pindai TOTAL X.XX UNIT + baris lanjutannya.
+    total_sum = 0.0
+    found_any = False
+
+    i = start_idx
+    while i < end_idx:
+        line = lines[i].strip()
+        upper = line.upper()
+
+        if upper.startswith("GRAND TOTAL"):
+            break
+
+        m = re.match(r"^TOTAL\s+([\d,]+\.\d+)\s+[A-Z]+\b", line, flags=re.IGNORECASE)
+        if m:
+            total_sum += float(m.group(1).replace(",", ""))
+            found_any = True
+
+            # Cek baris di bawahnya untuk continuation "<number> <unit>" (mis. "400.00 SETS").
+            j = i + 1
+            while j < end_idx:
+                cont = lines[j].strip()
+                cont_upper = cont.upper()
+
+                if not cont:
+                    j += 1
+                    continue
+                if cont_upper.startswith("GRAND TOTAL"):
+                    break
+                if cont_upper.startswith("TOTAL"):
+                    break
+                if cont_upper.startswith("CLAIM"):
+                    j += 1
+                    continue
+                if cont.startswith("INS-"):
+                    break
+
+                m_cont = re.match(r"^([\d,]+\.\d+)\s+[A-Z]+\s*$", cont, flags=re.IGNORECASE)
+                if m_cont:
+                    total_sum += float(m_cont.group(1).replace(",", ""))
+                    found_any = True
+                    j += 1
+                else:
+                    break
+
+            i = j
+        else:
+            i += 1
+
+    if not found_any:
+        return None
+
+    print(
+        f"[KARET_DELI_PL_TOTAL] invoice='{target_invoice_no}' mode={mode} "
+        f"sum={total_sum} (lines[{start_idx}:{end_idx}])"
+    )
+    return total_sum
 
 
 def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
@@ -8186,8 +8302,20 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
             unique_rows = []
             seen_sigs = set()
+            dropped_null_anchor = 0
             for r in merged_detail_rows:
                 if not isinstance(r, dict):
+                    continue
+
+                # Drop row kalau inv_spart_item_no DAN inv_description dua-duanya null/kosong.
+                # Row seperti ini biasanya placeholder dari chunked extraction yang
+                # tidak ke-fill (misal _missing_from_chunk fallback) — tidak ada
+                # identitas item sama sekali, tidak ada gunanya di-keep.
+                if (
+                    _is_null(r.get("inv_spart_item_no"))
+                    and _is_null(r.get("inv_description"))
+                ):
+                    dropped_null_anchor += 1
                     continue
 
                 inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
@@ -8203,10 +8331,76 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     seen_sigs.add(sig)
                     unique_rows.append(r)
 
+            if dropped_null_anchor:
+                print(
+                    f"[KARET_DELI_DEDUP] dropped {dropped_null_anchor} row(s) "
+                    f"dengan inv_spart_item_no & inv_description null"
+                )
+
             merged_detail_rows = unique_rows
             _canonicalize_invoice_total_headers(merged_detail_rows)
 
-            # 3. Kembalikan urutan baris ke posisi mutlak aslinya
+            # 3. Second-pass dedup: catch qty-variance stragglers dari multi-pass
+            # extraction. Signature pakai (po, item, desc) TANPA qty, jadi
+            # variance qty antar-pass tidak bisa ngeloloskan duplikat lagi.
+            # Untuk safety supaya legitimate dupes (item sama muncul beberapa
+            # kali di invoice yang sama, biasanya adjacent dalam original order)
+            # tidak ke-drop, dedup hanya berlaku saat gap _global_original_order
+            # antar dupe > KARET_DELI_STRAGGLER_GAP_THRESHOLD (legitimate dupes
+            # biasanya gap=1, stragglers gap=50+).
+            KARET_DELI_STRAGGLER_GAP_THRESHOLD = 30
+
+            # Group rows by signature without qty
+            sig_groups = {}
+            for r in merged_detail_rows:
+                if not isinstance(r, dict):
+                    continue
+                inv_no_raw = str(r.get("inv_invoice_no") or "").strip().upper()
+                inv_no_base = inv_no_raw.split('/K')[0].strip()
+                po_no = str(r.get("inv_customer_po_no") or r.get("pl_customer_po_no") or "").strip().upper()
+                item_no = str(r.get("inv_spart_item_no") or r.get("pl_item_no") or "").strip()
+                desc = str(r.get("inv_description") or "").strip().upper()[:30]
+                if not po_no and not item_no and not desc:
+                    continue
+                key = (inv_no_base, po_no, item_no, desc)
+                sig_groups.setdefault(key, []).append(r)
+
+            stragglers_to_drop_ids = set()
+            for key, group in sig_groups.items():
+                if len(group) < 2:
+                    continue
+                # Sort by _global_original_order
+                group_sorted = sorted(
+                    group, key=lambda r: r.get("_global_original_order", 999999)
+                )
+                canonical = group_sorted[0]
+                canonical_order = canonical.get("_global_original_order", 0)
+                for dup in group_sorted[1:]:
+                    dup_order = dup.get("_global_original_order", 0)
+                    gap = dup_order - canonical_order
+                    if gap > KARET_DELI_STRAGGLER_GAP_THRESHOLD:
+                        stragglers_to_drop_ids.add(id(dup))
+                        print(
+                            f"[KARET_DELI_DEDUP] drop straggler: po={key[1]} "
+                            f"item={key[2]} canonical_order={canonical_order} "
+                            f"straggler_order={dup_order} gap={gap} "
+                            f"canonical_qty={canonical.get('inv_quantity')} "
+                            f"straggler_qty={dup.get('inv_quantity')}"
+                        )
+
+            if stragglers_to_drop_ids:
+                before_count = len(merged_detail_rows)
+                merged_detail_rows = [
+                    r for r in merged_detail_rows
+                    if id(r) not in stragglers_to_drop_ids
+                ]
+                print(
+                    f"[KARET_DELI_DEDUP] dropped {before_count - len(merged_detail_rows)} "
+                    f"straggler(s) dari multi-pass extraction (qty variance, gap > "
+                    f"{KARET_DELI_STRAGGLER_GAP_THRESHOLD})"
+                )
+
+            # 4. Kembalikan urutan baris ke posisi mutlak aslinya
             merged_detail_rows.sort(key=lambda r: r.get("_global_original_order", 999999))
 
             print(f"[KARET_DELI_DEDUP] Reduced detail rows and restored exact original order")
@@ -12040,6 +12234,32 @@ def run_ocr(
             optional_header_obj=optional_header_obj,
         )
 
+        # KARET DELI: pl_total_quantity dari Gemini sering inkonsisten antar call
+        # untuk PL multi-section (kadang 30437, kadang 30438 ikut grand total).
+        # Override deterministik via PyMuPDF — parse "TOTAL X.XX UNIT" dari
+        # section yang tepat untuk invoice ini. Hanya untuk karet_deli, vendor
+        # lain sama sekali tidak ter-sentuh.
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            pl_pdf_for_total = normalized_pdf_paths[1] if len(normalized_pdf_paths) >= 2 else None
+            target_invoice_for_pl_total = (
+                header_obj.get("pl_invoice_no")
+                or header_obj.get("inv_invoice_no")
+            )
+            if pl_pdf_for_total and not _is_null(target_invoice_for_pl_total):
+                deterministic_pl_qty = _karet_deli_extract_pl_total_quantity(
+                    pl_pdf_for_total,
+                    str(target_invoice_for_pl_total),
+                )
+                if deterministic_pl_qty is not None:
+                    gemini_pl_qty = header_obj.get("pl_total_quantity")
+                    print(
+                        f"[KARET_DELI_PL_TOTAL_OVERRIDE] "
+                        f"invoice='{target_invoice_for_pl_total}' "
+                        f"gemini={gemini_pl_qty} -> pymupdf={deterministic_pl_qty}"
+                    )
+                    header_obj["pl_total_quantity"] = deterministic_pl_qty
+                    base_header_obj["pl_total_quantity"] = deterministic_pl_qty
+
         _enforce_absent_optional_docs_empty(
             header_obj=header_obj,
             has_bl_doc=has_bl_doc,
@@ -12080,27 +12300,6 @@ def run_ocr(
             else:
                 print(
                     f"[SHIMANO_PART_COUNT] pymupdf count returned 0, "
-                    f"fallback ke gemini total_row={total_row}"
-                )
-
-        # KARET DELI: override total_row dengan deterministic PO.INS count via pymupdf.
-        # Karet Deli punya 2 baris per item (deskripsi + PO) yang bikin Gemini
-        # sering drift / skip / duplikat sequence; ground truth dari count PO
-        # menjamin chunked extraction tidak kehilangan item.
-        if normalize_vendor_id(vendor_id) == "karet_deli":
-            invoice_pdf_for_count = normalized_pdf_paths[0]
-            deterministic_total_row = _karet_deli_count_line_items_from_invoice_pdf(
-                invoice_pdf_for_count
-            )
-            if deterministic_total_row > 0:
-                print(
-                    f"[KARET_DELI_PO_COUNT] override total_row: "
-                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
-                )
-                total_row = deterministic_total_row
-            else:
-                print(
-                    f"[KARET_DELI_PO_COUNT] pymupdf count returned 0, "
                     f"fallback ke gemini total_row={total_row}"
                 )
 
@@ -12151,21 +12350,6 @@ def run_ocr(
                     f"[SHIMANO_DEDUPE] index_items: "
                     f"before={before_dedupe} after={after_dedupe} "
                     f"dropped={before_dedupe - after_dedupe}"
-                )
-
-        # KARET DELI: bandingkan hasil LLM vs deterministic count via PO.INS.
-        # Mismatch berarti LLM skip/duplikat baris — kelas bug "seq 2:500, seq 3:200,
-        # 300 hilang" yang user laporkan. Log warning supaya bisa ditelusuri dari log.
-        if normalize_vendor_id(vendor_id) == "karet_deli":
-            karet_deli_expected = _karet_deli_count_line_items_from_invoice_pdf(
-                normalized_pdf_paths[0]
-            )
-            if karet_deli_expected > 0 and len(index_items) != karet_deli_expected:
-                print(
-                    f"[KARET_DELI_INDEX_DRIFT] expected={karet_deli_expected} "
-                    f"got={len(index_items)} diff={len(index_items) - karet_deli_expected} "
-                    f"— Gemini index extraction skip/duplikat baris. "
-                    f"Periksa output untuk row hilang atau ghost row."
                 )
 
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
