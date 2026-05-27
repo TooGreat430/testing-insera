@@ -5785,11 +5785,13 @@ def _kunshan_landon_recover_po_from_description(
 
 def _fallback_po_no_by_item_no(row: dict, po_lines: list) -> bool:
     """
-    Fallback jika PO No kosong tapi Item No ada.
+    Fallback jika PO No kosong tapi Item No ada, atau jika PO No salah akibat fill-forward.
     Melacak Item No di data PO JSON untuk mendapatkan PO No-nya.
+    Difilter secara presisi menggunakan Price & Qty untuk mencegah konflik jika 1 item ada di banyak PO.
     """
     inv_item = _norm_item_compare_key(row.get("inv_spart_item_no") or row.get("pl_item_no"))
     inv_qty = _to_float(row.get("inv_quantity"))
+    inv_price = _to_float(row.get("inv_unit_price"))
 
     if not inv_item:
         return False
@@ -5809,12 +5811,34 @@ def _fallback_po_no_by_item_no(row: dict, po_lines: list) -> bool:
     if not candidates:
         return False
 
-    # Filter kandidat yang quantity-nya sama persis untuk menghindari tabrakan jika 1 item ada di banyak PO
-    qty_matched_candidates = [po for po in candidates if _to_float(po.get("po_quantity")) == inv_qty]
-    if qty_matched_candidates:
-        candidates = qty_matched_candidates
+    # Filter kandidat dengan Price & Quantity sekaligus agar presisi (Tingkat 1)
+    exact_candidates = [
+        po for po in candidates 
+        if inv_qty is not None and inv_price is not None and 
+           _to_float(po.get("po_quantity")) == inv_qty and 
+           _to_float(po.get("po_price")) == inv_price
+    ]
+    
+    if exact_candidates:
+        candidates = exact_candidates
+    else:
+        # Filter dengan Price saja (Tingkat 2)
+        price_candidates = [
+            po for po in candidates 
+            if inv_price is not None and _to_float(po.get("po_price")) == inv_price
+        ]
+        if price_candidates:
+            candidates = price_candidates
+        else:
+            # Filter dengan Qty saja (Tingkat 3)
+            qty_candidates = [
+                po for po in candidates 
+                if inv_qty is not None and _to_float(po.get("po_quantity")) == inv_qty
+            ]
+            if qty_candidates:
+                candidates = qty_candidates
 
-    # Pastikan semua kandidat mengarah ke 1 PO Number yang sama
+    # Pastikan semua sisa kandidat mengarah ke 1 PO Number yang sama
     unique_po_nos = {_norm_po_number(po.get("po_no")) for po in candidates if po.get("po_no")}
     
     if len(unique_po_nos) == 1:
@@ -5860,6 +5884,22 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                     row["inv_spart_item_no"] = first_word
                     row["pl_item_no"] = first_word
                     used_desc_fallback = True
+
+        # NEW: Deteksi dan timpa PO yang nyasar akibat fill_forward SEBELUM di-map
+        inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+        inv_art_norm = _norm_item_compare_key(row.get("inv_spart_item_no"))
+        pl_art_norm = _norm_item_compare_key(row.get("pl_item_no"))
+        art_to_check = inv_art_norm or pl_art_norm
+
+        if inv_po_norm and art_to_check:
+            exists_in_po = False
+            if inv_art_norm and (inv_po_norm, inv_art_norm) in po_article_index:
+                exists_in_po = True
+            elif pl_art_norm and (inv_po_norm, pl_art_norm) in po_article_index:
+                exists_in_po = True
+                
+            if not exists_in_po:
+                _fallback_po_no_by_item_no(row, po_lines)
 
         mapped_rows, success = _map_single_detail_row_to_po(
             row=row,
@@ -12616,7 +12656,19 @@ def run_ocr(
                     continue
                 po_numbers.add(candidate)
 
-        po_lines = _stream_filter_po_lines(po_numbers)
+        # NEW: Tarik PO dari JSON berdasarkan item number juga
+        item_numbers = set()
+        for r in all_rows:
+            if not isinstance(r, dict):
+                continue
+            i_art = str(r.get("inv_spart_item_no") or "").strip()
+            p_art = str(r.get("pl_item_no") or "").strip()
+            if i_art and i_art.lower() != "null":
+                item_numbers.add(i_art)
+            if p_art and p_art.lower() != "null":
+                item_numbers.add(p_art)
+
+        po_lines = _stream_filter_po_lines(po_numbers, target_item_numbers=item_numbers)
         print("PO NUMBERS:", po_numbers)
         print("PO LINES FOUND:", len(po_lines))
 
