@@ -5885,6 +5885,23 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                     row["pl_item_no"] = first_word
                     used_desc_fallback = True
 
+        # === PERBAIKAN 2: Deteksi PO salah akibat fill_forward SEBELUM mapping ===
+        inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+        inv_art_norm = _norm_item_compare_key(row.get("inv_spart_item_no"))
+        pl_art_norm = _norm_item_compare_key(row.get("pl_item_no"))
+        art_to_check = inv_art_norm or pl_art_norm
+
+        exists_in_po = False
+        if inv_po_norm:
+            if inv_art_norm and (inv_po_norm, inv_art_norm) in po_article_index:
+                exists_in_po = True
+            elif pl_art_norm and (inv_po_norm, pl_art_norm) in po_article_index:
+                exists_in_po = True
+
+        if art_to_check and not exists_in_po:
+            _fallback_po_no_by_item_no(row, po_lines)
+        # =========================================================================
+
         mapped_rows, success = _map_single_detail_row_to_po(
             row=row,
             po_article_index=po_article_index,
@@ -12644,10 +12661,23 @@ def run_ocr(
                     continue
                 po_numbers.add(candidate)
 
-        po_lines = _stream_filter_po_lines(po_numbers)
+        # === PERBAIKAN 1: Ambil item_numbers agar PO yang hilang tetap ter-fetch ===
+        item_numbers = set()
+        for r in all_rows:
+            if not isinstance(r, dict):
+                continue
+            i_art = str(r.get("inv_spart_item_no") or "").strip()
+            p_art = str(r.get("pl_item_no") or "").strip()
+            if i_art and i_art.lower() != "null":
+                item_numbers.add(i_art)
+            if p_art and p_art.lower() != "null":
+                item_numbers.add(p_art)
+
+        po_lines = _stream_filter_po_lines(po_numbers, target_item_numbers=item_numbers)
+        # ===========================================================================
+        
         print("PO NUMBERS:", po_numbers)
         print("PO LINES FOUND:", len(po_lines))
-
         _recompute_seq_by_key(all_rows, "inv_invoice_no", "inv_seq")
 
         _postprocess_customer_po_no(all_rows)
