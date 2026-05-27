@@ -486,13 +486,6 @@ def _pick_best_total_value(existing_value, candidate_value):
     return existing_num
 
 
-# Threshold relative diff (sum_pl_qty vs declared) yang masih dianggap
-# kasus off-by-section-confusion karet_deli (misal 30437 vs 30438 = ~0.003%).
-# Di atas threshold ini, asumsinya bukan LLM picking wrong section tapi
-# error ekstraksi besar — refocus tidak akan membantu.
-KARET_DELI_PL_TOTAL_REFOCUS_MAX_RELATIVE_DIFF = 0.01  # 1%
-
-
 def _build_karet_deli_pl_total_refocus_prompt(target_invoice_no: str) -> str:
     return f"""
 ROLE:
@@ -539,12 +532,15 @@ def _karet_deli_refocus_pl_total_quantity(
 
     Trigger:
     - vendor == karet_deli
-    - declared pl_total_quantity (dari header pass Gemini) != sum(pl_quantity dari rows)
-    - relative diff ≤ 1% (indikasi off-by-section, BUKAN error besar)
+    - Dari rows hasil detail extraction (sebelum `_apply_header_to_rows` overwrite
+      seragam), terdapat LEBIH DARI 1 nilai distinct untuk field pl_total_quantity.
+      Itu indikasi Gemini ragu/non-deterministik antar baris dalam invoice yang sama.
 
     Tindakan:
     - Panggil Gemini 1x dengan prompt super-fokus minta TOTAL parent saja (BUKAN GRAND TOTAL).
-    - Kalau hasil refocus lebih dekat ke sum dibanding declared, override base_header_obj.
+    - Override base_header_obj.pl_total_quantity dengan hasil refocus.
+    - Validation downstream tetap meaningful: kalau hasil refocus salah dan tidak match
+      sum(pl_quantity), `_validate_packing_rows` akan flag mismatch seperti biasa.
 
     Return: True kalau override terjadi, False kalau tidak (caller bisa log).
     """
@@ -554,35 +550,20 @@ def _karet_deli_refocus_pl_total_quantity(
     if not isinstance(base_header_obj, dict):
         return False
 
-    declared_pl_qty = _to_float(base_header_obj.get("pl_total_quantity"))
-    if declared_pl_qty is None:
-        return False
-
-    sum_pl_qty = 0.0
-    has_pl_qty = False
+    # Kumpulkan nilai distinct pl_total_quantity dari rows.
+    # Per `run_ocr` dipanggil per-group, semua row di `all_rows` punya invoice
+    # yang sama, jadi tidak perlu group by inv_invoice_no lagi.
+    distinct_values = set()
     for r in all_rows:
         if not isinstance(r, dict):
             continue
-        v = _to_float(r.get("pl_quantity"))
-        if v is not None:
-            sum_pl_qty += v
-            has_pl_qty = True
+        v = _to_float(r.get("pl_total_quantity"))
+        if v is None:
+            continue
+        distinct_values.add(v)
 
-    if not has_pl_qty:
-        return False
-
-    diff = abs(sum_pl_qty - declared_pl_qty)
-    if diff <= 0.01:
-        return False  # already match, no refocus needed
-
-    relative_diff = diff / max(abs(declared_pl_qty), 1.0)
-    if relative_diff > KARET_DELI_PL_TOTAL_REFOCUS_MAX_RELATIVE_DIFF:
-        print(
-            f"[KARET_DELI_PL_TOTAL_REFOCUS][SKIP] "
-            f"relative_diff={relative_diff:.4f} > threshold; "
-            f"declared={declared_pl_qty} sum={sum_pl_qty} — kemungkinan error besar, "
-            f"refocus tidak akan membantu, biarkan validation flag."
-        )
+    if len(distinct_values) <= 1:
+        # Konsisten antar row — Gemini tidak ragu di pass ini. Tidak perlu refocus.
         return False
 
     target_invoice = (
@@ -598,8 +579,9 @@ def _karet_deli_refocus_pl_total_quantity(
 
     print(
         f"[KARET_DELI_PL_TOTAL_REFOCUS][TRIGGER] "
-        f"invoice='{target_invoice_str}' declared={declared_pl_qty} "
-        f"sum={sum_pl_qty} diff={diff} rel={relative_diff:.4f}"
+        f"invoice='{target_invoice_str}' "
+        f"distinct_values={sorted(distinct_values)} "
+        f"declared_header={base_header_obj.get('pl_total_quantity')}"
     )
 
     try:
@@ -623,20 +605,11 @@ def _karet_deli_refocus_pl_total_quantity(
         print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] pl_total_quantity tidak valid: {focused_result}")
         return False
 
-    new_diff = abs(new_value - sum_pl_qty)
-    if new_diff >= diff:
-        # Refocus tidak memperbaiki — Gemini masih return value yang sama atau lebih jauh.
-        print(
-            f"[KARET_DELI_PL_TOTAL_REFOCUS][REJECT] "
-            f"new_value={new_value} new_diff={new_diff} tidak lebih baik dari "
-            f"declared={declared_pl_qty} (diff={diff}). Tidak override."
-        )
-        return False
-
+    old_value = base_header_obj.get("pl_total_quantity")
     print(
         f"[KARET_DELI_PL_TOTAL_REFOCUS][ACCEPT] "
-        f"invoice='{target_invoice_str}' old={declared_pl_qty} -> new={new_value} "
-        f"(sum={sum_pl_qty})"
+        f"invoice='{target_invoice_str}' header_old={old_value} -> new={new_value} "
+        f"(distinct_in_rows={sorted(distinct_values)})"
     )
     base_header_obj["pl_total_quantity"] = new_value
     return True
