@@ -486,6 +486,162 @@ def _pick_best_total_value(existing_value, candidate_value):
     return existing_num
 
 
+# Threshold relative diff (sum_pl_qty vs declared) yang masih dianggap
+# kasus off-by-section-confusion karet_deli (misal 30437 vs 30438 = ~0.003%).
+# Di atas threshold ini, asumsinya bukan LLM picking wrong section tapi
+# error ekstraksi besar — refocus tidak akan membantu.
+KARET_DELI_PL_TOTAL_REFOCUS_MAX_RELATIVE_DIFF = 0.01  # 1%
+
+
+def _build_karet_deli_pl_total_refocus_prompt(target_invoice_no: str) -> str:
+    return f"""
+ROLE:
+Anda mengekstrak SATU value spesifik dari dokumen Packing List karet_deli.
+
+TARGET INVOICE: {target_invoice_no}
+
+TUGAS:
+Cari nilai TOTAL quantity untuk invoice "{target_invoice_no}" SAJA — BUKAN GRAND TOTAL.
+
+ATURAN KETAT:
+1. Karet Deli PL bisa berisi multiple section:
+   - Header utama: "No. : INS-XXX/YY"
+   - "TOTAL X.XX PCS / Y.YY SETS"        ← total untuk section parent (INS-XXX/YY)
+   - Sub-section header standalone: "INS-XXX/YY/ZZZ"
+   - "TOTAL X.XX PCS"                    ← total untuk sub-section (INS-XXX/YY/ZZZ)
+   - "GRAND TOTAL X.XX PCS / Y.YY SETS"  ← gabungan SEMUA section, JANGAN DIAMBIL
+
+2. Untuk target invoice "{target_invoice_no}":
+   - Jika target match header utama (e.g., "INS-009/26"): ambil baris TOTAL setelah item-item parent dan SEBELUM sub-section header pertama.
+   - Jika target match sub-section (e.g., "INS-009/26/K100"): ambil baris TOTAL yang berada SETELAH sub-section header itu.
+   - DILARANG mengambil GRAND TOTAL meskipun nilainya terlihat lebih masuk akal.
+
+3. Jika TOTAL untuk target invoice punya lebih dari satu unit (PCS, SETS, dll), JUMLAHKAN semua nilai-nya menjadi satu angka.
+   Contoh: "TOTAL 30,037.00 PCS" dan baris lanjutan "400.00 SETS" untuk parent → pl_total_quantity = 30437.
+
+4. Output HANYA JSON, tanpa teks lain, tanpa markdown.
+
+OUTPUT SCHEMA:
+{{
+  "pl_total_quantity": "number"
+}}
+""".strip()
+
+
+def _karet_deli_refocus_pl_total_quantity(
+    file_uri: str,
+    all_rows: list,
+    base_header_obj: dict,
+    vendor_id: str,
+):
+    """
+    Detect-then-refocused-retry untuk pl_total_quantity karet_deli.
+
+    Trigger:
+    - vendor == karet_deli
+    - declared pl_total_quantity (dari header pass Gemini) != sum(pl_quantity dari rows)
+    - relative diff ≤ 1% (indikasi off-by-section, BUKAN error besar)
+
+    Tindakan:
+    - Panggil Gemini 1x dengan prompt super-fokus minta TOTAL parent saja (BUKAN GRAND TOTAL).
+    - Kalau hasil refocus lebih dekat ke sum dibanding declared, override base_header_obj.
+
+    Return: True kalau override terjadi, False kalau tidak (caller bisa log).
+    """
+    if not isinstance(all_rows, list) or not all_rows:
+        return False
+
+    if not isinstance(base_header_obj, dict):
+        return False
+
+    declared_pl_qty = _to_float(base_header_obj.get("pl_total_quantity"))
+    if declared_pl_qty is None:
+        return False
+
+    sum_pl_qty = 0.0
+    has_pl_qty = False
+    for r in all_rows:
+        if not isinstance(r, dict):
+            continue
+        v = _to_float(r.get("pl_quantity"))
+        if v is not None:
+            sum_pl_qty += v
+            has_pl_qty = True
+
+    if not has_pl_qty:
+        return False
+
+    diff = abs(sum_pl_qty - declared_pl_qty)
+    if diff <= 0.01:
+        return False  # already match, no refocus needed
+
+    relative_diff = diff / max(abs(declared_pl_qty), 1.0)
+    if relative_diff > KARET_DELI_PL_TOTAL_REFOCUS_MAX_RELATIVE_DIFF:
+        print(
+            f"[KARET_DELI_PL_TOTAL_REFOCUS][SKIP] "
+            f"relative_diff={relative_diff:.4f} > threshold; "
+            f"declared={declared_pl_qty} sum={sum_pl_qty} — kemungkinan error besar, "
+            f"refocus tidak akan membantu, biarkan validation flag."
+        )
+        return False
+
+    target_invoice = (
+        base_header_obj.get("pl_invoice_no")
+        or base_header_obj.get("inv_invoice_no")
+    )
+    if _is_null(target_invoice):
+        return False
+
+    target_invoice_str = str(target_invoice).strip()
+    if not target_invoice_str:
+        return False
+
+    print(
+        f"[KARET_DELI_PL_TOTAL_REFOCUS][TRIGGER] "
+        f"invoice='{target_invoice_str}' declared={declared_pl_qty} "
+        f"sum={sum_pl_qty} diff={diff} rel={relative_diff:.4f}"
+    )
+
+    try:
+        focused_result = _call_gemini_json_uri(
+            file_uri,
+            _build_karet_deli_pl_total_refocus_prompt(target_invoice_str),
+            expect_array=False,
+            retries=2,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] gemini call error: {repr(e)}")
+        return False
+
+    if not isinstance(focused_result, dict):
+        print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] result bukan dict: {focused_result}")
+        return False
+
+    new_value = _to_float(focused_result.get("pl_total_quantity"))
+    if new_value is None:
+        print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] pl_total_quantity tidak valid: {focused_result}")
+        return False
+
+    new_diff = abs(new_value - sum_pl_qty)
+    if new_diff >= diff:
+        # Refocus tidak memperbaiki — Gemini masih return value yang sama atau lebih jauh.
+        print(
+            f"[KARET_DELI_PL_TOTAL_REFOCUS][REJECT] "
+            f"new_value={new_value} new_diff={new_diff} tidak lebih baik dari "
+            f"declared={declared_pl_qty} (diff={diff}). Tidak override."
+        )
+        return False
+
+    print(
+        f"[KARET_DELI_PL_TOTAL_REFOCUS][ACCEPT] "
+        f"invoice='{target_invoice_str}' old={declared_pl_qty} -> new={new_value} "
+        f"(sum={sum_pl_qty})"
+    )
+    base_header_obj["pl_total_quantity"] = new_value
+    return True
+
+
 # Field total yang per-rule HARUS sama untuk semua row dalam 1 invoice_no.
 # Multi-pass extraction (karet_deli multi-section PL, LLM non-determinism)
 # kadang menghasilkan nilai berbeda per baris untuk field-field ini —
@@ -12296,6 +12452,28 @@ def run_ocr(
             batch_size=detail_batch_size,
             vendor_id=vendor_id
         )
+
+        # =========================================
+        # KARET DELI: DETECT-THEN-REFOCUSED-RETRY untuk pl_total_quantity.
+        # Setelah detail extraction selesai, sum(pl_quantity) dari rows
+        # bisa dipakai sebagai sanity check terhadap pl_total_quantity
+        # yang Gemini extract di header pass. Kalau diff kecil (≤1%),
+        # kemungkinan besar Gemini salah pilih antara TOTAL parent vs
+        # GRAND TOTAL — panggil Gemini 1x dengan prompt super-fokus
+        # supaya pilih yang benar. Bounded 1 retry, tidak ada loop.
+        # =========================================
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            _karet_deli_refocus_pl_total_quantity(
+                file_uri=base_detail_input_uri,
+                all_rows=all_rows,
+                base_header_obj=base_header_obj,
+                vendor_id=vendor_id,
+            )
+            # Sinkronkan header_obj kalau base_header_obj sudah di-update.
+            # _merge_optional_header_into_base_header tidak override pl_*,
+            # jadi header_obj juga harus disinkronkan manual.
+            if base_header_obj.get("pl_total_quantity") != header_obj.get("pl_total_quantity"):
+                header_obj["pl_total_quantity"] = base_header_obj.get("pl_total_quantity")
 
         # =========================================
         # PRECHECK PYTHON
