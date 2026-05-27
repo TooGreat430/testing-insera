@@ -486,6 +486,135 @@ def _pick_best_total_value(existing_value, candidate_value):
     return existing_num
 
 
+def _build_karet_deli_pl_total_refocus_prompt(target_invoice_no: str) -> str:
+    return f"""
+ROLE:
+Anda mengekstrak SATU value spesifik dari dokumen Packing List karet_deli.
+
+TARGET INVOICE: {target_invoice_no}
+
+TUGAS:
+Cari nilai TOTAL quantity untuk invoice "{target_invoice_no}" SAJA — BUKAN GRAND TOTAL.
+
+ATURAN KETAT:
+1. Karet Deli PL bisa berisi multiple section:
+   - Header utama: "No. : INS-XXX/YY"
+   - "TOTAL X.XX PCS / Y.YY SETS"        ← total untuk section parent (INS-XXX/YY)
+   - Sub-section header standalone: "INS-XXX/YY/ZZZ"
+   - "TOTAL X.XX PCS"                    ← total untuk sub-section (INS-XXX/YY/ZZZ)
+   - "GRAND TOTAL X.XX PCS / Y.YY SETS"  ← gabungan SEMUA section, JANGAN DIAMBIL
+
+2. Untuk target invoice "{target_invoice_no}":
+   - Jika target match header utama (e.g., "INS-009/26"): ambil baris TOTAL setelah item-item parent dan SEBELUM sub-section header pertama.
+   - Jika target match sub-section (e.g., "INS-009/26/K100"): ambil baris TOTAL yang berada SETELAH sub-section header itu.
+   - DILARANG mengambil GRAND TOTAL meskipun nilainya terlihat lebih masuk akal.
+
+3. Jika TOTAL untuk target invoice punya lebih dari satu unit (PCS, SETS, dll), JUMLAHKAN semua nilai-nya menjadi satu angka.
+   Contoh: "TOTAL 30,037.00 PCS" dan baris lanjutan "400.00 SETS" untuk parent → pl_total_quantity = 30437.
+
+4. Output HANYA JSON, tanpa teks lain, tanpa markdown.
+
+OUTPUT SCHEMA:
+{{
+  "pl_total_quantity": "number"
+}}
+""".strip()
+
+
+def _karet_deli_refocus_pl_total_quantity(
+    file_uri: str,
+    all_rows: list,
+    base_header_obj: dict,
+    vendor_id: str,
+):
+    """
+    Detect-then-refocused-retry untuk pl_total_quantity karet_deli.
+
+    Trigger:
+    - vendor == karet_deli
+    - Dari rows hasil detail extraction (sebelum `_apply_header_to_rows` overwrite
+      seragam), terdapat LEBIH DARI 1 nilai distinct untuk field pl_total_quantity.
+      Itu indikasi Gemini ragu/non-deterministik antar baris dalam invoice yang sama.
+
+    Tindakan:
+    - Panggil Gemini 1x dengan prompt super-fokus minta TOTAL parent saja (BUKAN GRAND TOTAL).
+    - Override base_header_obj.pl_total_quantity dengan hasil refocus.
+    - Validation downstream tetap meaningful: kalau hasil refocus salah dan tidak match
+      sum(pl_quantity), `_validate_packing_rows` akan flag mismatch seperti biasa.
+
+    Return: True kalau override terjadi, False kalau tidak (caller bisa log).
+    """
+    if not isinstance(all_rows, list) or not all_rows:
+        return False
+
+    if not isinstance(base_header_obj, dict):
+        return False
+
+    # Kumpulkan nilai distinct pl_total_quantity dari rows.
+    # Per `run_ocr` dipanggil per-group, semua row di `all_rows` punya invoice
+    # yang sama, jadi tidak perlu group by inv_invoice_no lagi.
+    distinct_values = set()
+    for r in all_rows:
+        if not isinstance(r, dict):
+            continue
+        v = _to_float(r.get("pl_total_quantity"))
+        if v is None:
+            continue
+        distinct_values.add(v)
+
+    if len(distinct_values) <= 1:
+        # Konsisten antar row — Gemini tidak ragu di pass ini. Tidak perlu refocus.
+        return False
+
+    target_invoice = (
+        base_header_obj.get("pl_invoice_no")
+        or base_header_obj.get("inv_invoice_no")
+    )
+    if _is_null(target_invoice):
+        return False
+
+    target_invoice_str = str(target_invoice).strip()
+    if not target_invoice_str:
+        return False
+
+    print(
+        f"[KARET_DELI_PL_TOTAL_REFOCUS][TRIGGER] "
+        f"invoice='{target_invoice_str}' "
+        f"distinct_values={sorted(distinct_values)} "
+        f"declared_header={base_header_obj.get('pl_total_quantity')}"
+    )
+
+    try:
+        focused_result = _call_gemini_json_uri(
+            file_uri,
+            _build_karet_deli_pl_total_refocus_prompt(target_invoice_str),
+            expect_array=False,
+            retries=2,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] gemini call error: {repr(e)}")
+        return False
+
+    if not isinstance(focused_result, dict):
+        print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] result bukan dict: {focused_result}")
+        return False
+
+    new_value = _to_float(focused_result.get("pl_total_quantity"))
+    if new_value is None:
+        print(f"[KARET_DELI_PL_TOTAL_REFOCUS][FAIL] pl_total_quantity tidak valid: {focused_result}")
+        return False
+
+    old_value = base_header_obj.get("pl_total_quantity")
+    print(
+        f"[KARET_DELI_PL_TOTAL_REFOCUS][ACCEPT] "
+        f"invoice='{target_invoice_str}' header_old={old_value} -> new={new_value} "
+        f"(distinct_in_rows={sorted(distinct_values)})"
+    )
+    base_header_obj["pl_total_quantity"] = new_value
+    return True
+
+
 # Field total yang per-rule HARUS sama untuk semua row dalam 1 invoice_no.
 # Multi-pass extraction (karet_deli multi-section PL, LLM non-determinism)
 # kadang menghasilkan nilai berbeda per baris untuk field-field ini —
@@ -4387,159 +4516,6 @@ def _call_gemini_index_chunked(
         chunk_no += 1
 
     return all_items
-
-
-def _karet_deli_extract_pl_total_quantity(pl_pdf_path: str, target_invoice_no: str):
-    # Ekstrak pl_total_quantity karet_deli deterministik via PyMuPDF.
-    # Tujuan: hilangkan ketergantungan ke LLM non-determinism untuk total
-    # PL yang terstruktur jelas di dokumen. Contoh pola PL karet_deli:
-    #
-    #     No. : INS-009/26
-    #     ... [parent items] ...
-    #     TOTAL 30,037.00 PCS
-    #            400.00 SETS              ← lanjutan SETS untuk parent
-    #     INS-009/26/K100                 ← sub-section header
-    #     ... [K100 items] ...
-    #     CLAIM : CLM25120243
-    #     TOTAL 1.00 PCS                  ← total sub-section K100
-    #     GRAND TOTAL 30,038.00 PCS
-    #                  400.00 SETS
-    #
-    # Untuk target = parent ("INS-009/26") → sum 30037 + 400 = 30437.
-    # Untuk target = sub-section ("INS-009/26/K100") → sum 1 = 1.
-    # GRAND TOTAL DIABAIKAN.
-    #
-    # Return None kalau gagal parse (caller fallback ke nilai Gemini).
-    if not pl_pdf_path or not target_invoice_no:
-        return None
-
-    try:
-        doc = fitz.open(pl_pdf_path)
-        try:
-            full_text = "\n".join(page.get_text() for page in doc)
-        finally:
-            doc.close()
-    except Exception as e:
-        print(f"[KARET_DELI_PL_TOTAL] failed to read PDF '{pl_pdf_path}': {repr(e)}")
-        return None
-
-    target_norm = _preprocess_invoice_no_for_grouping(target_invoice_no)
-    if not target_norm:
-        return None
-
-    lines = full_text.split("\n")
-
-    # Cari "No. : INS-XXX/YY..." di area header dokumen.
-    doc_main_header = None
-    for line in lines[:40]:
-        m = re.search(r"\bNo\.\s*:\s*(INS-\d+/\d+(?:/[A-Z0-9]+)*)", line, flags=re.IGNORECASE)
-        if m:
-            doc_main_header = _preprocess_invoice_no_for_grouping(m.group(1))
-            break
-
-    # Cari standalone sub-section line yang persis cocok dengan target.
-    sub_section_re = re.compile(r"\s*(INS-\d+/\d+(?:/[A-Z0-9]+)+)\s*", flags=re.IGNORECASE)
-    target_inline_line = None
-    for i, line in enumerate(lines):
-        m = sub_section_re.fullmatch(line.strip())
-        if m and _preprocess_invoice_no_for_grouping(m.group(1)) == target_norm:
-            target_inline_line = i
-            break
-
-    # Tentukan mode parsing.
-    if doc_main_header == target_norm:
-        mode = "parent"
-    elif target_inline_line is not None:
-        mode = "sub_section"
-    elif len(target_norm.split("/")) == 2:
-        # Fallback: target berformat parent ("INS-XXX/YY") tapi header dokumen
-        # tidak terdeteksi (misal PL parent displit ke halaman terakhir tanpa header).
-        mode = "parent"
-    else:
-        return None
-
-    # Tentukan rentang baris untuk dipindai.
-    if mode == "parent":
-        start_idx = 0
-        end_idx = len(lines)
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if "GRAND TOTAL" in stripped.upper():
-                end_idx = i
-                break
-            m_sub = sub_section_re.fullmatch(stripped)
-            if m_sub and _preprocess_invoice_no_for_grouping(m_sub.group(1)) != target_norm:
-                end_idx = i
-                break
-    else:
-        start_idx = target_inline_line + 1
-        end_idx = len(lines)
-        for i in range(start_idx, len(lines)):
-            stripped = lines[i].strip()
-            if "GRAND TOTAL" in stripped.upper():
-                end_idx = i
-                break
-            m_other = sub_section_re.fullmatch(stripped)
-            if m_other and _preprocess_invoice_no_for_grouping(m_other.group(1)) != target_norm:
-                end_idx = i
-                break
-
-    # Pindai TOTAL X.XX UNIT + baris lanjutannya.
-    total_sum = 0.0
-    found_any = False
-
-    i = start_idx
-    while i < end_idx:
-        line = lines[i].strip()
-        upper = line.upper()
-
-        if upper.startswith("GRAND TOTAL"):
-            break
-
-        m = re.match(r"^TOTAL\s+([\d,]+\.\d+)\s+[A-Z]+\b", line, flags=re.IGNORECASE)
-        if m:
-            total_sum += float(m.group(1).replace(",", ""))
-            found_any = True
-
-            # Cek baris di bawahnya untuk continuation "<number> <unit>" (mis. "400.00 SETS").
-            j = i + 1
-            while j < end_idx:
-                cont = lines[j].strip()
-                cont_upper = cont.upper()
-
-                if not cont:
-                    j += 1
-                    continue
-                if cont_upper.startswith("GRAND TOTAL"):
-                    break
-                if cont_upper.startswith("TOTAL"):
-                    break
-                if cont_upper.startswith("CLAIM"):
-                    j += 1
-                    continue
-                if cont.startswith("INS-"):
-                    break
-
-                m_cont = re.match(r"^([\d,]+\.\d+)\s+[A-Z]+\s*$", cont, flags=re.IGNORECASE)
-                if m_cont:
-                    total_sum += float(m_cont.group(1).replace(",", ""))
-                    found_any = True
-                    j += 1
-                else:
-                    break
-
-            i = j
-        else:
-            i += 1
-
-    if not found_any:
-        return None
-
-    print(
-        f"[KARET_DELI_PL_TOTAL] invoice='{target_invoice_no}' mode={mode} "
-        f"sum={total_sum} (lines[{start_idx}:{end_idx}])"
-    )
-    return total_sum
 
 
 def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
@@ -12269,32 +12245,6 @@ def run_ocr(
             optional_header_obj=optional_header_obj,
         )
 
-        # KARET DELI: pl_total_quantity dari Gemini sering inkonsisten antar call
-        # untuk PL multi-section (kadang 30437, kadang 30438 ikut grand total).
-        # Override deterministik via PyMuPDF — parse "TOTAL X.XX UNIT" dari
-        # section yang tepat untuk invoice ini. Hanya untuk karet_deli, vendor
-        # lain sama sekali tidak ter-sentuh.
-        if normalize_vendor_id(vendor_id) == "karet_deli":
-            pl_pdf_for_total = normalized_pdf_paths[1] if len(normalized_pdf_paths) >= 2 else None
-            target_invoice_for_pl_total = (
-                header_obj.get("pl_invoice_no")
-                or header_obj.get("inv_invoice_no")
-            )
-            if pl_pdf_for_total and not _is_null(target_invoice_for_pl_total):
-                deterministic_pl_qty = _karet_deli_extract_pl_total_quantity(
-                    pl_pdf_for_total,
-                    str(target_invoice_for_pl_total),
-                )
-                if deterministic_pl_qty is not None:
-                    gemini_pl_qty = header_obj.get("pl_total_quantity")
-                    print(
-                        f"[KARET_DELI_PL_TOTAL_OVERRIDE] "
-                        f"invoice='{target_invoice_for_pl_total}' "
-                        f"gemini={gemini_pl_qty} -> pymupdf={deterministic_pl_qty}"
-                    )
-                    header_obj["pl_total_quantity"] = deterministic_pl_qty
-                    base_header_obj["pl_total_quantity"] = deterministic_pl_qty
-
         _enforce_absent_optional_docs_empty(
             header_obj=header_obj,
             has_bl_doc=has_bl_doc,
@@ -12492,6 +12442,28 @@ def run_ocr(
             batch_size=detail_batch_size,
             vendor_id=vendor_id
         )
+
+        # =========================================
+        # KARET DELI: DETECT-THEN-REFOCUSED-RETRY untuk pl_total_quantity.
+        # Setelah detail extraction selesai, sum(pl_quantity) dari rows
+        # bisa dipakai sebagai sanity check terhadap pl_total_quantity
+        # yang Gemini extract di header pass. Kalau diff kecil (≤1%),
+        # kemungkinan besar Gemini salah pilih antara TOTAL parent vs
+        # GRAND TOTAL — panggil Gemini 1x dengan prompt super-fokus
+        # supaya pilih yang benar. Bounded 1 retry, tidak ada loop.
+        # =========================================
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            _karet_deli_refocus_pl_total_quantity(
+                file_uri=base_detail_input_uri,
+                all_rows=all_rows,
+                base_header_obj=base_header_obj,
+                vendor_id=vendor_id,
+            )
+            # Sinkronkan header_obj kalau base_header_obj sudah di-update.
+            # _merge_optional_header_into_base_header tidak override pl_*,
+            # jadi header_obj juga harus disinkronkan manual.
+            if base_header_obj.get("pl_total_quantity") != header_obj.get("pl_total_quantity"):
+                header_obj["pl_total_quantity"] = base_header_obj.get("pl_total_quantity")
 
         # =========================================
         # PRECHECK PYTHON
