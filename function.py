@@ -5785,17 +5785,20 @@ def _kunshan_landon_recover_po_from_description(
 
 def _fallback_po_no_by_item_no(row: dict, po_lines: list) -> bool:
     """
-    Fallback jika PO No kosong tapi Item No ada, atau jika PO No salah akibat fill-forward.
-    Melacak Item No di data PO JSON untuk mendapatkan PO No-nya.
-    Difilter secara presisi menggunakan Price & Qty untuk mencegah konflik jika 1 item ada di banyak PO.
+    Fallback jika PO No kosong tapi Item No ada.
+    Melacak Item No di data PO JSON menggunakan:
+    1. Item No + Quantity
+    2. Text Similarity (Description vs PO Text)
+    3. Pick pertama (Sort by PO Number)
     """
     inv_item = _norm_item_compare_key(row.get("inv_spart_item_no") or row.get("pl_item_no"))
     inv_qty = _to_float(row.get("inv_quantity"))
-    inv_price = _to_float(row.get("inv_unit_price"))
+    inv_desc = str(row.get("inv_description") or "").strip().lower()
 
     if not inv_item:
         return False
 
+    # STEP 1: Filter berdasarkan Item Number
     candidates = []
     for po in po_lines:
         if not isinstance(po, dict):
@@ -5804,45 +5807,35 @@ def _fallback_po_no_by_item_no(row: dict, po_lines: list) -> bool:
         po_vendor_article = _norm_item_compare_key(po.get("po_vendor_article_no") or po.get("vendor_article_no"))
         po_sap_article = _norm_item_compare_key(po.get("po_sap_article_no") or po.get("sap_article_no"))
         
-        # Jika item number cocok
         if inv_item and inv_item in (po_vendor_article, po_sap_article):
             candidates.append(po)
 
     if not candidates:
         return False
 
-    # Filter kandidat dengan Price & Quantity sekaligus agar presisi (Tingkat 1)
-    exact_candidates = [
-        po for po in candidates 
-        if inv_qty is not None and inv_price is not None and 
-           _to_float(po.get("po_quantity")) == inv_qty and 
-           _to_float(po.get("po_price")) == inv_price
-    ]
-    
-    if exact_candidates:
-        candidates = exact_candidates
-    else:
-        # Filter dengan Price saja (Tingkat 2)
-        price_candidates = [
-            po for po in candidates 
-            if inv_price is not None and _to_float(po.get("po_price")) == inv_price
-        ]
-        if price_candidates:
-            candidates = price_candidates
-        else:
-            # Filter dengan Qty saja (Tingkat 3)
-            qty_candidates = [
-                po for po in candidates 
-                if inv_qty is not None and _to_float(po.get("po_quantity")) == inv_qty
-            ]
-            if qty_candidates:
-                candidates = qty_candidates
+    # STEP 2: Filter berdasarkan Quantity
+    if inv_qty is not None:
+        qty_candidates = [po for po in candidates if _to_float(po.get("po_quantity")) == inv_qty]
+        if qty_candidates:
+            candidates = qty_candidates
 
-    # Pastikan semua sisa kandidat mengarah ke 1 PO Number yang sama
-    unique_po_nos = {_norm_po_number(po.get("po_no")) for po in candidates if po.get("po_no")}
-    
-    if len(unique_po_nos) == 1:
-        po_no_found = unique_po_nos.pop()
+    # STEP 3 & 4: Skoring Text Similarity & Pick Pertama
+    scored_candidates = []
+    for po in candidates:
+        po_text = str(po.get("po_text") or "").strip().lower()
+        # Hitung rasio kemiripan deskripsi invoice dengan teks PO
+        score = SequenceMatcher(None, inv_desc, po_text).ratio()
+        scored_candidates.append((score, po))
+
+    # Sort berdasarkan:
+    # 1. Score Tertinggi (-x[0] agar descending)
+    # 2. PO Number terkecil/pertama sebagai tie-breaker
+    scored_candidates.sort(key=lambda x: (-x[0], _norm_po_number(x[1].get("po_no", ""))))
+
+    # Ambil pemenang pertama
+    if scored_candidates:
+        best_po = scored_candidates[0][1]
+        po_no_found = _norm_po_number(best_po.get("po_no"))
         if po_no_found:
             row["inv_customer_po_no"] = po_no_found
             row["pl_customer_po_no"] = po_no_found
