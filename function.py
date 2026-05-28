@@ -5879,25 +5879,20 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                     used_desc_fallback = True
 
         # NEW: Deteksi dan timpa PO yang nyasar akibat fill_forward SEBELUM di-map
-        # KUNSHAN_LANDON: SKIP — vendor ini pakai jalur pemulihan PO sendiri
-        # via _kunshan_landon_recover_po_from_description (lihat di bawah).
-        # Fallback generic ini suka menimpa PO dengan tebakan yang salah
-        # sebelum jalur Kunshan sempat berjalan, dan ini regresi setelah commit 28d5418.
-        if not _is_kunshan_landon_vendor(vendor_id):
-            inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
-            inv_art_norm = _norm_item_compare_key(row.get("inv_spart_item_no"))
-            pl_art_norm = _norm_item_compare_key(row.get("pl_item_no"))
-            art_to_check = inv_art_norm or pl_art_norm
+        inv_po_norm = _norm_po_number(row.get("inv_customer_po_no"))
+        inv_art_norm = _norm_item_compare_key(row.get("inv_spart_item_no"))
+        pl_art_norm = _norm_item_compare_key(row.get("pl_item_no"))
+        art_to_check = inv_art_norm or pl_art_norm
 
-            if inv_po_norm and art_to_check:
-                exists_in_po = False
-                if inv_art_norm and (inv_po_norm, inv_art_norm) in po_article_index:
-                    exists_in_po = True
-                elif pl_art_norm and (inv_po_norm, pl_art_norm) in po_article_index:
-                    exists_in_po = True
-
-                if not exists_in_po:
-                    _fallback_po_no_by_item_no(row, po_lines)
+        if inv_po_norm and art_to_check:
+            exists_in_po = False
+            if inv_art_norm and (inv_po_norm, inv_art_norm) in po_article_index:
+                exists_in_po = True
+            elif pl_art_norm and (inv_po_norm, pl_art_norm) in po_article_index:
+                exists_in_po = True
+                
+            if not exists_in_po:
+                _fallback_po_no_by_item_no(row, po_lines)
 
         mapped_rows, success = _map_single_detail_row_to_po(
             row=row,
@@ -5905,7 +5900,7 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
             po_desc_index=po_desc_index,
             remaining_state=remaining_state,
         )
-
+        
         # Revert (biarkan null kembali) jika mapping PO tetap gagal
         if used_desc_fallback and not success:
             row["inv_spart_item_no"] = original_inv_item
@@ -5916,9 +5911,7 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
         # ---------------------------------------------
 
         # --- NEW: REVERSE FALLBACK (FIND PO BY ITEM NO) ---
-        # KUNSHAN_LANDON: SKIP — alasan sama dengan blok di atas; biarkan
-        # _kunshan_landon_recover_po_from_description yang menangani.
-        if not success and _is_null(row.get("inv_customer_po_no")) and not _is_kunshan_landon_vendor(vendor_id):
+        if not success and _is_null(row.get("inv_customer_po_no")):
             if _fallback_po_no_by_item_no(row, po_lines):
                 # Remap ulang karena PO Number sudah berhasil ditemukan
                 mapped_rows, success = _map_single_detail_row_to_po(
