@@ -32,6 +32,41 @@ PERINGATAN PENTING TENTANG KOLOM C/NO# (kolom ke-12, paling kanan):
 - C/NO# BUKAN jumlah kemasan dan TIDAK BOLEH digunakan untuk mengisi pl_package_count.
 - C/NO# hanya muncul sekali untuk sekelompok baris yang berbagi rentang karton yang sama, jadi banyak baris memiliki C/NO# kosong.
 
+=========================================================
+ATURAN PENTING UNTUK inv_description DAN pl_description
+(ANTI-PERGESERAN / ANTI-SALAH BARIS DESKRIPSI) — WAJIB DIPATUHI:
+=========================================================
+(Aturan ini bersifat UMUM dan berlaku untuk SEMUA dokumen vendor ini, bukan hanya satu dokumen tertentu. Jangan mengasumsikan kode, produk, atau jumlah baris tertentu.)
+
+PRINSIP DASAR:
+- Deskripsi diambil dari kolom "Descriptions" (kolom ke-5), yaitu kolom yang BERADA DI ANTARA kolom "Material" (kolom 4) dan kolom "Quantity"/"QTY" (kolom 6).
+- SETIAP baris line item (setiap "Marks") memiliki TEPAT SATU deskripsi, dan deskripsi itu HARUS milik baris yang sama dengan kode Material (inv_spart_item_no / pl_item_no) pada baris tersebut. Gunakan kode Material sebagai JANGKAR (anchor) untuk memasangkan deskripsi ke baris yang benar.
+- Jumlah deskripsi = jumlah baris line item, urut mengikuti baris, dan TIDAK BOLEH bergeser naik atau turun.
+
+CIRI DESKRIPSI YANG BENAR:
+- Berupa teks produk yang dapat dibaca manusia dan diawali KATA (huruf alfabet), yaitu nama/jenis komponen. BUKAN kode.
+- DILARANG KERAS mengisi deskripsi dengan kode Material, yaitu string alfanumerik rapat tanpa spasi yang bentuknya sama dengan isi kolom Material. Jika satu-satunya kandidat deskripsi untuk sebuah baris berbentuk kode seperti itu, berarti itu Material — BUKAN deskripsi — maka cari teks produk yang sebenarnya untuk baris tersebut.
+
+JEBAKAN A — kolom Material tampak KOSONG dan kode mengambang di awal area deskripsi:
+- Pola: sebuah baris terlihat tidak punya nilai di kolom Material, sementara di awal kolom Descriptions terdapat kode alfanumerik rapat lalu disusul teks produk.
+- Tindakan: kode tersebut adalah Material baris itu (isikan ke inv_spart_item_no / pl_item_no). Teks produk SESUDAHNYA adalah deskripsi baris itu.
+- JANGAN MENGGESER: teks produk tersebut milik baris itu sendiri; JANGAN dipindahkan menjadi deskripsi baris berikutnya. Baris berikutnya tetap memakai deskripsinya masing-masing.
+
+JEBAKAN B — nomor PO bocor di awal deskripsi:
+- Pola: deskripsi diawali angka/nomor PO (mis. diawali "4..." atau mengandung pola seperti "/CLM...").
+- Tindakan: bagian nomor tersebut milik kolom PO Number (kolom 2), BUKAN bagian deskripsi. Mulai deskripsi dari kata produk pertama.
+
+JEBAKAN C — baris terakhir kehilangan deskripsi / seluruh blok bergeser 1 baris:
+- Pastikan baris paling bawah (tepat di atas baris total "C/NO.") TETAP mendapat deskripsinya sendiri; JANGAN biarkan null dan JANGAN menarik deskripsi baris lain ke atas sehingga seluruh blok bergeser.
+- Self-check: jika kode Material sebuah baris jelas menunjuk satu produk, tetapi deskripsi yang terbaca menggambarkan produk yang berbeda, berarti terjadi pergeseran — baca ulang dan ambil deskripsi yang benar-benar sebaris dengan Material baris tersebut.
+
+DESKRIPSI MULTI-BARIS / TERDUPLIKASI:
+- Satu deskripsi sering membungkus (wrap) beberapa baris visual dan KADANG tercetak dua kali berturut-turut. Perlakukan teks wrap/terduplikasi itu sebagai SATU deskripsi untuk SATU baris. Jangan memecahnya menjadi beberapa baris, dan jangan menganggap teks duplikat sebagai line item baru.
+
+VERIFIKASI AKHIR WAJIB:
+- Jumlah deskripsi HARUS = jumlah baris line item.
+- Setiap deskripsi HARUS sejajar dengan kode Material barisnya. Jika ada yang tidak cocok, perbaiki agar setiap deskripsi sebaris dengan Material-nya.
+
 INVOICE (INV):
 
 1. `inv_customer_po_no`: 
@@ -52,7 +87,7 @@ INVOICE (INV):
     - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" 
     - Dilarang KERAS mengambil value dari kolom "Item" DAN "Description". 
 
-3. `inv_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
+3. `inv_description`: Ekstrak teks deskripsi baris dari kolom "Descriptions" (kolom 5). WAJIB mengikuti blok "ATURAN PENTING UNTUK inv_description DAN pl_description" di atas. Deskripsi HARUS milik baris yang sama dengan inv_spart_item_no baris itu dan TIDAK BOLEH berupa kode Material.
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada tingkat baris di invoice ini.
 5. `inv_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
 6. `inv_quantity_unit`: Ekstrak dari kolom "UNIT" (misalnya "PCS" atau "SET"). Jika tergabung di kolom QTY, pisahkan dari angkanya.
@@ -78,7 +113,7 @@ PACKING LIST (PL):
     - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" 
     - Dilarang KERAS mengambil value dari kolom "Item" DAN "Description". 
     
-3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
+3. `pl_description`: Ekstrak teks deskripsi baris dari kolom "Descriptions" (kolom 5). WAJIB mengikuti blok "ATURAN PENTING UNTUK inv_description DAN pl_description" di atas. Deskripsi HARUS milik baris yang sama dengan pl_item_no baris itu dan TIDAK BOLEH berupa kode Material.
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
 5. `pl_package_unit`: Simpulkan sebagai "CTNS" atau "CARTONS" berdasarkan header kolom kemasan.
 6. `pl_package_count`:
