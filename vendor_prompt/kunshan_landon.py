@@ -32,59 +32,6 @@ PERINGATAN PENTING TENTANG KOLOM C/NO# (kolom ke-12, paling kanan):
 - C/NO# BUKAN jumlah kemasan dan TIDAK BOLEH digunakan untuk mengisi pl_package_count.
 - C/NO# hanya muncul sekali untuk sekelompok baris yang berbagi rentang karton yang sama, jadi banyak baris memiliki C/NO# kosong.
 
-================================================================
-ATURAN KRITIS UNTUK KOLOM "Descriptions" (BERLAKU UNTUK inv_description DAN pl_description)
-================================================================
-
-PRINSIP UTAMA - 1 BARIS = 1 SEL DESKRIPSI:
-- Setiap line item PERSIS memiliki SATU sel deskripsi sendiri pada baris yang sama dengan kolom Material-nya.
-- Sel deskripsi DI-BOUND oleh garis tabel horizontal di atas & bawah baris tsb.
-- Tinggi sel deskripsi BISA SANGAT BERVARIASI (1 baris teks vs. 4-6 baris teks). JANGAN menggunakan tinggi visual sel di atas/bawah sebagai patokan jumlah baris item.
-- Gunakan kolom Material (kolom ke-4) sebagai ANCHOR HORIZONTAL: deskripsi yang berada SEJAJAR vertikal (dalam blok garis tabel yang sama) dengan Material X adalah deskripsi MILIK Material X — bukan milik baris di atas/bawahnya.
-
-WAJIB SELF-CHECK ANTI-PERGESERAN (lakukan SEBELUM commit output):
-1. Untuk setiap row, baca kembali (Material, Descriptions) sebagai pasangan.
-2. Deskripsi harus SECARA SEMANTIK mendeskripsikan produk dari Material code tsb.
-   Contoh validasi semantik:
-     - Material BSBSJBC0000004 (kode mulai "BSBSJ" = Basket) → deskripsi harus mengandung kata kunci "BASKET" atau "HANGER".
-     - Material HURZZGS901R001 (kode "HUR" = Rear Hub) → deskripsi harus mengandung "REAR HUB".
-     - Material HUFZZ... (kode "HUF" = Front Hub) → deskripsi harus mengandung "FRONT HUB".
-     - Material BRCZZ... (kode "BRC" = Brake Cable) → deskripsi harus mengandung "BRAKE CABLE".
-     - Material BLWZZ... → biasanya "RING PLATE/WASHER", BUKAN "REPLACEABLE DROP OUT".
-     - Material FRXUAB1225... → biasanya "REPLACEABLE DROP OUT" atau END FRAME.
-     - Material FREALUA... → biasanya "END FRAME", BUKAN "FORK END PROTECTOR".
-     - Material PRFZZFORKPR... → biasanya "FORK END PROTECTOR", BUKAN "FLUX ALUMINIUM".
-     - Material ZWDZZAL... → biasanya "FLUX ALUMINIUM FOR WELDING", BUKAN null/kosong.
-3. Jika deskripsi yang Anda ekstrak TIDAK semantik cocok dengan Material code (mis. material code adalah "Front Hub" tapi deskripsinya "Rear Hub"), ITU TANDA TERJADI PERGESERAN ROW — kembali ke dokumen, hitung ulang garis tabel, dan koreksi.
-4. Deskripsi DILARANG hanya berisi material code itu sendiri (mis. inv_description = "BSBSJBC0000004"). Material code SUDAH ada di kolom inv_spart_item_no. Deskripsi WAJIB berisi teks naratif produk (BASKET/HUB/dst).
-
-JEBAKAN ANTI-PERGESERAN YANG WAJIB DIWASPADAI PADA VENDOR INI:
-
-JEBAKAN A — Material code muncul ulang di awal teks Descriptions:
-- Pada beberapa baris (mis. row dengan Material BSBSJBC0000004), teks di kolom Descriptions kadang TERLIHAT diawali oleh material code sebelum kalimat deskripsi sebenarnya.
-- JANGAN ambil material code itu sebagai inv_description. Material code tersebut adalah label internal vendor.
-- Yang benar: ekstrak hanya bagian KALIMAT NARATIF setelah material code (mis. "HANGER BASKET; LANDON; -; SILVER POWDER COATING AS HT 007; STEEL, 28.6, EXTENSION: 50MM,W/ BOTTOM BRACKET(粉体银)").
-- SALAH: inv_description = "BSBSJBC0000004"
-- BENAR: inv_description = "HANGER BASKET; LANDON; -; SILVER POWDER COATING AS HT 007; STEEL, 28.6, EXTENSION: 50MM,W/ BOTTOM BRACKET(粉体银)"
-
-JEBAKAN B — Dua sel deskripsi berdekatan tampak "menyatu" karena teks panjang:
-- Saat satu baris memiliki deskripsi pendek dan baris berikutnya memiliki deskripsi pendek pula, teks kedua bisa terlihat menempel dengan teks pertama.
-- JANGAN gabungkan keduanya ke baris pertama. Patuhi garis tabel horizontal sebagai pemisah.
-- Contoh konkret yang PERNAH SALAH:
-    - Row 76 Material ZASZZINSFK0300-R, deskripsi BENAR: "MAIN PIVOT; LANDON; INSFS01-FK03; -; MAIN PIVOTWASHER (7075),"
-    - Row 77 Material BLWZZM50000001-R, deskripsi BENAR: "RING PLATE/WASHER M5 STAINLESS ,ID 5.5; OD 13MM"
-    - SALAH (jangan lakukan): menggabungkan keduanya menjadi row 76 lalu menggeser row 77 dst ke atas.
-
-JEBAKAN C — PO Number wrap ke baris berikutnya:
-- Kolom PO Number kadang berisi nilai panjang seperti "45324149/CLM26030220" yang wrap ke 2 baris visual.
-- Itu TETAP 1 row line item — JANGAN menganggapnya 2 row terpisah, dan JANGAN menggeser deskripsi row berikutnya.
-
-JEBAKAN D — Row terakhir (paling bawah sebelum baris Total):
-- Row terakhir dalam tabel (mis. row 82 dengan Material ZWDZZAL00000) WAJIB memiliki deskripsi non-null jika baris tersebut adalah line item nyata.
-- Jika output Anda untuk row terakhir menghasilkan description = null sementara row tersebut jelas memiliki Quantity & Amount, ITU TANDA PERGESERAN — koreksi.
-
-================================================================
-
 INVOICE (INV):
 
 1. `inv_customer_po_no`: 
@@ -105,12 +52,7 @@ INVOICE (INV):
     - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" 
     - Dilarang KERAS mengambil value dari kolom "Item" DAN "Description". 
 
-3. `inv_description`:
-    - Ekstrak teks naratif produk dari kolom "Descriptions" untuk baris yang sama dengan Material code-nya.
-    - WAJIB mematuhi seluruh aturan di bagian "ATURAN KRITIS UNTUK KOLOM Descriptions" di atas (SELF-CHECK semantik, anti-pergeseran, jebakan A-D).
-    - DILARANG mengisi inv_description hanya dengan material code (kode alphanumerik tanpa kata naratif).
-    - DILARANG menggabungkan deskripsi dari 2 baris berbeda menjadi 1 row.
-    - DILARANG mengosongkan inv_description untuk row yang jelas memiliki Quantity/Amount.
+3. `inv_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `inv_gw` & `inv_gw_unit`: Biarkan null karena tidak terdapat informasi berat pada tingkat baris di invoice ini.
 5. `inv_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
 6. `inv_quantity_unit`: Ekstrak dari kolom "UNIT" (misalnya "PCS" atau "SET"). Jika tergabung di kolom QTY, pisahkan dari angkanya.
@@ -136,13 +78,7 @@ PACKING LIST (PL):
     - DILARANG KERAS mengambil value dari kolom lain yang bukan "Material" 
     - Dilarang KERAS mengambil value dari kolom "Item" DAN "Description". 
     
-3. `pl_description`:
-    - Ekstrak teks naratif produk dari kolom "Descriptions" pada Packing List untuk baris yang sama dengan Material code-nya.
-    - WAJIB mematuhi seluruh aturan di bagian "ATURAN KRITIS UNTUK KOLOM Descriptions" di atas (SELF-CHECK semantik, anti-pergeseran, jebakan A-D).
-    - pl_description untuk row N HARUS sinkron dengan inv_description untuk row N (vendor ini selalu menulis deskripsi yang sama persis di INV dan PL). Jika hasil ekstraksi inv_description dan pl_description berbeda jauh untuk row yang sama, ITU INDIKASI SALAH SATU MENGALAMI PERGESERAN — verifikasi ulang dengan Material code sebagai anchor.
-    - DILARANG mengisi pl_description hanya dengan material code.
-    - DILARANG menggabungkan deskripsi dari 2 baris berbeda menjadi 1 row.
-    - DILARANG mengosongkan pl_description untuk row yang jelas memiliki QTY.
+3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "Q'TY" atau "Quantity".
 5. `pl_package_unit`: Simpulkan sebagai "CTNS" atau "CARTONS" berdasarkan header kolom kemasan.
 6. `pl_package_count`:
