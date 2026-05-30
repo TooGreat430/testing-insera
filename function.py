@@ -5991,6 +5991,84 @@ def _fallback_po_no_by_item_no(row: dict, po_lines: list) -> bool:
 
     return False
 
+# =========================================================
+# VENDOR DENGAN INVOICE MERGED-CELL QTY/AMOUNT (mis. joy)
+# =========================================================
+# Invoice vendor seperti joy menggabungkan (merge) kolom QTY & AMOUNT untuk
+# beberapa baris (PO berbeda) yang berbagi CODE/item yang sama. Akibatnya
+# quantity per-baris TIDAK tersedia di invoice -- yang tercetak hanya SUBTOTAL
+# per group. Packing List vendor ini memuat quantity per-baris (1:1 sejajar
+# dengan invoice).
+#
+# Kalau inv_quantity dibaca apa adanya:
+#   - Sigma inv_quantity tidak rekonsiliasi dengan total invoice (under/overcount),
+#   - baris merged tidak bisa di-map ke PO line-nya masing-masing.
+#
+# Fix: SEBELUM PO mapping, turunkan inv_quantity per-baris dari pl_quantity yang
+# sejajar, lalu hitung ulang inv_amount = inv_quantity * inv_unit_price.
+VENDORS_WITH_MERGED_INVOICE_QTY = {
+    "joy",
+}
+
+
+def _is_merged_invoice_qty_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_WITH_MERGED_INVOICE_QTY
+
+
+def _derive_inv_qty_from_pl_for_merged_vendors(rows: list, vendor_id: str = "default"):
+    """
+    Khusus vendor dengan invoice merged-cell QTY/AMOUNT (lihat
+    VENDORS_WITH_MERGED_INVOICE_QTY). Salin pl_quantity -> inv_quantity per baris
+    dan hitung ulang inv_amount = inv_quantity * inv_unit_price.
+
+    Dipanggil SEBELUM _map_po_to_details supaya total invoice rekonsiliasi DAN
+    tiap baris bisa di-map ke PO line-nya sendiri.
+
+    Guard (agar tidak merusak data yang sudah benar):
+    - Hanya jalan untuk vendor terdaftar.
+    - Hanya override jika pl_quantity valid (> 0). Jika pl_quantity null/0,
+      inv_quantity dibiarkan apa adanya (mis. baris tanpa pasangan PL).
+    - inv_amount hanya dihitung ulang jika inv_unit_price valid (> 0).
+    """
+    if not _is_merged_invoice_qty_vendor(vendor_id):
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    adjusted = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        pl_qty = _to_float(row.get("pl_quantity"))
+        if pl_qty is None or pl_qty <= 1e-9:
+            continue
+
+        # inv_quantity per-baris = pl_quantity (sumber per-baris yang andal).
+        if abs(pl_qty - round(pl_qty)) <= 1e-9:
+            row["inv_quantity"] = int(round(pl_qty))
+        else:
+            row["inv_quantity"] = pl_qty
+
+        # inv_amount = inv_quantity * inv_unit_price (Decimal, anti noise float).
+        unit_price = _to_float(row.get("inv_unit_price"))
+        if unit_price is not None and unit_price > 1e-9:
+            amount = _to_decimal_or_zero(row["inv_quantity"]) * _to_decimal_or_zero(unit_price)
+            if amount == amount.to_integral_value():
+                row["inv_amount"] = int(amount)
+            else:
+                row["inv_amount"] = float(amount)
+
+        adjusted += 1
+
+    if adjusted:
+        print(
+            f"[MERGED_INV_QTY] vendor={normalize_vendor_id(vendor_id)} "
+            f"inv_quantity diturunkan dari pl_quantity untuk {adjusted} baris"
+        )
+
+    return rows
+
 def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
     remaining_state = {}
@@ -7295,6 +7373,32 @@ def _is_pt_insera_sena_name(value) -> bool:
     return ("INSERA SENA" in s) or ("INSERA" in s and "SENA" in s)
 
 
+def _rounded_total_matches(sum_val, declared_val, n_addends) -> bool:
+    """
+    Cek rekonsiliasi total untuk field FISIK (N.W./G.W.) yang tiap barisnya
+    dibulatkan 2 desimal di dokumen.
+
+    Menjumlahkan n addend yang masing-masing dibulatkan ke 2 desimal dapat
+    menyimpang dari total tercetak hingga ~n*0.005 (batas error pembulatan),
+    plus noise float biner (mis. 6950.07 muncul sebagai 6950.070000000001).
+    Toleransi flat 0.01 terlalu ketat untuk total dari puluhan baris dan
+    menghasilkan false-positive.
+
+    Strategi:
+    - Bandingkan setelah dibulatkan 2 desimal (membunuh noise float biner).
+    - Pakai toleransi yang skala dengan jumlah addend: max(0.01, 0.005 * n).
+
+    Return True bila dianggap match (dalam toleransi).
+    Catatan: hanya untuk berat/volume; JANGAN dipakai untuk quantity/package
+    yang seharusnya integer eksak.
+    """
+    if declared_val is None or sum_val is None:
+        return True
+    diff = abs(round(sum_val, 2) - round(declared_val, 2))
+    tol = max(0.01, 0.005 * max(int(n_addends or 0), 1))
+    return diff <= tol
+
+
 def _validate_packing_rows(rows: list):
     required = [
         "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address","pl_item_no",
@@ -7380,14 +7484,19 @@ def _validate_packing_rows(rows: list):
     sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
     sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
 
+    # jumlah addend (baris yang benar-benar menyumbang nilai) untuk toleransi
+    # rekonsiliasi berat yang menyesuaikan akumulasi pembulatan 2 desimal
+    n_nw = sum(1 for r in rows if isinstance(r, dict) and (_to_float(r.get("pl_nw")) or 0.0) > 0.0)
+    n_gw = sum(1 for r in rows if isinstance(r, dict) and (_to_float(r.get("pl_gw")) or 0.0) > 0.0)
+
     for r in rows:
         if not isinstance(r, dict):
             continue
         if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
             _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-        if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
+        if declared_nw is not None and not _rounded_total_matches(sum_nw, declared_nw, n_nw):
             _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
-        if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
+        if declared_gw is not None and not _rounded_total_matches(sum_gw, declared_gw, n_gw):
             _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
         if declared_vol is not None and not _volume_values_match_with_conversion(sum_vol, declared_vol):
             _append_err(
@@ -12841,6 +12950,11 @@ def run_ocr(
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
+
+        # Vendor merged-cell (mis. joy): turunkan inv_quantity/inv_amount per-baris
+        # dari pl_quantity SEBELUM mapping, supaya total invoice rekonsiliasi dan
+        # tiap baris bisa di-map ke PO line-nya masing-masing.
+        all_rows = _derive_inv_qty_from_pl_for_merged_vendors(all_rows, vendor_id=vendor_id)
 
         all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
 
