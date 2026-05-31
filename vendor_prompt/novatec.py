@@ -15,8 +15,17 @@ PACKING LIST (PL):
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
 5. `pl_package_unit`: Simpulkan sebagai "CT" berdasarkan header kolom "TOTAL CTNS".
+CATATAN PENTING TENTANG KOLOM "COMBINED":
+    Tabel ini memiliki dua jenis kolom "Combined" di sisi kanan yang harus dibedakan:
+    a. Sub-group combined (kecil): menampilkan CTNS, NW, GW, CBM untuk merged cell group tertentu
+       (contoh: rows 3-4 menjadi 1 CTNS, 6.51 NW, 13.53 GW, 1.15 CBM).
+       Nilai ini HARUS digunakan jika kolom TOTAL N.W./G.W./CBM di main table kosong untuk group tersebut.
+    b. Item-type combined (besar): menampilkan total keseluruhan untuk semua item bertipe sama
+       (contoh: total semua wheelset = 78 QTY, 173.60 NW, 292.94 GW).
+       Nilai ini JANGAN digunakan — terlalu besar dan bukan nilai per-group.
+
 6. `pl_package_count`:
-    - Ekstrak nilai angka HANYA dari kolom "TOTAL CTNS". JANGAN ambil dari kolom "Combined" manapun.
+    - Ekstrak nilai angka dari kolom "TOTAL CTNS".
     - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CTNS merged-cell, maka pl_package_count yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
@@ -29,7 +38,8 @@ PACKING LIST (PL):
         - Line item B: quantity = 0
         - Line item C: quantity = 0
 7. `pl_nw`:
-    - Ekstrak nilai angka HANYA dari kolom "TOTAL N.W.". JANGAN ambil dari kolom "Combined" manapun.
+    - Ekstrak nilai angka dari kolom "TOTAL N.W.".
+    - Jika kolom TOTAL N.W. kosong untuk sebuah merged cell group, gunakan nilai NW dari sub-group combined (tipe a) yang sesuai dengan group tersebut. JANGAN gunakan nilai dari item-type combined (tipe b) yang merupakan total keseluruhan.
     - Apabila ada beberapa line item yang tergabung dalam satu TOTAL N.W. merged-cell, maka pl_nw yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
@@ -42,7 +52,8 @@ PACKING LIST (PL):
         - Line item B: nw = 0
         - Line item C: nw = 0
 8. `pl_gw`:
-    - Ekstrak nilai angka HANYA dari kolom "TOTAL G.W.". JANGAN ambil dari kolom "Combined" manapun.
+    - Ekstrak nilai angka dari kolom "TOTAL G.W.".
+    - Jika kolom TOTAL G.W. kosong untuk sebuah merged cell group, gunakan nilai GW dari sub-group combined (tipe a) yang sesuai dengan group tersebut. JANGAN gunakan nilai dari item-type combined (tipe b).
     - Apabila ada beberapa line item yang tergabung dalam satu TOTAL G.W. merged-cell, maka pl_gw yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
@@ -55,7 +66,8 @@ PACKING LIST (PL):
         - Line item B: gw = 0
         - Line item C: gw = 0
 9. `pl_volume`:
-    - Ekstrak nilai angka HANYA dari kolom "TOTAL CBM". JANGAN ambil dari kolom "Combined" manapun.
+    - Ekstrak nilai angka dari kolom "TOTAL CBM".
+    - Jika kolom TOTAL CBM kosong untuk sebuah merged cell group, gunakan nilai CBM dari sub-group combined (tipe a) yang sesuai dengan group tersebut. JANGAN gunakan nilai dari item-type combined (tipe b).
     - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CBM merged-cell, maka pl_volume yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
