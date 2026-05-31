@@ -15,70 +15,47 @@ PACKING LIST (PL):
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
 5. `pl_package_unit`: Simpulkan sebagai "CT" berdasarkan header kolom "TOTAL CTNS".
-CATATAN PENTING TENTANG KOLOM "COMBINED":
-    Tabel ini memiliki dua jenis kolom "Combined" di sisi kanan yang harus dibedakan:
-    a. Sub-group combined (kecil): menampilkan CTNS, NW, GW, CBM untuk merged cell group tertentu
-       (contoh: rows 3-4 menjadi 1 CTNS, 6.51 NW, 13.53 GW, 1.15 CBM).
-       Nilai ini HARUS digunakan jika kolom TOTAL N.W./G.W./CBM di main table kosong untuk group tersebut.
-    b. Item-type combined (besar): menampilkan total keseluruhan untuk semua item bertipe sama
-       (contoh: total semua wheelset = 78 QTY, 173.60 NW, 292.94 GW).
-       Nilai ini JANGAN digunakan — terlalu besar dan bukan nilai per-group.
+
+STRUKTUR MERGED CELL DAN KOLOM COMBINED:
+    Tabel ini memiliki dua area berbeda di sisi kanan untuk baris-baris yang memiliki merged TOTAL CTNS cell:
+
+    AREA A — kolom "Combined QTY", "Combined N.W", "Combined G.W" (dan CBM):
+    Berisi ringkasan per-merge-group: [Combined QTY] [Combined N.W] [Combined G.W] [CBM]
+    Nilai "Combined N.W" dan "Combined G.W" di sini adalah pl_nw dan pl_gw yang seharusnya
+    untuk group tersebut. Nilai CBM muncul setelah Combined G.W.
+    Nilai TOTAL CTNS (angka 1, 2, dsb) untuk group ini tetap dari kolom "TOTAL CTNS" main table.
+
+    Cara menentukan batas merge group (WAJIB dilakukan sebelum assign nilai):
+    - Hitung jumlah QTY beberapa baris berturut-turut sampai hasilnya cocok dengan "Combined QTY".
+    - Contoh: Combined QTY = 754, baris A (qty=320) + B (qty=354) + C (qty=80) = 754 → A, B, C satu group.
+    - Contoh: Combined QTY = 3, baris X (qty=2) + Y (qty=1) = 3 → X dan Y satu group.
+    - PENTING: kesamaan PO number BUKAN penentu batas group. Verifikasi selalu dengan Combined QTY.
+      Contoh: baris dengan PO berbeda bisa berada dalam satu merge group yang sama.
+
+    AREA B — kolom "Combined QTY" + "Combined N.W" + "Combined G.W" tanpa CTNS, nilai besar:
+    Ini adalah total keseluruhan untuk satu tipe item (misal semua wheelset = 78 QTY, 173.60 NW, 292.94 GW).
+    JANGAN gunakan nilai ini — ini bukan per-group, ini akumulasi seluruh tipe item.
+    Cara membedakan: jika Combined QTY = total seluruh baris bertipe sama dan tidak ada CTNS di tengahnya,
+    nilai tersebut adalah AREA B dan harus diabaikan.
 
 6. `pl_package_count`:
-    - Ekstrak nilai angka dari kolom "TOTAL CTNS".
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CTNS merged-cell, maka pl_package_count yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
-        Contoh:
-        |   ITEM  |  TOTAL  |
-        |         |  CTNS   |
-        |   A     |         |
-        |   B     |   3     |
-        |   C     |         |
-        Maka:
-        - Line item A: quantity = 3
-        - Line item B: quantity = 0
-        - Line item C: quantity = 0
+    - Ekstrak dari kolom "TOTAL CTNS" main table.
+    - Untuk merged cell group: TOTAL CTNS diberikan ke baris PALING ATAS group, sisanya 0.
+    - Batas group ditentukan dengan Combined QTY = sum QTY baris-baris dalam group (lihat STRUKTUR di atas).
 7. `pl_nw`:
-    - Ekstrak nilai angka dari kolom "TOTAL N.W.".
-    - Jika kolom TOTAL N.W. kosong untuk sebuah merged cell group, gunakan nilai NW dari sub-group combined (tipe a) yang sesuai dengan group tersebut. JANGAN gunakan nilai dari item-type combined (tipe b) yang merupakan total keseluruhan.
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL N.W. merged-cell, maka pl_nw yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
-        Contoh:
-        |   ITEM  |  TOTAL  |
-        |         |  N.W.   |
-        |   A     |         |
-        |   B     |  6.51   |
-        |   C     |         |
-        Maka:
-        - Line item A: nw = 6.51
-        - Line item B: nw = 0
-        - Line item C: nw = 0
+    - Untuk baris standalone (tidak ada merge): ekstrak dari kolom "TOTAL N.W." main table.
+    - Untuk merged cell group: ambil nilai "Combined N.W" yang sesuai untuk group tersebut (identifikasi
+      group dengan Combined QTY = sum QTY baris-baris group). Berikan ke baris PALING ATAS group, sisanya 0.
+    - JANGAN gunakan nilai "Combined N.W" dari AREA B (total keseluruhan tipe item yang nilainya jauh lebih besar).
 8. `pl_gw`:
-    - Ekstrak nilai angka dari kolom "TOTAL G.W.".
-    - Jika kolom TOTAL G.W. kosong untuk sebuah merged cell group, gunakan nilai GW dari sub-group combined (tipe a) yang sesuai dengan group tersebut. JANGAN gunakan nilai dari item-type combined (tipe b).
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL G.W. merged-cell, maka pl_gw yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
-        Contoh:
-        |   ITEM  |  TOTAL  |
-        |         |  G.W.   |
-        |   A     |         |
-        |   B     |  7.20   |
-        |   C     |         |
-        Maka:
-        - Line item A: gw = 7.20
-        - Line item B: gw = 0
-        - Line item C: gw = 0
+    - Untuk baris standalone: ekstrak dari kolom "TOTAL G.W." main table.
+    - Untuk merged cell group: ambil nilai "Combined G.W" yang sesuai untuk group tersebut.
+      Berikan ke baris PALING ATAS group, sisanya 0.
+    - JANGAN gunakan nilai "Combined G.W" dari AREA B.
 9. `pl_volume`:
-    - Ekstrak nilai angka dari kolom "TOTAL CBM".
-    - Jika kolom TOTAL CBM kosong untuk sebuah merged cell group, gunakan nilai CBM dari sub-group combined (tipe a) yang sesuai dengan group tersebut. JANGAN gunakan nilai dari item-type combined (tipe b).
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CBM merged-cell, maka pl_volume yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
-        Contoh:
-        |   ITEM  |  TOTAL  |
-        |         |  CBM    |
-        |   A     |         |
-        |   B     |  1.15   |
-        |   C     |         |
-        Maka:
-        - Line item A: volume = 1.15
-        - Line item B: volume = 0
-        - Line item C: volume = 0
+    - Untuk baris standalone: ekstrak dari kolom "TOTAL CBM" main table.
+    - Untuk merged cell group: ambil nilai CBM yang muncul setelah "Combined G.W" untuk group tersebut.
+      Berikan ke baris PALING ATAS group, sisanya 0.
 
 BILL OF LADING (BL):
 1. `bl_description`: 
