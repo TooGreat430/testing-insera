@@ -15,9 +15,9 @@ PACKING LIST (PL):
 3. `pl_description`: Ekstrak teks deskripsi dari kolom "DESCRIPTION".
 4. `pl_quantity`: Ekstrak nilai angka dari kolom "QTY".
 5. `pl_package_unit`: Simpulkan sebagai "CT" berdasarkan header kolom "TOTAL CTNS".
-6. `pl_package_count`: 
-    - Ekstrak nilai angka dari kolom "TOTAL CTNS".
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CTNS merged-cell, maka pl_package_count yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+6. `pl_package_count`:
+    - Ekstrak nilai angka HANYA dari kolom "TOTAL CTNS". JANGAN ambil dari kolom "Combined" manapun.
+    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CTNS merged-cell, maka pl_package_count yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
         |         |  CTNS   |
@@ -25,12 +25,12 @@ PACKING LIST (PL):
         |   B     |   3     |
         |   C     |         |
         Maka:
-        - Line item A: quantity = 0
+        - Line item A: quantity = 3
         - Line item B: quantity = 0
-        - Line item C: quantity = 3
-7. `pl_nw`: 
-    - Ekstrak nilai angka dari kolom "TOTAL N.W.".
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL N.W. merged-cell, maka pl_nw yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+        - Line item C: quantity = 0
+7. `pl_nw`:
+    - Ekstrak nilai angka HANYA dari kolom "TOTAL N.W.". JANGAN ambil dari kolom "Combined" manapun.
+    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL N.W. merged-cell, maka pl_nw yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
         |         |  N.W.   |
@@ -38,12 +38,12 @@ PACKING LIST (PL):
         |   B     |  6.51   |
         |   C     |         |
         Maka:
-        - Line item A: nw = 0
+        - Line item A: nw = 6.51
         - Line item B: nw = 0
-        - Line item C: nw = 6.51
+        - Line item C: nw = 0
 8. `pl_gw`:
-    - Ekstrak nilai angka dari kolom "TOTAL G.W.".
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL G.W. merged-cell, maka pl_gw yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - Ekstrak nilai angka HANYA dari kolom "TOTAL G.W.". JANGAN ambil dari kolom "Combined" manapun.
+    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL G.W. merged-cell, maka pl_gw yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
         |         |  G.W.   |
@@ -51,12 +51,12 @@ PACKING LIST (PL):
         |   B     |  7.20   |
         |   C     |         |
         Maka:
-        - Line item A: gw = 0
+        - Line item A: gw = 7.20
         - Line item B: gw = 0
-        - Line item C: gw = 7.20
+        - Line item C: gw = 0
 9. `pl_volume`:
-    - Ekstrak nilai angka dari kolom "TOTAL CBM".
-    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CBM merged-cell, maka pl_volume yang tertera adalah untuk line item dalam group tersebut yang paling bawah, dan sisanya 0.
+    - Ekstrak nilai angka HANYA dari kolom "TOTAL CBM". JANGAN ambil dari kolom "Combined" manapun.
+    - Apabila ada beberapa line item yang tergabung dalam satu TOTAL CBM merged-cell, maka pl_volume yang tertera adalah untuk line item dalam group tersebut yang paling atas, dan sisanya 0.
         Contoh:
         |   ITEM  |  TOTAL  |
         |         |  CBM    |
@@ -64,9 +64,9 @@ PACKING LIST (PL):
         |   B     |  1.15   |
         |   C     |         |
         Maka:
-        - Line item A: volume = 0
+        - Line item A: volume = 1.15
         - Line item B: volume = 0
-        - Line item C: volume = 1.15
+        - Line item C: volume = 0
 
 BILL OF LADING (BL):
 1. `bl_description`: 
