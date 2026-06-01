@@ -55,12 +55,62 @@ PACKING LIST (PL)
 
 7. pl_nw:
    - Ambil total berat bersih dari kolom "NW(KGS)"[cite: 193].
+   - PENTING: Kolom "NW" (tanpa KGS) adalah berat per karton, sedangkan "NW(KGS)" adalah total keseluruhan. Selalu gunakan "NW(KGS)" (nilai yang lebih besar).
+   - Contoh: jika baris menunjukkan "10.0 ... 110.0", maka pl_nw = 110.0 (bukan 10.0).
+   - PERHATIAN DESIMAL: Pastikan titik desimal terbaca dengan benar. Nilai seperti "11.0" (sebelas koma nol) BUKAN "110" (seratus sepuluh). Jika angka tampak tidak wajar (mis. NW per carton > 50 kg untuk FRAME PART kecil), cek ulang apakah titik desimal terbaca.
 
 8. pl_gw:
    - Ambil total berat kotor dari kolom "GW (KGS)"[cite: 193].
+   - PENTING: Gunakan kolom "GW(KGS)" (total), bukan kolom "GW" (per karton).
 
 9. pl_volume:
    - Ambil total volume dari kolom "CUF"[cite: 193].
+   - PENTING — PERHATIKAN DUA NILAI CUF: Tabel PL A-Forge memiliki DUA nilai CUF per baris:
+     a) CUF TOTAL (nilai lebih besar): total kubik untuk SEMUA karton dalam group. INI yang digunakan untuk pl_volume.
+     b) CUF PER KARTON (nilai lebih kecil, di kolom paling kanan): kubik satu karton saja. JANGAN digunakan.
+   - Contoh: Jika baris menampilkan "22.0 2" di area CUF, maka pl_volume = 22.0 (bukan 2).
+   - Contoh lain: "26.4 2.4" → pl_volume = 26.4. "10.4 2.6" → pl_volume = 10.4.
+   - Untuk item yang hanya punya 1 karton (箱数=1), kedua nilai biasanya sama (mis. "0.6 0.6"), gunakan nilai pertama.
+
+ATURAN PENTING — IDENTIFIKASI DAN PENANGANAN MERGE CELL (CARTON GROUP BERSAMA):
+
+LANGKAH 1 — CARA MENDETEKSI SUB-ROW MERGE CELL:
+Sebuah baris PL adalah SUB-ROW dalam carton group yang sama jika memenuhi SEMUA kondisi berikut:
+  a) Baris tersebut memiliki nilai di kolom PO/NO, Material, Description, dan QTY.
+  b) Kolom CTN (nomor/range karton) KOSONG atau tidak ada.
+  c) Kolom 箱数 (box count) KOSONG atau tidak ada.
+  d) Kolom NW, GW, NW(KGS), GW(KGS), CUF SEMUANYA KOSONG.
+
+  Baris seperti ini berbagi carton group dengan baris yang ada DI ATASNYA yang memiliki data CTN lengkap.
+
+  Contoh nyata dari dokumen ini:
+  BARIS UTAMA (punya CTN):
+    PO=45324061 | PIBAFIREI0510300 | FRAME TUBING REI-05-103 | QTY=2 | CTN=A1-A4 | 箱数=4 | NW=14.5 | GW=15.5 | NW(KGS)=58.0 | GW(KGS)=62.0 | CUF=10.4 | CUF/CTN=2.6
+  SUB-ROW (kolom CTN dan berat KOSONG):
+    PO=45325158 | PIBAFIREI0510300 | FRAME TUBING REI-05-103 | QTY=78 | [kolom lainnya kosong]
+
+LANGKAH 2 — CARA MENGISI FIELD UNTUK SUB-ROW:
+Ketika baris teridentifikasi sebagai sub-row (kolom CTN dan berat kosong):
+  - pl_package_count = 0
+  - pl_nw = 0
+  - pl_gw = 0
+  - pl_volume = 0
+  - pl_quantity = nilai QTY yang tertulis di kolom QTY baris tersebut (JANGAN dijumlahkan dengan baris utama karena PO berbeda)
+
+  JANGAN mengisi pl_nw/pl_gw/pl_volume dengan nilai NW/GW/CUF per-karton dari baris utama.
+
+LANGKAH 3 — BEDAKAN DARI SUB-ROW YANG BUKAN MERGE CELL:
+Beberapa baris memang tidak punya PO/Material eksplisit tetapi PUNYA data CTN (nomor karton berbeda). Ini BUKAN merge cell — ini adalah carton sub-row dari item yang sama.
+  Contoh: FREAF330600002 untuk PO 45324062 punya sub-baris L:200, L:50, R:200, R:50 masing-masing dengan CTN berbeda (2, 3, 4, 5). Untuk kasus ini:
+  - pl_quantity = JUMLAH semua sub-baris (L:200 + L:50 + R:200 + R:50 = 500)
+  - pl_nw = JUMLAH semua NW(KGS) sub-baris
+  - pl_gw = JUMLAH semua GW(KGS) sub-baris
+  - pl_volume = JUMLAH semua CUF sub-baris
+  - pl_package_count = JUMLAH semua 箱数 sub-baris
+
+RINGKASAN ATURAN DETEKSI:
+  Jika kolom CTN KOSONG → sub-row merge cell → pl_package_count/nw/gw/volume = 0
+  Jika kolom CTN BERISI → sub-row carton biasa → jumlahkan semua nilai ke baris utama
 
 BILL OF LADING (BL)
 
