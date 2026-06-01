@@ -44,7 +44,10 @@ PACKING LIST (PL)
 
 4. pl_quantity:
    - Ambil total quantity dari kolom "QTY"[cite: 193].
-   - Jika satu item terbagi dalam beberapa baris karena beda karton, jumlahkan seluruh quantity untuk item tersebut[cite: 193, 195].
+   - Jika satu item terbagi dalam beberapa baris karena beda karton (HANYA beda CTN/range carton, PO dan material code SAMA, dan invoice hanya memiliki SATU baris untuk kombinasi tersebut), jumlahkan seluruh quantity untuk item tersebut[cite: 193, 195].
+   - PENTING — JANGAN gabungkan jika salah satu kondisi berikut terpenuhi:
+     a) Material code (pl_item_no) berbeda antara baris-baris PL yang akan digabung.
+     b) Kombinasi PO + material code yang sama muncul lebih dari SATU KALI dalam Invoice sebagai line item yang terpisah. Dalam kasus ini, cocokkan setiap invoice line ke satu kemunculan PL berdasarkan URUTAN KEMUNCULAN (invoice line ke-1 → kemunculan PL ke-1, invoice line ke-2 → kemunculan PL ke-2, dst.) dan quantity sesuai.
 
 5. pl_package_unit:
    - PL package unit sudah pasti Carton untuk semua line item, maka pl_package_unit = "CT".
@@ -52,6 +55,7 @@ PACKING LIST (PL)
 6. pl_package_count:
    - Ekstrak jumlah karton dari kolom "箱数" (Box Count) atau hitung dari range kolom "CTN"[cite: 193, 195].
    - Contoh: Jika kolom CTN berisi "10-11", maka pl_package_count = 2[cite: 193].
+   - Ikuti aturan penggabungan yang sama dengan pl_quantity di atas: hanya jumlahkan jika memang satu invoice line dipecah ke beberapa CTN, BUKAN jika ada dua invoice line berbeda untuk material yang sama.
 
 7. pl_nw:
    - Ambil total berat bersih dari kolom "NW(KGS)"[cite: 193].
