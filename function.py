@@ -8723,7 +8723,8 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 if kept_msgs:
                     r["match_description"] = "; ".join(kept_msgs)
                 else:
-                    r["match_score"] = "true"
+                    if str(r.get("match_score", "")).strip().upper() != "CHILD PO":
+                        r["match_score"] = "true"
                     r["match_description"] = "null"
 
             # Kelompokkan data yang sudah bersih per invoice untuk divalidasi ulang
@@ -8763,10 +8764,12 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 ]
 
                 if kept_messages:
-                    row["match_score"] = "false"
+                    if str(row.get("match_score", "")).strip().upper() != "CHILD PO":
+                        row["match_score"] = "false"
                     row["match_description"] = "; ".join(kept_messages)
                 else:
-                    row["match_score"] = "true"
+                    if str(row.get("match_score", "")).strip().upper() != "CHILD PO":
+                        row["match_score"] = "true"
                     row["match_description"] = "null"
 
             # Validasi ulang hanya BL, karena yang berubah hanya kolom bl_*.
