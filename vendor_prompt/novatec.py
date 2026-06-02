@@ -19,42 +19,68 @@ PACKING LIST (PL):
 STRUKTUR MERGED CELL DAN KOLOM COMBINED:
     Tabel ini memiliki dua area berbeda di sisi kanan untuk baris-baris yang memiliki merged TOTAL CTNS cell:
 
-    AREA A — kolom "Combined QTY", "Combined N.W", "Combined G.W" (dan CBM):
-    Berisi ringkasan per-merge-group: [Combined QTY] [Combined N.W] [Combined G.W] [CBM]
-    Nilai "Combined N.W" dan "Combined G.W" di sini adalah pl_nw dan pl_gw yang seharusnya
-    untuk group tersebut. Nilai CBM muncul setelah Combined G.W.
-    Nilai TOTAL CTNS (angka 1, 2, dsb) untuk group ini tetap dari kolom "TOTAL CTNS" main table.
+    AREA A — nilai per-merge-group (yang digunakan untuk ekstraksi):
+    Format: [Combined QTY] [TOTAL CTNS] [Combined N.W] [Combined G.W] [CBM]
+    Nilai ini merepresentasikan satu merge group spesifik. Selalu disertai angka TOTAL CTNS (mis. 1, 2).
+    AREA A ini adalah yang harus digunakan untuk mengisi pl_package_count, pl_nw, pl_gw, pl_volume.
 
-    Cara menentukan batas merge group (WAJIB dilakukan sebelum assign nilai):
-    - Hitung jumlah QTY beberapa baris berturut-turut sampai hasilnya cocok dengan "Combined QTY".
+    AREA B — nilai total seluruh tipe item (HARUS DIABAIKAN):
+    Format: [Combined QTY besar] [Combined N.W] [Combined G.W]
+    Nilai ini adalah akumulasi dari SEMUA baris dengan item yang sama. TIDAK disertai TOTAL CTNS.
+    Nilai ini LEBIH BESAR dari AREA A karena mencakup seluruh item sejenis.
+    JANGAN gunakan nilai AREA B untuk mengisi field apapun.
+
+    DISAMBIGUASI AREA A vs AREA B — WAJIB dilakukan terlebih dahulu:
+    Dalam satu blok item yang sama, bisa muncul DUA set nilai Combined di area yang berdekatan:
+    satu AREA A (untuk sub-group tertentu) dan satu AREA B (untuk total semua baris item tersebut).
+    Cara membedakannya:
+    - AREA A: Combined QTY = sum QTY hanya beberapa baris berurutan (sub-set). DISERTAI TOTAL CTNS.
+    - AREA B: Combined QTY = sum QTY SEMUA baris dengan item yang sama (total keseluruhan). TANPA TOTAL CTNS.
+    Jika dua Combined QTY muncul berdekatan pada visual yang sama, pilih yang LEBIH KECIL sebagai AREA A
+    dan ABAIKAN yang lebih besar (AREA B).
+
+    POSISI VISUAL AREA A — PERHATIKAN INI:
+    Nilai AREA A (Combined QTY, TOTAL CTNS, Combined N.W, Combined G.W, CBM) untuk suatu merge group
+    dapat muncul secara visual di posisi baris TERAKHIR dalam group tersebut, atau di antara dua baris,
+    bukan selalu di baris pertama. Meskipun demikian, nilai-nilai ini HARUS DIASSIGN ke baris PERTAMA
+    (TOP) dari merge group. Posisi visual tidak menentukan ke mana nilai diassign.
+
+    ALGORITMA ASSIGNMENT (jalankan urutan ini setiap kali ada merged cell):
+    Langkah 1: Identifikasi semua nilai Combined QTY yang ada di kolom AREA A (yang disertai TOTAL CTNS).
+    Langkah 2: Untuk setiap Combined QTY di AREA A, temukan baris-baris berurutan yang jumlah QTY-nya = nilai tersebut.
+               Ini adalah merge group yang sesuai.
+    Langkah 3: Baris PERTAMA dari merge group → assign pl_package_count=TOTAL CTNS, pl_nw=Combined N.W (AREA A),
+               pl_gw=Combined G.W (AREA A), pl_volume=CBM (AREA A).
+    Langkah 4: Baris KEDUA dst. dalam merge group → pl_package_count=0, pl_nw=0, pl_gw=0, pl_volume=0.
+    Langkah 5: ABAIKAN semua nilai Combined dari AREA B (tidak ada field yang menggunakan AREA B).
+
+    Cara menentukan batas merge group:
+    - Hitung jumlah QTY beberapa baris berturut-turut sampai hasilnya cocok dengan Combined QTY AREA A.
     - Contoh: Combined QTY = 754, baris A (qty=320) + B (qty=354) + C (qty=80) = 754 → A, B, C satu group.
     - Contoh: Combined QTY = 3, baris X (qty=2) + Y (qty=1) = 3 → X dan Y satu group.
     - PENTING: kesamaan PO number BUKAN penentu batas group. Verifikasi selalu dengan Combined QTY.
       Contoh: baris dengan PO berbeda bisa berada dalam satu merge group yang sama.
 
-    AREA B — kolom "Combined QTY" + "Combined N.W" + "Combined G.W" tanpa CTNS, nilai besar:
-    Ini adalah total keseluruhan untuk satu tipe item (misal semua wheelset = 78 QTY, 173.60 NW, 292.94 GW).
-    JANGAN gunakan nilai ini — ini bukan per-group, ini akumulasi seluruh tipe item.
-    Cara membedakan: jika Combined QTY = total seluruh baris bertipe sama dan tidak ada CTNS di tengahnya,
-    nilai tersebut adalah AREA B dan harus diabaikan.
-
 6. `pl_package_count`:
     - Ekstrak dari kolom "TOTAL CTNS" main table.
-    - Untuk merged cell group: TOTAL CTNS diberikan ke baris PALING ATAS group, sisanya 0.
-    - Batas group ditentukan dengan Combined QTY = sum QTY baris-baris dalam group (lihat STRUKTUR di atas).
+    - Untuk merged cell group: TOTAL CTNS (nilai AREA A) diberikan ke baris PALING ATAS group, sisanya 0.
+    - Batas group ditentukan dengan Combined QTY AREA A = sum QTY baris-baris dalam group.
+    - JANGAN gunakan nilai AREA B meskipun visually muncul lebih dekat ke baris yang dimaksud.
 7. `pl_nw`:
     - Untuk baris standalone (tidak ada merge): ekstrak dari kolom "TOTAL N.W." main table.
-    - Untuk merged cell group: ambil nilai "Combined N.W" yang sesuai untuk group tersebut (identifikasi
-      group dengan Combined QTY = sum QTY baris-baris group). Berikan ke baris PALING ATAS group, sisanya 0.
-    - JANGAN gunakan nilai "Combined N.W" dari AREA B (total keseluruhan tipe item yang nilainya jauh lebih besar).
+    - Untuk merged cell group: ambil nilai Combined N.W dari AREA A yang sesuai untuk group tersebut.
+      Berikan ke baris PALING ATAS group, sisanya 0.
+    - JANGAN gunakan Combined N.W dari AREA B (nilainya jauh lebih besar, tidak disertai TOTAL CTNS).
+    - Jika dua nilai Combined N.W muncul berdekatan, gunakan yang LEBIH KECIL (AREA A).
 8. `pl_gw`:
     - Untuk baris standalone: ekstrak dari kolom "TOTAL G.W." main table.
-    - Untuk merged cell group: ambil nilai "Combined G.W" yang sesuai untuk group tersebut.
+    - Untuk merged cell group: ambil nilai Combined G.W dari AREA A yang sesuai untuk group tersebut.
       Berikan ke baris PALING ATAS group, sisanya 0.
-    - JANGAN gunakan nilai "Combined G.W" dari AREA B.
+    - JANGAN gunakan Combined G.W dari AREA B.
+    - Jika dua nilai Combined G.W muncul berdekatan, gunakan yang LEBIH KECIL (AREA A).
 9. `pl_volume`:
     - Untuk baris standalone: ekstrak dari kolom "TOTAL CBM" main table.
-    - Untuk merged cell group: ambil nilai CBM yang muncul setelah "Combined G.W" untuk group tersebut.
+    - Untuk merged cell group: ambil nilai CBM yang mengikuti Combined G.W di AREA A untuk group tersebut.
       Berikan ke baris PALING ATAS group, sisanya 0.
 
 BILL OF LADING (BL):
