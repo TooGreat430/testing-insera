@@ -7373,32 +7373,6 @@ def _is_pt_insera_sena_name(value) -> bool:
     return ("INSERA SENA" in s) or ("INSERA" in s and "SENA" in s)
 
 
-def _rounded_total_matches(sum_val, declared_val, n_addends) -> bool:
-    """
-    Cek rekonsiliasi total untuk field FISIK (N.W./G.W.) yang tiap barisnya
-    dibulatkan 2 desimal di dokumen.
-
-    Menjumlahkan n addend yang masing-masing dibulatkan ke 2 desimal dapat
-    menyimpang dari total tercetak hingga ~n*0.005 (batas error pembulatan),
-    plus noise float biner (mis. 6950.07 muncul sebagai 6950.070000000001).
-    Toleransi flat 0.01 terlalu ketat untuk total dari puluhan baris dan
-    menghasilkan false-positive.
-
-    Strategi:
-    - Bandingkan setelah dibulatkan 2 desimal (membunuh noise float biner).
-    - Pakai toleransi yang skala dengan jumlah addend: max(0.01, 0.005 * n).
-
-    Return True bila dianggap match (dalam toleransi).
-    Catatan: hanya untuk berat/volume; JANGAN dipakai untuk quantity/package
-    yang seharusnya integer eksak.
-    """
-    if declared_val is None or sum_val is None:
-        return True
-    diff = abs(round(sum_val, 2) - round(declared_val, 2))
-    tol = max(0.01, 0.005 * max(int(n_addends or 0), 1))
-    return diff <= tol
-
-
 def _validate_packing_rows(rows: list):
     required = [
         "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address","pl_item_no",
@@ -7484,19 +7458,14 @@ def _validate_packing_rows(rows: list):
     sum_vol = sum(_to_float(r.get("pl_volume")) or 0.0 for r in rows if isinstance(r, dict))
     sum_pkg = sum(_to_float(r.get("pl_package_count")) or 0.0 for r in rows if isinstance(r, dict))
 
-    # jumlah addend (baris yang benar-benar menyumbang nilai) untuk toleransi
-    # rekonsiliasi berat yang menyesuaikan akumulasi pembulatan 2 desimal
-    n_nw = sum(1 for r in rows if isinstance(r, dict) and (_to_float(r.get("pl_nw")) or 0.0) > 0.0)
-    n_gw = sum(1 for r in rows if isinstance(r, dict) and (_to_float(r.get("pl_gw")) or 0.0) > 0.0)
-
     for r in rows:
         if not isinstance(r, dict):
             continue
         if declared_qty is not None and abs(sum_qty - declared_qty) > 0.01:
             _append_err(r, f"PackingList: total_quantity mismatch (sum {sum_qty}, doc {declared_qty})")
-        if declared_nw is not None and not _rounded_total_matches(sum_nw, declared_nw, n_nw):
+        if declared_nw is not None and abs(sum_nw - declared_nw) > 0.01:
             _append_err(r, f"PackingList: total_nw mismatch (sum {sum_nw}, doc {declared_nw})")
-        if declared_gw is not None and not _rounded_total_matches(sum_gw, declared_gw, n_gw):
+        if declared_gw is not None and abs(sum_gw - declared_gw) > 0.01:
             _append_err(r, f"PackingList: total_gw mismatch (sum {sum_gw}, doc {declared_gw})")
         if declared_vol is not None and not _volume_values_match_with_conversion(sum_vol, declared_vol):
             _append_err(
