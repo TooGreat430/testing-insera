@@ -43,6 +43,11 @@ from vendor_detection import (
 
 BATCH_SIZE = 30
 CHENGS_DETAIL_BATCH_SIZE = 3
+# Auriga: PL multi-halaman dengan struktur dual-@-line yang sangat padat angka.
+# Batch detail kecil mengurangi "attention dilution" model (lite) per call,
+# supaya angka pl_nw/pl_gw/pl_volume/pl_package_count per item lebih akurat
+# tanpa mengganti model. Bisa di-tune via env.
+AURIGA_DETAIL_BATCH_SIZE = int(os.getenv("AURIGA_DETAIL_BATCH_SIZE", "5"))
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 test_number = 2
 
@@ -161,9 +166,14 @@ def _get_detail_batch_size_for_vendor(vendor_id: str = "default") -> int:
     Default = BATCH_SIZE.
     Khusus vendor chengs = 3, supaya prompt per batch lebih kecil
     dan mengurangi risiko MAX_TOKENS / output kepotong.
+    Khusus vendor auriga = kecil (default 5), supaya model lebih akurat
+    membaca angka PL yang padat (struktur dual-@-line multi-halaman).
     """
-    if normalize_vendor_id(vendor_id) == "chengs":
+    norm = normalize_vendor_id(vendor_id)
+    if norm == "chengs":
         return CHENGS_DETAIL_BATCH_SIZE
+    if norm == "auriga":
+        return AURIGA_DETAIL_BATCH_SIZE
 
     return BATCH_SIZE
 
