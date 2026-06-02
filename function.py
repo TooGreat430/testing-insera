@@ -13132,6 +13132,7 @@ def run_ocr(
                 row.pop("pl_page_no", None)
                 row.pop("page", None)
                 row.pop("page_index", None)
+                row.pop("_confidence_label_source", None)
 
         # =========================
         # FINAL RESULT OBJECT
