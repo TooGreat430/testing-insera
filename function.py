@@ -6069,78 +6069,6 @@ def _derive_inv_qty_from_pl_for_merged_vendors(rows: list, vendor_id: str = "def
 
     return rows
 
-
-# =========================================================
-# VENDOR DENGAN PACKING LIST QTY TIDAK ANDAL (mis. aforge)
-# =========================================================
-# Kebalikan dari kasus joy: di vendor seperti aforge, INVOICE berupa tabel datar
-# yang bersih (tiap baris punya quantity sendiri dalam satuan item, mis. SET),
-# sedangkan PACKING LIST memecah tiap item ke sub-baris per-karton (L:200, L:50,
-# R:200, R:50, ...) sehingga gampang salah dijumlahkan menjadi jumlah PIECES
-# (mis. 500) padahal kolom QTY pada PL = jumlah SET item (250).
-#
-# Karena invoice dan PL vendor ini 1:1 per line item dan SATUAN-nya sama, maka
-# quantity per-baris yang benar = inv_quantity. Sinkronkan pl_quantity ke
-# inv_quantity SEBELUM PO mapping supaya total PL rekonsiliasi dan tidak
-# overcount akibat penjumlahan sub-baris L/R.
-#
-# Catatan: ini HANYA menyinkronkan quantity. Field berat/karton/volume PL
-# (pl_nw/pl_gw/pl_volume/pl_package_count) TIDAK disentuh karena hanya ada di
-# PL (tidak ada padanan di invoice).
-VENDORS_WITH_RELIABLE_INVOICE_QTY = {
-    "aforge",
-}
-
-
-def _is_reliable_invoice_qty_vendor(vendor_id: str) -> bool:
-    return normalize_vendor_id(vendor_id) in VENDORS_WITH_RELIABLE_INVOICE_QTY
-
-
-def _sync_pl_qty_from_inv_for_reliable_invoice_vendors(rows: list, vendor_id: str = "default"):
-    """
-    Khusus vendor dengan PL qty tidak andal (lihat VENDORS_WITH_RELIABLE_INVOICE_QTY).
-    Set pl_quantity = inv_quantity per baris (invoice = sumber kebenaran quantity).
-
-    Dipanggil SEBELUM _map_po_to_details.
-
-    Guard:
-    - Hanya jalan untuk vendor terdaftar.
-    - Hanya override jika inv_quantity valid (> 0). Jika inv_quantity null/0,
-      pl_quantity dibiarkan apa adanya (mis. baris invoice yang gagal terbaca).
-    """
-    if not _is_reliable_invoice_qty_vendor(vendor_id):
-        return rows
-    if not isinstance(rows, list):
-        return rows
-
-    adjusted = 0
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-
-        inv_qty = _to_float(row.get("inv_quantity"))
-        if inv_qty is None or inv_qty <= 1e-9:
-            continue
-
-        pl_qty = _to_float(row.get("pl_quantity"))
-        if pl_qty is not None and abs(pl_qty - inv_qty) <= 1e-9:
-            continue  # sudah sama, tidak perlu diubah
-
-        if abs(inv_qty - round(inv_qty)) <= 1e-9:
-            row["pl_quantity"] = int(round(inv_qty))
-        else:
-            row["pl_quantity"] = inv_qty
-
-        adjusted += 1
-
-    if adjusted:
-        print(
-            f"[RELIABLE_INV_QTY] vendor={normalize_vendor_id(vendor_id)} "
-            f"pl_quantity disinkronkan ke inv_quantity untuk {adjusted} baris"
-        )
-
-    return rows
-
 def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
     remaining_state = {}
@@ -12999,11 +12927,6 @@ def run_ocr(
         # dari pl_quantity SEBELUM mapping, supaya total invoice rekonsiliasi dan
         # tiap baris bisa di-map ke PO line-nya masing-masing.
         all_rows = _derive_inv_qty_from_pl_for_merged_vendors(all_rows, vendor_id=vendor_id)
-
-        # Vendor dengan PL qty tidak andal (mis. aforge): sinkronkan pl_quantity ke
-        # inv_quantity SEBELUM mapping, supaya total PL tidak overcount akibat
-        # penjumlahan sub-baris karton L/R.
-        all_rows = _sync_pl_qty_from_inv_for_reliable_invoice_vendors(all_rows, vendor_id=vendor_id)
 
         all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
 
