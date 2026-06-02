@@ -8375,6 +8375,11 @@ def _code_exists_in_value(code, value) -> bool:
 
 VENDORS_WITH_AGGREGATED_COO = {
     "joy",
+    # NOVATEC: COO form RCEP 2 halaman (Continuation Sheet) dengan 6 item
+    # ter-agregat per produk. Pass gabungan INV+PL+BL+COO tidak andal membaca
+    # continuation sheet -> coo_* line item null semua. Pakai extractor COO
+    # terfokus yang sama seperti joy lalu petakan deterministik di Python.
+    "novatec",
 }
 
 
@@ -8583,7 +8588,38 @@ def _map_coo_items_to_rows(
     return rows
 
 
-def _postprocess_bl_description(rows: list, threshold: float = 0.4):
+def _postprocess_bl_description_novatec(rows: list):
+    """
+    BL NOVATEC: kolom "Description of Goods" memakai NAMA KATEGORI produk
+    (mis. "WHEEL SET", "RIM G24", "RIM R4 FRONT", "VALVES FOR TUBELESS TYRES")
+    yang TIDAK align secara tekstual dengan inv_description terstruktur
+    ("WHEELSET;NOVATEC;M30 DISC;..."). Matcher generik akan men-null-kan ~4 dari 5
+    kategori karena "WHEEL SET" != "WHEELSET" dan kode "R4" terlalu pendek untuk
+    dianggap code. Pemetaan kategori -> baris dilakukan model di prompt (kekuatan
+    LLM untuk pencocokan semantik), jadi di sini cukup jaga sanity ringan:
+    pertahankan pasangan bl_description/bl_hs_code HANYA jika bl_hs_code berformat
+    HS yang masuk akal (mis. 8714.92 / 8481.80); selain itu null-kan keduanya.
+    """
+    hs_pattern = re.compile(r"^\d{4}\.?\d{0,2}$")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        bl_desc = row.get("bl_description")
+        if _is_null(bl_desc):
+            # tidak ada deskripsi BL -> pastikan hs juga tidak menggantung
+            if not _is_null(row.get("bl_hs_code")):
+                row["bl_hs_code"] = "null"
+            continue
+
+        bl_hs = row.get("bl_hs_code")
+        hs_norm = "" if _is_null(bl_hs) else re.sub(r"\s+", "", str(bl_hs))
+        if not hs_pattern.match(hs_norm):
+            row["bl_description"] = "null"
+            row["bl_hs_code"] = "null"
+
+
+def _postprocess_bl_description(rows: list, threshold: float = 0.4, vendor_id: str = "default"):
     """
     Rule baru:
     - jika bl_description punya code alfanumerik ATAU numeric-only, compare code tsb ke inv_description
@@ -8592,6 +8628,12 @@ def _postprocess_bl_description(rows: list, threshold: float = 0.4):
     - jika tidak ada yang match, null-kan bl_description dan bl_hs_code
     - bl_mark_number tetap dibiarkan
     """
+    # NOVATEC: deskripsi BL berbasis kategori produk yang tidak bisa divalidasi
+    # matcher generik (lihat _postprocess_bl_description_novatec).
+    if normalize_vendor_id(vendor_id) == "novatec":
+        _postprocess_bl_description_novatec(rows)
+        return
+
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -11127,7 +11169,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_coo_po_only_rows_from_invoice(rows, vendor_id=vendor_id)
     _postprocess_coo_no_and_seq(rows)
 
-    _postprocess_bl_description(rows)
+    _postprocess_bl_description(rows, vendor_id=vendor_id)
     _postprocess_bl_seller_name_similarity(rows)
 
     _postprocess_bl_coo_zero_to_null(rows)
@@ -13165,7 +13207,7 @@ def run_ocr(
             # _postprocess_coo_no_and_seq(all_rows)
 
         if has_bl_doc:
-            _postprocess_bl_description(all_rows)
+            _postprocess_bl_description(all_rows, vendor_id=vendor_id)
             _postprocess_bl_seller_name_similarity(all_rows)
 
         _enforce_absent_optional_docs_empty(
