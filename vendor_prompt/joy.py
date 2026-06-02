@@ -67,41 +67,68 @@ DILARANG KERAS MENGGABUNGKAN VALUE NUMERIK DARI SATU LINE ITEM KE LINE ITEM LAIN
 9. `pl_volume`: Ekstrak nilai angka dari kolom "TOTAL CBM".
 
 BILL OF LADING (BL):
-1. `bl_description`: 
-    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
-2. `bl_hs_code`: 
-    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
-        Contoh:
-        FRAME PART A-F3306-1 HS NUMBER: 8714.91
-        FRAME PART A-HG009 HS NUMBER: 8714.91
-        FRAME PART A-HG011 HS NUMBER: 8714.91
-        FRAME PART A-HG045 HS NUMBER: 8714.91
-        FRAME TUBING HS NUMBER: 8714.91
 
-        Maka:
-        Pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja.
-        Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
-        bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
-    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
+STRUKTUR DESKRIPSI BARANG PADA BL VENDOR INI:
+- Di area "Description of Goods", barang ditulis sebagai DAFTAR per model. Setiap baris barang berisi nama/kode model diikuti label "HS NUMBER: <kode_hs>".
+  Pola umum (ILUSTRASI FORMAT, bukan daftar barang yang wajib ada):
+    <KODE/MODEL BARANG A> HS NUMBER: <kode_hs>
+    <KODE/MODEL BARANG B> HS NUMBER: <kode_hs>
+- Token di kolom kiri (mis. "PO NO:", "ITEM:", "ORDER QTY:", "CTN NO:", "QTY/CTN:", "NW:", "GW:") adalah label area marks, BUKAN baris barang.
+- Teks generik seperti "BICYCLE PARTS" dan "MADE IN CHINA" BUKAN baris barang. Abaikan untuk bl_description/bl_hs_code.
+
+1. `bl_description`:
+    - Untuk SETIAP BASE_ROW, cari baris barang di BL yang kode/model-nya cocok dengan produk row tersebut.
+      Pencocokan dilakukan dengan membandingkan kode/model produk pada baris BL terhadap inv_description / inv_spart_item_no / pl_item_no row tersebut.
+    - Jika cocok: isi bl_description dengan teks barang pada baris BL itu (bagian nama/kode model saja, TANPA bagian "HS NUMBER: ...").
+    - Jika produk row TIDAK tercantum pada daftar barang BL: isi bl_description = "null".
+    - Satu baris barang BL boleh dipakai untuk BEBERAPA BASE_ROW yang produknya sama (mis. beberapa varian yang berbagi kode model yang sama). Isi bl_description yang sama pada semua row tersebut.
+    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen lain.
+2. `bl_hs_code`:
+    - Isi dengan kode HS yang tertera setelah "HS NUMBER:" pada baris BL yang SAMA dengan bl_description row tersebut.
+    - Ambil hanya angka kode HS-nya (mis. format seperti 8714.93), tanpa kata "HS NUMBER:".
+    - Jika bl_description = "null", maka bl_hs_code = "null".
+    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen lain.
 
 CERTIFICATE OF ORIGIN (COO):
+
+STRUKTUR COO VENDOR INI (form RCEP, sering memakai Continuation Sheet beberapa halaman):
+- Kolom "8. Number and kind of packages; and description of goods" untuk SETIAP item diawali frasa paket "<ANGKA-HURUF> (<N>) CARTON(S) OF" lalu DIIKUTI deskripsi barang pada baris berikutnya.
+  Deskripsi barang dapat ter-wrap ke beberapa baris dan BAHKAN menyambung melintasi batas halaman (akhir satu halaman menyambung ke awal halaman berikutnya). Gabungkan menjadi satu deskripsi utuh untuk item tersebut.
+- Kolom "12. Quantity (Gross weight or other measurement)..." berisi DUA nilai bertumpuk: gross weight (mis. "<angka>KGS G.W.") dan quantity (mis. "<angka>SETS"/PIECES/PAIRS).
+- SATU item COO BISA mewakili gabungan BEBERAPA line item invoice yang produknya sama (COO sering meng-agregat per produk). Karena itu satu item COO boleh dipetakan ke BEBERAPA BASE_ROW.
+
+CARA MAPPING (WAJIB):
+- Untuk SETIAP BASE_ROW, temukan item COO yang deskripsi barangnya (kolom 8) cocok dengan produk row tersebut.
+  Pencocokan dilakukan dengan membandingkan kode/model produk pada deskripsi COO terhadap inv_description / inv_spart_item_no / pl_item_no row tersebut.
+- Jika cocok: isi field coo_* item-level row dari item COO tersebut.
+- Item COO yang SAMA boleh dipakai untuk beberapa BASE_ROW yang produknya sama. Isi nilai coo_* yang sama pada semua row tersebut (nilai numerik per-row akan dinormalisasi sistem mengikuti packing list).
+- Jika produk row tidak ada di COO: biarkan semua coo_* item-level = "null".
+- Semua field coo_* HANYA boleh diambil dari dokumen COO, TIDAK BOLEH dari invoice/PL/BL.
+
 1. `coo_seq`:
-   - Ambil dari kolom "Item number".
-   - Nilai numeric.
-   - Item number tercetak jelas seperti:
-     - 1
-     - 2
-     - 3
-     - ...
+   - Ambil dari kolom "6. Item number" (nilai numeric: 1, 2, 3, ...).
 2. `coo_mark_number`:
     - Ekstrak dari "7. Marks and numbers on packages".
-    - Apabila tidak ada informasi marks and numbers pada kolom 7 atau tertlulis "N/M" (Not Mentioned), maka biarkan null.
-3. `coo_description`: Ekstrak deskripsi teks dari kolom "8. Number and kind of packages; and description of goods." Abaikan keterangan jumlah paket (angka dan kata) pada field ini.
-4. `coo_hs_code`: Ekstrak dari "9. HS Code of the goods".
-5. `coo_package_count`: Ekstrak kata/angka numerik dari kalimat awal di kolom 8 (misalnya, dari "TEN (10) CARTONS" ambil angka 10).
-6. `coo_package_unit`: Ekstrak jenis kemasan dari kalimat awal di kolom 8 (misalnya, "CARTONS").
-7. `coo_gw` & `coo_quantity`: Ekstrak berat angka dari kolom "12. Quantity..." (biasanya ditulis dengan format seperti "255.6KGS G.W.").
-8. `coo_unit`: Ekstrak unit berat dari kolom 12 (misalnya, "KGS").
-9. `coo_criteria`: Ekstrak dari "10. Origin Conferring Criterion" (misalnya "PE").
-10. `coo_customer_po_no`: Biarkan null kecuali ada nomor PO yang secara spesifik ditulis per baris item.
+    - Apabila kolom 7 hanya berisi marks umum (mis. "PO NO:", "ITEM:", "ORDER QTY:", "MADE IN CHINA") yang tidak terikat ke satu item tertentu, atau tertulis "N/M", maka biarkan "null".
+3. `coo_description`:
+    - Ekstrak deskripsi barang dari kolom 8 SETELAH frasa paket.
+    - ABAIKAN frasa jumlah paket "<...> (<N>) CARTON(S) OF" dan kata generik "BICYCLE PARTS".
+    - Gabungkan baris yang ter-wrap (termasuk yang menyambung lintas halaman) menjadi satu string.
+    - Jangan masukkan item number, HS code, criteria, country of origin, quantity, maupun GW.
+4. `coo_hs_code`: Ekstrak dari "9. HS Code of the goods" (mis. format seperti 8714.93).
+5. `coo_package_count`: Ekstrak angka pada frasa paket di kolom 8 (mis. "TWENTY (20) CARTONS OF" -> 20). Prioritaskan angka di dalam tanda kurung. Jangan tertukar dengan coo_quantity.
+6. `coo_package_unit`: Ekstrak jenis kemasan pada frasa paket di kolom 8 (mis. "CARTONS" / "CARTON"). JANGAN ambil SETS/PIECES/PAIRS (itu unit quantity, bukan unit paket).
+7. `coo_quantity`:
+    - Ekstrak angka QUANTITY dari kolom 12, yaitu nilai yang berunit SETS/PIECES/PAIRS (mis. dari "1000SETS" ambil 1000).
+    - JANGAN ambil angka gross weight untuk field ini.
+8. `coo_unit`:
+    - Ekstrak unit yang menempel pada coo_quantity (mis. "SETS" / "PIECES" / "PAIRS").
+    - BUKAN unit berat (KGS).
+9. `coo_gw`:
+    - Ekstrak angka GROSS WEIGHT dari kolom 12, yaitu nilai sebelum "KGS G.W." / "KG G.W." (mis. dari "255.6KGS G.W." ambil 255.6).
+10. `coo_amount`:
+    - Isi hanya jika kolom 12 mencantumkan nilai/FOB secara eksplisit.
+    - Jika kolom 12 hanya berisi quantity dan gross weight (tanpa value/FOB), isi "null". Jangan ambil amount dari invoice.
+11. `coo_criteria`: Ekstrak dari "10. Origin Conferring Criterion" (misalnya "PE").
+12. `coo_customer_po_no`: Biarkan "null" kecuali ada nomor PO yang secara spesifik ditulis per baris item di dalam COO.
 """
