@@ -8352,6 +8352,236 @@ def _code_exists_in_value(code, value) -> bool:
 
     return normalized_code in normalized_value
 
+
+# =========================================================
+# DETERMINISTIC COO LINE-ITEM MAPPING (vendor dengan COO ter-agregat)
+# =========================================================
+# Untuk vendor seperti joy, dokumen COO (form RCEP) meng-agregat barang
+# PER PRODUK, sehingga jumlah item COO != jumlah line item invoice
+# (mis. 1 item COO "751DSE 32X14" mewakili beberapa baris invoice).
+# PASS 2 (optional full-doc) di-anchor ke base row invoice, jadi model
+# kesulitan mem-"fan out" satu item COO ke banyak base row dalam satu
+# panggilan yang juga menangani BL (menambah beban COO di sana justru
+# membuat BL ikut gagal). Karena itu COO dipetakan DETERMINISTIK di Python:
+#  1) Ekstrak DAFTAR item COO apa adanya (1 objek per item COO) lewat satu
+#     panggilan terfokus -- struktur natural yang andal diekstrak model.
+#  2) Cocokkan tiap base row ke item COO yang deskripsinya paling cocok
+#     (berbasis token deskripsi + kode/model di depan). Satu item COO boleh
+#     dipetakan ke banyak base row.
+#  3) Nilai numerik (coo_quantity/coo_gw/coo_package_count) tetap akan
+#     dinormalisasi per-baris ke Packing List oleh
+#     _postprocess_coo_numeric_fields_from_pl.
+
+VENDORS_WITH_AGGREGATED_COO = {
+    "joy",
+}
+
+
+def _is_aggregated_coo_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_WITH_AGGREGATED_COO
+
+
+COO_ITEM_LIST_COPY_FIELDS = [
+    "coo_seq",
+    "coo_mark_number",
+    "coo_description",
+    "coo_hs_code",
+    "coo_package_count",
+    "coo_package_unit",
+    "coo_quantity",
+    "coo_unit",
+    "coo_gw",
+    "coo_amount",
+    "coo_criteria",
+    "coo_origin_country",
+]
+
+
+def _build_coo_item_list_prompt() -> str:
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Certificate of Origin (COO) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Certificate of Origin / COO (mis. form RCEP, sering memakai Continuation Sheet beberapa halaman).
+- ABAIKAN dokumen Invoice, Packing List, dan Bill of Lading.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP item barang COO (sesuai nomor item pada "6. Item number": 1, 2, 3, ...).
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+
+STRUKTUR COO (form RCEP):
+- Kolom "8. Number and kind of packages; and description of goods" untuk setiap item diawali frasa paket "<ANGKA-HURUF> (<N>) CARTON(S) OF" lalu diikuti deskripsi barang.
+  Deskripsi dapat ter-wrap ke beberapa baris dan menyambung melintasi batas halaman; gabungkan jadi satu deskripsi utuh.
+- Kolom "12." berisi DUA nilai bertumpuk: gross weight (mis. "<angka>KGS G.W.") dan quantity (mis. "<angka>SETS"/PIECES/PAIRS).
+
+FIELD PER ITEM:
+- "coo_seq": nomor item dari kolom 6 (numeric: 1, 2, 3, ...).
+- "coo_mark_number": dari "7. Marks and numbers on packages"; bila hanya marks umum/global atau "N/M", isi "null".
+- "coo_description": deskripsi barang dari kolom 8 SETELAH frasa paket. ABAIKAN frasa "<...> (<N>) CARTON(S) OF" dan kata generik "BICYCLE PARTS". Jangan masukkan HS code/criteria/country/quantity/GW.
+- "coo_hs_code": dari "9. HS Code of the goods" (mis. format 8714.93).
+- "coo_package_count": angka pada frasa paket di kolom 8 (mis. "TWENTY (20) CARTONS OF" -> 20). Prioritaskan angka di dalam kurung.
+- "coo_package_unit": jenis kemasan pada frasa paket di kolom 8 (mis. "CARTONS"/"CARTON"). JANGAN SETS/PIECES/PAIRS.
+- "coo_quantity": angka quantity dari kolom 12 yang berunit SETS/PIECES/PAIRS (mis. "1000SETS" -> 1000). BUKAN gross weight.
+- "coo_unit": unit yang menempel pada coo_quantity (mis. "SETS"/"PIECES"/"PAIRS"). BUKAN KGS.
+- "coo_gw": angka gross weight dari kolom 12 sebelum "KGS G.W."/"KG G.W." (mis. "255.6KGS G.W." -> 255.6).
+- "coo_amount": isi hanya jika kolom 12 mencantumkan nilai/FOB eksplisit; jika tidak ada, "null". Jangan ambil dari invoice.
+- "coo_criteria": dari "10. Origin Conferring Criterion" (mis. "PE").
+- "coo_origin_country": dari "11. RCEP Country of Origin" / negara asal item (mis. "CHINA").
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. Jika field tidak ada -> "null" (string) atau 0 (angka numerik).
+- Tidak boleh JSON literal null -> gunakan "null".
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  {
+    "coo_seq": number,
+    "coo_mark_number": "string",
+    "coo_description": "string",
+    "coo_hs_code": "string",
+    "coo_package_count": number,
+    "coo_package_unit": "string",
+    "coo_quantity": number,
+    "coo_unit": "string",
+    "coo_gw": number,
+    "coo_amount": "string",
+    "coo_criteria": "string",
+    "coo_origin_country": "string"
+  }
+]
+""".strip()
+
+
+def _extract_coo_item_list(file_uri: str, vendor_id: str = "default") -> list:
+    if not file_uri:
+        return []
+
+    items = _call_gemini_json_uri(
+        file_uri,
+        _build_coo_item_list_prompt(),
+        expect_array=True,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if not isinstance(items, list):
+        return []
+
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        desc = _normalize_coo_description(it.get("coo_description"))
+        if _is_null(desc):
+            continue
+        it["coo_description"] = desc
+        cleaned.append(it)
+
+    print(
+        f"[COO_ITEM_LIST] vendor={normalize_vendor_id(vendor_id)} "
+        f"raw={len(items)} usable={len(cleaned)}"
+    )
+    return cleaned
+
+
+def _coo_desc_tokens(value) -> set:
+    norm = _normalize_description_for_similarity(value)
+    if not norm:
+        return set()
+    return {t for t in norm.split() if t}
+
+
+def _leading_model_token(value) -> str:
+    """
+    Token "model/kode" pertama dari deskripsi: token dengan >= 3 char dan
+    mengandung angka (mis. "751DSE", "D762TSE", "431"). Dipakai sebagai gate
+    supaya row tidak lompat ke produk lain yang hanya berbagi token dimensi
+    generik (mis. "32X14").
+    """
+    for t in _normalize_description_for_similarity(value).split():
+        if len(t) >= 3 and re.search(r"\d", t):
+            return t
+    return ""
+
+
+def _coo_item_row_match_score(coo_item: dict, row: dict):
+    """
+    Return (coverage, jaccard).
+    - coverage = porsi token inv_description yang tertutup deskripsi item COO.
+    - jaccard  = overlap / union (tie-breaker untuk item yang mirip).
+    """
+    coo_tokens = _coo_desc_tokens(coo_item.get("coo_description"))
+    inv_tokens = _coo_desc_tokens(row.get("inv_description"))
+    if not coo_tokens or not inv_tokens:
+        return (0.0, 0.0)
+
+    overlap = coo_tokens & inv_tokens
+    coverage = len(overlap) / len(inv_tokens)
+    jaccard = len(overlap) / len(coo_tokens | inv_tokens)
+    return (coverage, jaccard)
+
+
+def _map_coo_items_to_rows(
+    rows: list,
+    coo_items: list,
+    vendor_id: str = "default",
+    min_coverage: float = 0.6,
+) -> list:
+    """
+    Petakan tiap base row ke item COO yang paling cocok (deskripsi + gate
+    kode/model), lalu salin field coo_* item-level. Satu item COO boleh
+    dipetakan ke banyak base row (fan-out). Row tanpa item COO yang cocok
+    -> field coo_* item-level di-null-kan.
+    """
+    if not isinstance(rows, list) or not coo_items:
+        return rows
+
+    mapped = 0
+    nulled = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        inv_model = _leading_model_token(row.get("inv_description"))
+
+        best_item = None
+        best_score = (0.0, 0.0)
+
+        for coo_item in coo_items:
+            coo_tokens = _coo_desc_tokens(coo_item.get("coo_description"))
+
+            # Gate kode/model: token model di depan inv_description WAJIB ada
+            # di deskripsi item COO. Mencegah lompat ke produk lain yang hanya
+            # berbagi token dimensi generik.
+            if inv_model and inv_model not in coo_tokens:
+                continue
+
+            score = _coo_item_row_match_score(coo_item, row)
+            if score > best_score:
+                best_score = score
+                best_item = coo_item
+
+        if best_item is not None and best_score[0] >= min_coverage:
+            for field in COO_ITEM_LIST_COPY_FIELDS:
+                if field in best_item:
+                    row[field] = best_item.get(field)
+            mapped += 1
+        else:
+            _nullify_coo_item_fields(row)
+            nulled += 1
+
+    print(
+        f"[COO_DETERMINISTIC_MAP] vendor={normalize_vendor_id(vendor_id)} "
+        f"coo_items={len(coo_items)} rows={len(rows)} "
+        f"mapped={mapped} nulled={nulled}"
+    )
+    return rows
+
+
 def _postprocess_bl_description(rows: list, threshold: float = 0.4):
     """
     Rule baru:
@@ -12816,7 +13046,28 @@ def run_ocr(
             except Exception as e:
                 # Optional docs tidak boleh menghancurkan hasil INV/PL.
                 print(f"[OPTIONAL_PASS][WARN] optional BL/COO enrichment skipped: {e}")
-            
+
+        # =========================================================
+        # DETERMINISTIC COO MAPPING (vendor COO ter-agregat, mis. joy)
+        # PASS 2 di-anchor ke base row invoice sehingga sulit mem-fan-out
+        # 1 item COO ke banyak baris dalam panggilan yang juga urus BL.
+        # Ekstrak daftar item COO apa adanya lalu petakan di Python.
+        # Gated per-vendor -> nol dampak ke vendor lain & ke mapping BL.
+        # =========================================================
+        if (
+            has_coo_doc
+            and optional_detail_input_uri
+            and _is_aggregated_coo_vendor(vendor_id)
+        ):
+            try:
+                coo_items = _extract_coo_item_list(
+                    file_uri=optional_detail_input_uri,
+                    vendor_id=vendor_id,
+                )
+                _map_coo_items_to_rows(all_rows, coo_items, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[COO_DETERMINISTIC_MAP][WARN] skipped: {e}")
+
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
             header_obj=header_obj,
