@@ -7545,7 +7545,13 @@ def _doc_present(rows: list, keys: list) -> bool:
             if not _is_null(r.get(k)):
                 return True
     return False
-def _validate_invoice_vs_packing_extra(rows: list):
+def _validate_invoice_vs_packing_extra(rows: list, vendor_id: str = "default"):
+    # Vendor dengan COO ter-agregat (mis. joy): nilai numerik COO sengaja
+    # diringkas ke SATU baris per produk (lihat _postprocess_coo_aggregate_to_top_row),
+    # jadi perbandingan PL-vs-COO per-baris (pl_gw/coo_gw, pl_package_count/
+    # coo_package_count) TIDAK relevan dan akan salah-flag. Skip untuk vendor ini.
+    skip_coo_numeric_compare = _is_coo_aggregate_top_row_vendor(vendor_id)
+
     def norm_prefix_20(s):
         return _normalize_compare_prefix(s, 20)
 
@@ -7586,24 +7592,25 @@ def _validate_invoice_vs_packing_extra(rows: list):
             normalize_fn=norm_prefix_20
         )
 
-        pl_gw = r.get("pl_gw")
-        coo_gw = r.get("coo_gw")
-        _compare_num_values(
-            r,
-            pl_gw,
-            coo_gw,
-            f"PL vs COO: pl_gw != coo_gw (PL {_to_float(pl_gw)}, coo {_to_float(coo_gw)})"
-        )
+        if not skip_coo_numeric_compare:
+            pl_gw = r.get("pl_gw")
+            coo_gw = r.get("coo_gw")
+            _compare_num_values(
+                r,
+                pl_gw,
+                coo_gw,
+                f"PL vs COO: pl_gw != coo_gw (PL {_to_float(pl_gw)}, coo {_to_float(coo_gw)})"
+            )
 
-        pl_package_count = r.get("pl_package_count")
-        coo_package_count = r.get("coo_package_count")
-        _compare_num_values(
-            r,
-            pl_package_count,
-            coo_package_count,
-            f"PL vs COO: pl_package_count != coo_package_count "
-            f"(PL {_to_float(pl_package_count)}, coo {_to_float(coo_package_count)})"
-        )
+            pl_package_count = r.get("pl_package_count")
+            coo_package_count = r.get("coo_package_count")
+            _compare_num_values(
+                r,
+                pl_package_count,
+                coo_package_count,
+                f"PL vs COO: pl_package_count != coo_package_count "
+                f"(PL {_to_float(pl_package_count)}, coo {_to_float(coo_package_count)})"
+            )
 
         _compare_text_values(
             r,
@@ -8387,6 +8394,20 @@ def _is_aggregated_coo_vendor(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in VENDORS_WITH_AGGREGATED_COO
 
 
+# Subset dari VENDORS_WITH_AGGREGATED_COO yang nilai NUMERIK COO-nya ditampilkan
+# meng-agregat per produk pada SATU baris (baris pertama group) + 0 di baris lain,
+# SESUAI dokumen COO -- BUKAN didistribusi per-baris mengikuti Packing List.
+# (Tambahkan vendor lain ke sini bila ingin perilaku top-row yang sama.)
+VENDORS_COO_AGGREGATE_TO_TOP_ROW = {
+    "joy",
+    "novatec",
+}
+
+
+def _is_coo_aggregate_top_row_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_COO_AGGREGATE_TO_TOP_ROW
+
+
 COO_ITEM_LIST_COPY_FIELDS = [
     "coo_seq",
     "coo_mark_number",
@@ -8584,6 +8605,102 @@ def _map_coo_items_to_rows(
         f"[COO_DETERMINISTIC_MAP] vendor={normalize_vendor_id(vendor_id)} "
         f"coo_items={len(coo_items)} rows={len(rows)} "
         f"mapped={mapped} nulled={nulled}"
+    )
+    return rows
+
+
+# Field numerik COO yang di-agregat per item pada dokumen COO.
+COO_AGGREGATE_NUMERIC_FIELDS = ["coo_quantity", "coo_package_count", "coo_gw"]
+
+
+def _coo_clean_number(value):
+    """Bilangan bulat -> int (mis. 7 bukan 7.0); selain itu round 2 desimal."""
+    f = _to_float(value)
+    if f is None:
+        return None
+    if f == int(f):
+        return int(f)
+    return round(f, 2)
+
+
+def _postprocess_coo_aggregate_to_top_row(rows: list, vendor_id: str = "default"):
+    """
+    Vendor dengan COO ter-agregat (mis. joy): dokumen COO menampilkan SATU baris
+    agregat per produk (mis. "SEVEN (7) CARTONS OF ... 480SETS 103.52KGS G.W."),
+    BUKAN satu nilai per line item invoice.
+
+    _map_coo_items_to_rows mem-"fan out" nilai agregat itu (coo_quantity /
+    coo_package_count / coo_gw) ke SETIAP base row yang produknya sama, sehingga
+    nilai yang sama berulang di banyak baris. Fungsi ini meringkasnya kembali agar
+    SESUAI tampilan dokumen COO: nilai numerik agregat hanya ditaruh di SATU baris
+    (baris pertama group), baris lain dalam group = 0.
+
+    Contoh (1 item COO mewakili 4 baris invoice):
+        coo_package_count: 7, 0, 0, 0   (BUKAN 2, 1, 3, 1 hasil distribusi per-PL)
+
+    Ini PENGGANTI _postprocess_coo_numeric_fields_from_pl untuk vendor agregat
+    (yang sebaliknya men-distribusi nilai COO per-baris mengikuti Packing List).
+
+    Group = base row dengan coo_description sama dalam satu invoice group. Hanya
+    menyentuh field numerik COO; field teks COO (coo_description, coo_hs_code,
+    coo_seq, dst) tetap terisi di semua baris group.
+    """
+    if not _is_coo_aggregate_top_row_vendor(vendor_id):
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    # 1) Kelompokkan index baris per item COO (kunci: invoice group + deskripsi
+    #    COO). Urutan kemunculan dipertahankan agar baris PERTAMA = baris teratas.
+    groups = {}
+    order = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        if not _row_has_meaningful_coo_item(row):
+            continue
+        desc_key = _normalize_description_for_similarity(row.get("coo_description"))
+        if not desc_key:
+            continue
+        gkey = (_get_detail_total_group_key(row, idx), desc_key)
+        if gkey not in groups:
+            groups[gkey] = []
+            order.append(gkey)
+        groups[gkey].append(idx)
+
+    zeroed = 0
+    for gkey in order:
+        idxs = groups[gkey]
+
+        # 2) Nilai agregat = nilai COO yang sudah di-fan-out sama rata oleh
+        #    _map_coo_items_to_rows (semua baris group bernilai sama). Pakai nilai
+        #    maksimum sebagai penjaga bila satu baris sempat ter-nol-kan langkah lain.
+        agg = {}
+        for field in COO_AGGREGATE_NUMERIC_FIELDS:
+            best = None
+            for i in idxs:
+                v = _to_float(rows[i].get(field))
+                if v is None:
+                    continue
+                if best is None or v > best:
+                    best = v
+            agg[field] = best
+
+        # 3) Baris pertama -> agregat; baris lain -> 0.
+        for pos, i in enumerate(idxs):
+            for field in COO_AGGREGATE_NUMERIC_FIELDS:
+                if pos == 0:
+                    cleaned = _coo_clean_number(agg.get(field))
+                    if cleaned is not None:
+                        rows[i][field] = cleaned
+                else:
+                    rows[i][field] = 0
+            if pos != 0:
+                zeroed += 1
+
+    print(
+        f"[COO_AGGREGATE_TOP_ROW] vendor={normalize_vendor_id(vendor_id)} "
+        f"groups={len(order)} zeroed_rows={zeroed}"
     )
     return rows
 
@@ -11181,7 +11298,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
         
     _validate_invoice_rows(rows)
     _validate_packing_rows(rows)
-    _validate_invoice_vs_packing_extra(rows)
+    _validate_invoice_vs_packing_extra(rows, vendor_id=vendor_id)
     _validate_bl_rows(rows)
     _validate_coo_rows(rows)
 
@@ -13300,7 +13417,12 @@ def run_ocr(
             columns=["inv_total_quantity", "pl_total_package"],
         )
  
-        if normalize_vendor_id(vendor_id) != "liow_ko":
+        if _is_coo_aggregate_top_row_vendor(vendor_id):
+            # COO ter-agregat (mis. joy): tampilkan nilai agregat per produk di
+            # SATU baris (baris pertama group) + 0 di baris lain, sesuai dokumen
+            # COO. Jangan distribusi per-baris mengikuti PL.
+            _postprocess_coo_aggregate_to_top_row(all_rows, vendor_id=vendor_id)
+        elif normalize_vendor_id(vendor_id) != "liow_ko":
             _postprocess_coo_numeric_fields_from_pl(all_rows)
         else:
             print("[COO_NUMERIC_FROM_PL] skipped for vendor liow_ko")
@@ -13314,7 +13436,7 @@ def run_ocr(
 
         _validate_invoice_rows(all_rows)
         _validate_packing_rows(all_rows)
-        _validate_invoice_vs_packing_extra(all_rows)
+        _validate_invoice_vs_packing_extra(all_rows, vendor_id=vendor_id)
 
         if has_bl_doc:
             _validate_bl_rows(all_rows)
