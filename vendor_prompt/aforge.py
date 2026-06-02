@@ -28,7 +28,18 @@ INVOICE (INV)
 
 7. inv_unit_price:
    - Ekstrak dari kolom "UNIT PRICE (USD)"[cite: 179].
-   - Jika tertulis "FOC", isi dengan 0[cite: 180, 181].
+
+8. inv_amount:
+   - Ekstrak dari kolom "AMOUNT".
+
+ATURAN KHUSUS BARIS FOC (FREE OF CHARGE) — SANGAT PENTING:
+   - Sebagian baris invoice ini adalah barang gratis (FOC). Ciri-cirinya: nomor PO/NO berupa kode klaim (mis. "CLM26010069", "CLM25110169") DAN kolom "AMOUNT" tertulis "FOC" (bukan angka).
+   - PADA BARIS FOC, kolom "UNIT PRICE (USD)" TETAP menampilkan angka harga referensi (mis. 7.20, 4.50). JANGAN tertipu: karena barang gratis, baris ini WAJIB diisi:
+       inv_unit_price = 0
+       inv_amount     = 0
+   - Jadi penanda "FOC" berada di kolom AMOUNT, bukan di kolom UNIT PRICE. Begitu kolom AMOUNT = "FOC", PAKSA inv_unit_price=0 dan inv_amount=0, abaikan angka harga referensi yang tercetak.
+   - inv_quantity baris FOC TETAP diisi sesuai angka di kolom QUANTITY (barang FOC tetap dihitung kuantitasnya).
+   - Konsistensi: dengan aturan ini, inv_amount = inv_quantity × inv_unit_price (= qty × 0 = 0) tetap valid untuk baris FOC.
 
 PACKING LIST (PL)
 
@@ -43,15 +54,39 @@ PACKING LIST (PL)
    - Contoh: "FRAME PART A-F3306-1"[cite: 193].
 
 4. pl_quantity:
-   - Ambil total quantity dari kolom "QTY"[cite: 193].
-   - Jika satu item terbagi dalam beberapa baris karena beda karton, jumlahkan seluruh quantity untuk item tersebut[cite: 193, 195].
+   - Ambil HANYA dari kolom "QTY" (kolom ke-4, total quantity item dalam satuan item: SET/PCS). Nilai ini SUDAH merupakan total untuk item tersebut.
+   - DILARANG KERAS menjumlahkan angka pecahan di kolom "QTY/CTN" (kolom ke-5, mis. "L:200", "L:50", "R:200", "R:50", atau "200", "100"). Kolom QTY/CTN adalah rincian isi PER-KARTON (dalam PIECES), BUKAN quantity item.
+   - CONTOH JEBAKAN (WAJIB DIPAHAMI):
+       Baris: PO=45324062 | A-F3306-1 | QTY=250 | QTY/CTN: L:200, L:50, R:200, R:50
+       BENAR : pl_quantity = 250 (dari kolom QTY)
+       SALAH : pl_quantity = 500 (200+50+200+50 dari kolom QTY/CTN — ini menghitung PIECES, padahal item dijual per SET; 250 SET = 500 PCS tapi yang dilaporkan adalah 250)
+   - Patokan kebenaran: pl_quantity HARUS sama dengan inv_quantity untuk baris yang sama (invoice & PL vendor ini 1:1 per line item dengan satuan yang sama). Jika hasil jumlah Anda ≠ inv_quantity, berarti Anda salah menjumlahkan kolom QTY/CTN — pakai kolom QTY.
+   - CATATAN: penjumlahan sub-baris TETAP berlaku untuk berat/karton/volume (lihat LANGKAH 3), TAPI TIDAK untuk quantity.
 
 5. pl_package_unit:
    - PL package unit sudah pasti Carton untuk semua line item, maka pl_package_unit = "CT".
 
 6. pl_package_count:
-   - Ekstrak jumlah karton dari kolom "箱数" (Box Count) atau hitung dari range kolom "CTN"[cite: 193, 195].
-   - Contoh: Jika kolom CTN berisi "10-11", maka pl_package_count = 2[cite: 193].
+   - pl_package_count = JUMLAH KARTON. Sumber: kolom "箱数" (Box Count) ATAU dihitung dari banyaknya nomor karton di kolom "CTN".
+   - CARA MENGHITUNG DARI KOLOM CTN: hitung banyaknya nomor karton dalam range.
+       "2"        → 1 karton
+       "10-11"    → 2 karton
+       "A1-A4"    → 4 karton
+       "A71-A74"  → 4 karton
+       "46-48"    → 3 karton
+   - Jika item terdiri dari beberapa sub-baris karton (lihat LANGKAH 3), JUMLAHKAN karton seluruh sub-barisnya.
+
+   ⛔ DILARANG KERAS — JEBAKAN KOLOM QTY/CTN:
+   - JANGAN PERNAH mengisi pl_package_count dengan angka dari kolom "QTY/CTN" (kolom ke-5). Kolom QTY/CTN adalah QUANTITY ISI PER KARTON (mis. 15, 20, 30, 50), BUKAN jumlah karton.
+   - Angka di kolom 箱数 (jumlah karton) umumnya KECIL (1, 2, 3, 4, 6, 11, 12, 34). Angka di kolom QTY/CTN umumnya menyerupai quantity (15, 20, 30, 50, 200). Jika pl_package_count yang Anda hasilkan menyerupai quantity/isi-per-karton, ITU SALAH.
+   - CONTOH JEBAKAN NYATA (HARUS DIHINDARI):
+       Baris: IS23PDT05 | QTY=35 | QTY/CTN: 15 (CTN=A58) , 20 (CTN=A59) | 箱数: 1 , 1
+         BENAR : pl_package_count = 2  (A58 + A59 = 2 karton)
+         SALAH : pl_package_count = 15 (itu QTY/CTN, bukan jumlah karton)
+       Baris: IS21PDT04 | QTY=120 | QTY/CTN: 30 (CTN=A71-A74)
+         BENAR : pl_package_count = 4  (A71..A74)
+         SALAH : pl_package_count = 30 (itu QTY/CTN)
+   - SANITY-CHECK: pl_package_count TIDAK boleh lebih besar dari pl_quantity, dan biasanya jauh lebih kecil. Jika lebih besar atau mendekati quantity, hampir pasti Anda salah ambil kolom QTY/CTN.
 
 7. pl_nw:
    - Ambil total berat bersih dari kolom "NW(KGS)"[cite: 193].
@@ -102,15 +137,25 @@ Ketika baris teridentifikasi sebagai sub-row (kolom CTN dan berat kosong):
 LANGKAH 3 — BEDAKAN DARI SUB-ROW YANG BUKAN MERGE CELL:
 Beberapa baris memang tidak punya PO/Material eksplisit tetapi PUNYA data CTN (nomor karton berbeda). Ini BUKAN merge cell — ini adalah carton sub-row dari item yang sama.
   Contoh: FREAF330600002 untuk PO 45324062 punya sub-baris L:200, L:50, R:200, R:50 masing-masing dengan CTN berbeda (2, 3, 4, 5). Untuk kasus ini:
-  - pl_quantity = JUMLAH semua sub-baris (L:200 + L:50 + R:200 + R:50 = 500)
-  - pl_nw = JUMLAH semua NW(KGS) sub-baris
-  - pl_gw = JUMLAH semua GW(KGS) sub-baris
-  - pl_volume = JUMLAH semua CUF sub-baris
-  - pl_package_count = JUMLAH semua 箱数 sub-baris
+  - pl_quantity = nilai kolom QTY item tersebut (= 250). JANGAN dijumlahkan dari L:200+L:50+R:200+R:50. (Lihat aturan pl_quantity #4 — kolom QTY/CTN adalah PIECES per karton, bukan quantity item.)
+  - pl_nw = JUMLAH semua NW(KGS) sub-baris (9.8 + 2.6 + 9.5 + 2.5 = 24.4)
+  - pl_gw = JUMLAH semua GW(KGS) sub-baris (10.3 + 2.8 + 10.0 + 2.7 = 25.8)
+  - pl_volume = JUMLAH semua CUF sub-baris (0.6 × 4 = 2.4)
+  - pl_package_count = JUMLAH semua 箱数 sub-baris (1 + 1 + 1 + 1 = 4)
+
+  WAJIB DIINGAT — JUMLAH SUB-BARIS YANG HARUS DIJUMLAHKAN:
+  Banyaknya sub-baris berat yang harus Anda jumlahkan = banyaknya entri QTY/CTN item itu = banyaknya karton (pl_package_count). Untuk contoh di atas ada 4 entri (L:200, L:50, R:200, R:50) → Anda WAJIB menemukan dan menjumlahkan TEPAT 4 nilai NW(KGS), 4 nilai GW(KGS), 4 nilai CUF. JANGAN sampai ada sub-baris yang terlewat (penyebab utama total berat kurang). Jika item terdiri dari 4 karton tapi Anda hanya menjumlahkan 3 nilai berat, berarti ada yang terlewat — baca ulang.
 
 RINGKASAN ATURAN DETEKSI:
-  Jika kolom CTN KOSONG → sub-row merge cell → pl_package_count/nw/gw/volume = 0
-  Jika kolom CTN BERISI → sub-row carton biasa → jumlahkan semua nilai ke baris utama
+  Jika kolom CTN KOSONG → sub-row merge cell → pl_package_count/nw/gw/volume = 0 (TAPI pl_quantity TETAP diisi dari kolom QTY baris itu)
+  Jika kolom CTN BERISI → sub-row carton biasa (item yang sama) → jumlahkan berat/karton/volume ke baris utama, sedangkan pl_quantity = nilai kolom QTY (BUKAN penjumlahan)
+
+SELF-CHECK FINAL SEBELUM OUTPUT (WAJIB, untuk mencegah total PL meleset):
+Dokumen PL ini punya baris TOTAL di paling bawah (mis. TOTAL 174 karton, NW 1919.00, GW 2046.80, CUF 303.30). Gunakan sebagai alat verifikasi:
+  1. Σ pl_quantity seluruh baris ≈ total QTY dokumen (mis. 15736). Jika lebih besar → Anda menjumlahkan QTY/CTN (PIECES) di suatu item; perbaiki ke kolom QTY.
+  2. Σ pl_package_count seluruh baris ≈ total karton dokumen (mis. 174). Jika lebih besar → ada baris yang salah ambil kolom QTY/CTN sebagai jumlah karton; perbaiki.
+  3. Σ pl_nw ≈ total NW(KGS) dokumen, dan Σ pl_gw ≈ total GW(KGS). Jika hasil Anda jauh LEBIH KECIL → ada sub-baris berat L/R yang terlewat saat menjumlahkan; baca ulang item-item yang dipecah L/R dan pastikan SEMUA sub-baris ikut terjumlah.
+Tujuannya bukan memaksakan angka, melainkan menangkap kesalahan ekstraksi kolom/sub-baris sebelum commit.
 
 BILL OF LADING (BL)
 
