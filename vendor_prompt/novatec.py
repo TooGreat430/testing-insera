@@ -112,22 +112,52 @@ STRUKTUR MERGED CELL DAN KOLOM COMBINED:
       Berikan ke baris PALING ATAS group, sisanya 0.
 
 BILL OF LADING (BL):
-1. `bl_description`: 
-    - Dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null aja.
-2. `bl_hs_code`: 
-    - Value bl_hs_code diisi sesuai dengan bl_descriptionnya
-        Contoh:
-        FRAME PART A-F3306-1 HS NUMBER: 8714.91
-        FRAME PART A-HG009 HS NUMBER: 8714.91
-        FRAME PART A-HG011 HS NUMBER: 8714.91
-        FRAME PART A-HG045 HS NUMBER: 8714.91
-        FRAME TUBING HS NUMBER: 8714.91
 
-        Maka:
-        Pada inv_description ada value FRAME PART AF-9F-0270 (which is tidak ada), maka bl_description isi null saja.
-        Pada inv_description ada value FRAME PART A-HG009 (which is ada), maka bl_description isi FRAME PART A-HG009.
-        bl_hs_code untuk FRAME PART A-HG009 adalah 8714.91, maka bl_hs_code isi 8714.91.
-    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain.
+STRUKTUR KOLOM "Number and Kind of packages / Description of Goods" PADA BL NOVATEC:
+    Kolom ini memuat DUA bagian terpisah:
+    (a) MARKS (kolom kiri): baris-baris seperti "INSERA", "P/O:", "MODEL:", "Q.TY:",
+        "C/NO:", "MADE IN CHINA". Ini untuk bl_mark_number, BUKAN bl_description.
+    (b) DESCRIPTION OF GOODS (kolom utama): diawali baris umum
+        ("1 x 40HC CONTAINER", "STC 42 CARTON(S)", "BICYCLE PARTS") lalu DIIKUTI
+        DAFTAR ITEM per KATEGORI PRODUK dalam format:
+            "<NAMA KATEGORI PRODUK> HS NUMBER: <kode HS>"
+        Contoh nyata pada dokumen ini:
+            RIM G24 HS NUMBER: 8714.92
+            RIM R4 FRONT HS NUMBER: 8714.92
+            RIM R4 REAR HS NUMBER: 8714.92
+            WHEEL SET HS NUMBER: 8714.92
+            VALVES FOR TUBELESS TYRES HS NUMBER: 8481.80
+
+LANGKAH 1 — Kumpulkan DAFTAR pasangan (deskripsi, HS) dari kolom Description of Goods:
+    Untuk setiap baris berpola "<NAMA KATEGORI> HS NUMBER: <kode>", catat:
+      - deskripsi kategori = teks SEBELUM "HS NUMBER:" (mis. "WHEEL SET", "RIM G24",
+        "RIM R4 FRONT", "RIM R4 REAR", "VALVES FOR TUBELESS TYRES").
+      - kode HS = angka SETELAH "HS NUMBER:" (mis. "8714.92", "8481.80").
+    ABAIKAN baris generik "BICYCLE PARTS", "STC ... CARTON(S)", "... CONTAINER".
+
+LANGKAH 2 — Petakan tiap baris item (per inv_description) ke SATU kategori BL di atas,
+    berdasarkan JENIS PRODUK (pencocokan semantik, BUKAN pencocokan teks persis):
+      - inv_description diawali "WHEELSET" / "WHEEL SET"  -> kategori "WHEEL SET".
+      - inv_description jenis "RIM ... G24" / mengandung model "G24"  -> "RIM G24".
+      - inv_description jenis "RIM ... R4 ..." dan menyebut "FRONT"  -> "RIM R4 FRONT".
+      - inv_description jenis "RIM ... R4 ..." dan menyebut "REAR"   -> "RIM R4 REAR".
+      - inv_description jenis "VALVE ... TUBELESS" (mis. R3 L:44MM maupun R5 L:70MM)
+        -> "VALVES FOR TUBELESS TYRES" (kedua varian valve memetakan ke SATU kategori ini).
+    Catatan: bila ada beberapa kandidat (mis. R4 FRONT vs R4 REAR), pilih yang cocok
+    pada penanda FRONT/REAR di inv_description.
+
+1. `bl_description`:
+    - Isi dengan NAMA KATEGORI BL hasil pemetaan Langkah 2 (mis. "WHEEL SET",
+      "RIM G24", "RIM R4 FRONT", "RIM R4 REAR", "VALVES FOR TUBELESS TYRES").
+    - Gunakan teks kategori PERSIS seperti tertulis di BL (jangan diubah ke inv_description).
+    - Jika tidak ada kategori BL yang cocok untuk baris tersebut, isi null.
+    - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen lain.
+
+2. `bl_hs_code`:
+    - Isi dengan kode HS dari kategori BL yang sama (pasangan dari bl_description).
+      Contoh: bl_description "WHEEL SET" -> bl_hs_code "8714.92";
+              bl_description "VALVES FOR TUBELESS TYRES" -> bl_hs_code "8481.80".
+    - bl_description dan bl_hs_code SATU PAKET: keduanya terisi atau keduanya null.
 
 CERTIFICATE OF ORIGIN (COO):
 1. `coo_seq`:
