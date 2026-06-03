@@ -7537,17 +7537,6 @@ def _validate_packing_rows(rows: list, vendor_id: str = "default"):
             }:
                 continue
 
-            # Baris non-teratas merge group PL (mis. novatec): field additif
-            # selain quantity sengaja di-nol-kan oleh
-            # _assign_pl_merged_numerics_to_rows; jangan dianggap missing.
-            if _is_merged_pl_zero_row(r) and k in {
-                "pl_package_count",
-                "pl_nw",
-                "pl_gw",
-                "pl_volume",
-            }:
-                continue
-
             if _is_missing_num(r.get(k)):
                 _append_err(r, f"PackingList: missing {k}")
 
@@ -8532,40 +8521,6 @@ def _is_coo_aggregate_top_row_vendor(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in VENDORS_COO_AGGREGATE_TO_TOP_ROW
 
 
-# =========================================================
-# VENDOR DENGAN PACKING LIST MERGED-CELL NUMERIK (mis. novatec)
-# =========================================================
-# Packing List vendor ini memakai merged cell untuk kolom numerik
-# (TOTAL CTNS / TOTAL N.W. / TOTAL G.W. / TOTAL CBM): beberapa line item yang
-# dikemas dalam carton yang sama berbagi SATU nilai agregat (AREA A), dan di sisi
-# kanan dokumen ada kolom "Combined" berisi TOTAL per tipe produk (AREA B).
-#
-# Pada prompt detail multi-dokumen, model sering keliru membedakan AREA A vs
-# AREA B (kehilangan nilai group, atau memungut nilai AREA B). Solusi: ekstraksi
-# TERFOKUS hanya dokumen Packing List, lalu assignment deterministik di Python
-# (cocokkan Combined QTY AREA A ke run baris yang jumlah QTY-nya sama; taruh
-# agregat di baris TERATAS group + 0 di sisanya). Analog dengan jalur COO
-# terfokus (_extract_coo_item_list + _map_coo_items_to_rows).
-VENDORS_PL_MERGED_NUMERIC = {
-    "novatec",
-}
-
-
-def _is_pl_merged_numeric_vendor(vendor_id: str) -> bool:
-    return normalize_vendor_id(vendor_id) in VENDORS_PL_MERGED_NUMERIC
-
-
-def _is_merged_pl_zero_row(row) -> bool:
-    """
-    Baris non-teratas dari satu merge group PL yang field numerik additif-nya
-    (pl_package_count/pl_nw/pl_gw/pl_volume) sengaja di-nol-kan oleh
-    _assign_pl_merged_numerics_to_rows. Dipakai agar validasi required-numeric
-    tidak menganggap 0 sebagai missing (analog dengan _is_secondary_po_split_row
-    dan _is_merged_qty_collapsed_zero_row).
-    """
-    return isinstance(row, dict) and row.get("_merged_pl_zero_row") is True
-
-
 COO_ITEM_LIST_COPY_FIELDS = [
     "coo_seq",
     "coo_mark_number",
@@ -8859,308 +8814,6 @@ def _postprocess_coo_aggregate_to_top_row(rows: list, vendor_id: str = "default"
     print(
         f"[COO_AGGREGATE_TOP_ROW] vendor={normalize_vendor_id(vendor_id)} "
         f"groups={len(order)} zeroed_rows={zeroed}"
-    )
-    return rows
-
-
-# =========================================================
-# EKSTRAKSI TERFOKUS PACKING LIST (vendor PL merged-cell numerik)
-# =========================================================
-def _build_pl_item_list_prompt() -> str:
-    return """
-ROLE:
-Anda AI IDP yang fokus mengekstrak DAFTAR LINE ITEM dari dokumen Packing List (PL) saja.
-Rule-based, deterministik, anti-halusinasi.
-
-SUMBER:
-- Baca HANYA dokumen Packing List / PL.
-- ABAIKAN dokumen Invoice, Bill of Lading, dan Certificate of Origin bila ada.
-
-STRUKTUR TABEL PL:
-- Kolom utama (main table): PO NO., CODE, DESCRIPTION, QTY, UNIT, QTY/CTN,
-  TOTAL CTNS, TOTAL N.W., TOTAL G.W., TOTAL CBM (urutan kolom bisa sedikit berbeda).
-- Untuk sebagian baris, kolom numerik (TOTAL CTNS / TOTAL N.W. / TOTAL G.W. /
-  TOTAL CBM) di-MERGE secara vertikal: beberapa baris berbagi satu carton sehingga
-  sel pada baris selain pemilik nilai tampak KOSONG.
-- Di sisi KANAN ada kolom "Combined" (Combined QTY / Combined N.W / Combined G.W):
-    * AREA A = nilai agregat per MERGE GROUP. SELALU disertai angka TOTAL CTNS
-      (mis. 1, 2) dan biasanya disertai satu nilai CBM.
-    * AREA B = TOTAL untuk SELURUH baris dengan tipe produk yang sama. TANPA
-      TOTAL CTNS, nilainya lebih besar. JANGAN dimasukkan ke merge_groups.
-
-TUGAS — keluarkan SATU objek JSON (bukan array) dengan dua bagian:
-
-1) "rows": SATU objek per VISUAL LINE ITEM main table, urut atas->bawah.
-   Field per row:
-   - "seq": nomor urut baris (1,2,3,...) sesuai urutan tampil.
-   - "po": isi kolom "PO NO." (string apa adanya).
-   - "code": isi kolom "CODE".
-   - "qty": angka kolom "QTY" baris itu.
-   - "unit": isi kolom "UNIT".
-   - "total_ctns": angka yang BENAR-BENAR tercetak di sel "TOTAL CTNS" PADA BARIS ITU.
-       Jika sel kosong (karena merged ke baris lain), isi null.
-   - "total_nw": angka di sel "TOTAL N.W." PADA BARIS ITU; kosong/merged -> null.
-   - "total_gw": angka di sel "TOTAL G.W." PADA BARIS ITU; kosong/merged -> null.
-   - "total_cbm": angka di sel "TOTAL CBM" PADA BARIS ITU; kosong/merged -> null.
-   ATURAN KETAT untuk rows:
-   - Ambil HANYA angka yang BENAR-BENAR tercetak di sel main table baris itu.
-   - DILARANG meminjam nilai dari baris tetangga maupun dari kolom "Combined".
-   - Jika sel merged/kosong -> WAJIB null (BUKAN 0, BUKAN nilai baris lain).
-
-2) "merge_groups": SATU objek per entri AREA A (Combined yang DISERTAI TOTAL CTNS).
-   Field per group:
-   - "combined_qty": nilai "Combined QTY" AREA A (jumlah QTY baris-baris dalam group).
-   - "total_ctns": angka TOTAL CTNS yang menyertai AREA A tersebut.
-   - "combined_nw": nilai "Combined N.W" AREA A.
-   - "combined_gw": nilai "Combined G.W" AREA A.
-   - "cbm": nilai CBM yang menyertai AREA A (jika ada; jika tidak, null).
-   ATURAN KETAT untuk merge_groups:
-   - HANYA masukkan Combined yang punya TOTAL CTNS (AREA A).
-   - JANGAN masukkan Combined tanpa TOTAL CTNS (itu AREA B / total per tipe produk).
-   - Jika tidak ada merge group sama sekali, isi array kosong [].
-
-ATURAN UMUM:
-- Angka sebagai angka (number). Yang tidak ada -> null.
-- Output HANYA JSON valid, tanpa teks/penjelasan/markdown. Mulai '{' diakhiri '}'.
-
-SCHEMA OUTPUT:
-{
-  "rows": [
-    {"seq": number, "po": "string", "code": "string", "qty": number, "unit": "string",
-     "total_ctns": number, "total_nw": number, "total_gw": number, "total_cbm": number}
-  ],
-  "merge_groups": [
-    {"combined_qty": number, "total_ctns": number, "combined_nw": number, "combined_gw": number, "cbm": number}
-  ]
-}
-""".strip()
-
-
-def _extract_pl_item_list(file_uri: str, vendor_id: str = "default") -> dict:
-    """Ekstraksi terfokus PL-only -> {"rows": [...], "merge_groups": [...]}."""
-    if not file_uri:
-        return {}
-
-    obj = _call_gemini_json_uri(
-        file_uri,
-        _build_pl_item_list_prompt(),
-        expect_array=False,
-        retries=3,
-        vendor_id=vendor_id,
-    )
-
-    if not isinstance(obj, dict):
-        return {}
-
-    rows = obj.get("rows")
-    groups = obj.get("merge_groups")
-    return {
-        "rows": rows if isinstance(rows, list) else [],
-        "merge_groups": groups if isinstance(groups, list) else [],
-    }
-
-
-# Field numerik PL yang ditempatkan agregat-per-group di baris teratas + 0 di sisanya.
-PL_MERGED_NUMERIC_FIELDS = ["pl_package_count", "pl_nw", "pl_gw", "pl_volume"]
-
-
-def _pl_num(value):
-    """null/'null'/'' -> None; selain itu float (atau None bila non-numerik)."""
-    if _is_null(value):
-        return None
-    return _to_float(value)
-
-
-def _assign_pl_merged_numerics_to_rows(rows: list, pl_data: dict, vendor_id: str = "default"):
-    """
-    Vendor PL merged-cell numerik (lihat VENDORS_PL_MERGED_NUMERIC, mis. novatec).
-
-    Pakai hasil ekstraksi terfokus PL (_extract_pl_item_list): per-baris main table
-    + daftar AREA A merge group. Hitung nilai final per baris secara deterministik:
-      - Baris standalone (punya TOTAL N.W. sendiri) -> pakai nilai main table-nya.
-      - Baris merged (sel main table kosong) -> dikelompokkan jadi run yang jumlah
-        QTY-nya = Combined QTY AREA A; agregat group ditaruh di baris TERATAS run,
-        baris lain di-nol-kan.
-
-    Guard anti-regresi: hasil hanya diterapkan ke `rows` (all_rows) bila total
-    rekonstruksi (pkg/nw/gw/volume) cocok dengan pl_total_* dokumen DAN jumlah
-    baris + QTY-nya sejajar 1:1. Bila tidak, data PL dibiarkan apa adanya.
-    Hanya menyentuh PL_MERGED_NUMERIC_FIELDS.
-    """
-    if not _is_pl_merged_numeric_vendor(vendor_id):
-        return rows
-    if not isinstance(rows, list) or not isinstance(pl_data, dict):
-        return rows
-
-    pl_rows = pl_data.get("rows") or []
-    pl_groups = pl_data.get("merge_groups") or []
-    if not pl_rows:
-        print("[PL_MERGED_NUMERIC][SKIP] focused PL rows kosong")
-        return rows
-
-    # --- 1) Normalisasi baris terfokus + klasifikasi standalone vs merged ---
-    fr = []
-    for it in pl_rows:
-        if not isinstance(it, dict):
-            continue
-        nw = _pl_num(it.get("total_nw"))
-        fr.append({
-            "qty": _pl_num(it.get("qty")),
-            "nw": nw,
-            "gw": _pl_num(it.get("total_gw")),
-            "ctns": _pl_num(it.get("total_ctns")),
-            "cbm": _pl_num(it.get("total_cbm")),
-            # standalone = sel TOTAL N.W. baris ini terisi (>0)
-            "standalone": nw is not None and nw > 1e-9,
-            "f_ctns": 0.0, "f_nw": 0.0, "f_gw": 0.0, "f_cbm": 0.0,
-        })
-
-    # --- 2) Normalisasi AREA A groups (wajib punya combined_qty + total_ctns) ---
-    groups = []
-    for g in pl_groups:
-        if not isinstance(g, dict):
-            continue
-        cq = _pl_num(g.get("combined_qty"))
-        gc = _pl_num(g.get("total_ctns"))
-        if cq is None or cq <= 1e-9 or gc is None:
-            continue  # tanpa TOTAL CTNS = AREA B, abaikan
-        groups.append({
-            "combined_qty": cq,
-            "ctns": gc,
-            "nw": _pl_num(g.get("combined_nw")) or 0.0,
-            "gw": _pl_num(g.get("combined_gw")) or 0.0,
-            "cbm": _pl_num(g.get("cbm")) or 0.0,
-            "used": False,
-        })
-
-    # --- 3) Standalone -> nilai main table sendiri ---
-    for r in fr:
-        if r["standalone"]:
-            r["f_ctns"] = r["ctns"] or 0.0
-            r["f_nw"] = r["nw"] or 0.0
-            r["f_gw"] = r["gw"] or 0.0
-            r["f_cbm"] = r["cbm"] or 0.0
-
-    # --- 4) Merged rows -> cocokkan ke AREA A group via jumlah QTY ---
-    #     Greedy kiri->kanan: dari posisi merged pertama yang belum terpakai,
-    #     cari run TERPENDEK (k>=1) yang sum(qty)-nya == combined_qty group manapun.
-    #     Run terpendek lebih dulu => AREA A halus dipilih sebelum AREA B kasar.
-    n = len(fr)
-    i = 0
-    unmatched_merged = 0
-    while i < n:
-        if fr[i]["standalone"]:
-            i += 1
-            continue
-        run_end = i
-        while run_end < n and not fr[run_end]["standalone"]:
-            run_end += 1
-        j = i
-        while j < run_end:
-            matched = False
-            cum = 0.0
-            for k in range(j, run_end):
-                q = fr[k]["qty"]
-                if q is None:
-                    break
-                cum += q
-                g = next(
-                    (gg for gg in groups
-                     if not gg["used"] and abs(gg["combined_qty"] - cum) <= 1e-6),
-                    None,
-                )
-                if g is not None:
-                    g["used"] = True
-                    fr[j]["f_ctns"] = g["ctns"]
-                    fr[j]["f_nw"] = g["nw"]
-                    fr[j]["f_gw"] = g["gw"]
-                    fr[j]["f_cbm"] = g["cbm"]
-                    for m in range(j + 1, k + 1):
-                        fr[m]["f_ctns"] = fr[m]["f_nw"] = fr[m]["f_gw"] = fr[m]["f_cbm"] = 0.0
-                    j = k + 1
-                    matched = True
-                    break
-            if not matched:
-                unmatched_merged += 1
-                j += 1
-        i = run_end
-
-    # --- 5) Guard: rekonstruksi total harus cocok dgn pl_total_* dokumen ---
-    doc_pkg = _to_float(_first_non_null_nonzero(rows, "pl_total_package"))
-    doc_nw = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
-    doc_gw = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
-    doc_vol = _to_float(_first_non_null_nonzero(rows, "pl_total_volume"))
-
-    sum_pkg = sum(r["f_ctns"] for r in fr)
-    sum_nw = sum(r["f_nw"] for r in fr)
-    sum_gw = sum(r["f_gw"] for r in fr)
-    sum_vol = sum(r["f_cbm"] for r in fr)
-
-    def _ok(s, d, eps=0.02):
-        return d is None or abs(s - d) <= eps
-
-    reconciled = (
-        unmatched_merged == 0
-        and _ok(sum_pkg, doc_pkg)
-        and _ok(sum_nw, doc_nw)
-        and _ok(sum_gw, doc_gw)
-        and (doc_vol is None or _volume_values_match_with_conversion(sum_vol, doc_vol))
-    )
-
-    if not reconciled:
-        print(
-            "[PL_MERGED_NUMERIC][SKIP] rekonstruksi tidak rekonsiliasi "
-            f"(unmatched_merged={unmatched_merged}; "
-            f"pkg {sum_pkg}/{doc_pkg}; nw {sum_nw}/{doc_nw}; "
-            f"gw {sum_gw}/{doc_gw}; vol {sum_vol}/{doc_vol}); "
-            "data PL dibiarkan apa adanya"
-        )
-        return rows
-
-    # --- 6) Map ke all_rows (urut, dijaga kesamaan QTY) lalu set nilai ---
-    target_idx = [
-        idx for idx, r in enumerate(rows)
-        if isinstance(r, dict) and not _is_null(r.get("pl_item_no"))
-    ]
-    if len(target_idx) != len(fr):
-        print(
-            f"[PL_MERGED_NUMERIC][SKIP] jumlah baris all_rows ({len(target_idx)}) "
-            f"!= focused PL ({len(fr)}); data PL dibiarkan apa adanya"
-        )
-        return rows
-
-    for pos, idx in enumerate(target_idx):
-        rq = _to_float(rows[idx].get("pl_quantity"))
-        fq = fr[pos]["qty"]
-        if rq is not None and fq is not None and abs(rq - fq) > 1e-6:
-            print(
-                f"[PL_MERGED_NUMERIC][SKIP] QTY tidak sejajar pada pos {pos} "
-                f"(all_rows={rq}, focused={fq}); data PL dibiarkan apa adanya"
-            )
-            return rows
-
-    def _clean(v):
-        f = float(v)
-        return int(f) if abs(f - round(f)) <= 1e-9 else round(f, 2)
-
-    zeroed = 0
-    for pos, idx in enumerate(target_idx):
-        row = rows[idx]
-        f = fr[pos]
-        row["pl_package_count"] = _clean(f["f_ctns"])
-        row["pl_nw"] = _clean(f["f_nw"])
-        row["pl_gw"] = _clean(f["f_gw"])
-        row["pl_volume"] = _clean(f["f_cbm"])
-        if (not f["standalone"]) and f["f_nw"] <= 1e-9 and f["f_ctns"] <= 1e-9:
-            row["_merged_pl_zero_row"] = True
-            zeroed += 1
-        else:
-            row.pop("_merged_pl_zero_row", None)
-
-    print(
-        f"[PL_MERGED_NUMERIC] vendor={normalize_vendor_id(vendor_id)} "
-        f"rows={len(fr)} groups_used={sum(1 for g in groups if g['used'])}/{len(groups)} "
-        f"zeroed_rows={zeroed} applied=OK"
     )
     return rows
 
@@ -13231,16 +12884,6 @@ def run_ocr(
             name="detail"
         )
 
-        # PL-only URI untuk ekstraksi terfokus packing list (vendor merged-cell
-        # numerik, mis. novatec). Hanya di-upload bila vendornya butuh.
-        file_uri_packing = None
-        if _is_pl_merged_numeric_vendor(normalize_vendor_id(forced_vendor_id)):
-            file_uri_packing = _upload_temp_pdf_to_gcs(
-                packing_onepage_pdf,
-                run_prefix,
-                name="packing"
-            )
-
         file_uri_full = None
         file_uri_container_bl = None
 
@@ -13809,20 +13452,6 @@ def run_ocr(
         # tiap baris bisa di-map ke PO line-nya masing-masing.
         all_rows = _derive_inv_qty_from_pl_for_merged_vendors(all_rows, vendor_id=vendor_id)
 
-        # Vendor PL merged-cell numerik (mis. novatec): ekstraksi terfokus PL-only
-        # + assignment deterministik (agregat-per-group ke baris teratas, 0 di
-        # sisanya). Dijalankan SEBELUM PO mapping agar all_rows masih sejajar 1:1
-        # dengan baris PL (sebelum kemungkinan split PO).
-        if _is_pl_merged_numeric_vendor(vendor_id) and file_uri_packing:
-            try:
-                pl_data = _extract_pl_item_list(
-                    file_uri=file_uri_packing,
-                    vendor_id=vendor_id,
-                )
-                _assign_pl_merged_numerics_to_rows(all_rows, pl_data, vendor_id=vendor_id)
-            except Exception as e:
-                print(f"[PL_MERGED_NUMERIC][WARN] skipped: {e}")
-
         all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
 
         all_rows = _deduplicate_pl_numeric_fields_for_vendors(all_rows, vendor_id=vendor_id)
@@ -14045,7 +13674,6 @@ def run_ocr(
                 row.pop("page_index", None)
                 row.pop("_confidence_label_source", None)
                 row.pop("_merged_qty_zero_row", None)
-                row.pop("_merged_pl_zero_row", None)
 
         # =========================
         # FINAL RESULT OBJECT
