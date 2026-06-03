@@ -35,6 +35,19 @@ INVOICE (INV)
 
 PACKING LIST (PL)
 
+CATATAN PENTING — LINGKUP PENJUMLAHAN BARIS (berlaku untuk pl_quantity, pl_package_count,
+pl_nw, pl_gw, pl_volume):
+   - KODE ITEM yang sama bisa muncul di BEBERAPA baris invoice/PO yang berbeda
+     (mis. "GSFXCEDSZ0000533" muncul sebagai 1781 set untuk satu PO, dan 825 set untuk PO lain).
+     JANGAN menjumlahkan SEMUA baris carton berkode item sama menjadi satu total
+     (mis. JANGAN 1781 + 825 = 2606).
+   - Penjumlahan baris carton yang "terpecah" hanya untuk baris yang membentuk SATU
+     baris invoice. Patokan paling andal: pilih kumpulan baris carton (umumnya berurutan)
+     yang TOTAL Qty-nya SAMA dengan inv_quantity baris tersebut, lalu jumlahkan
+     pl_nw/pl_gw/pl_volume/pl_package_count HANYA untuk kumpulan baris carton itu.
+   - Contoh: inv_quantity = 1781 -> baris carton 0001-0178 (1780) + 0179-0179 (1) = 1781.
+             inv_quantity = 825  -> baris carton 0245-0326 (820) + 0327-0327 (5)   = 825.
+
 1. pl_customer_po_no:
    - Ekstrak dari baris dengan label "CUSTOMER PO:".
    - Contoh: "45324845".
@@ -106,22 +119,32 @@ PACKING LIST (PL)
 
 BILL OF LADING (BL)
 
-1. bl_description dan bl_hs_code:
-   - bl_description dimapping dengan inv_description. Jika inv_description tidak exist pada dokumen BL, maka bl_description fill null saja.
-   - Value bl_hs_code diisi sesuai dengan bl_descriptionnya.
-   - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK BOLEH dari dokumen yang lain
+STRUKTUR KOLOM "Number and Kind of packages / Description of Goods" PADA BL:
+   - Kolom MARKS (kiri) berisi "N/M" -> itu untuk bl_mark_number, BUKAN bl_description.
+   - Kolom DESCRIPTION OF GOODS (utama) diawali baris umum
+     ("1 x 40HC CONTAINER", "STC <N> CARTON(S)", "BICYCLE PARTS"), lalu DIIKUTI
+     DAFTAR ITEM per produk dengan format:
+         "<DESKRIPSI ITEM termasuk KODE ITEM>, HS CODE: <kode HS>"
+     Contoh nyata pada dokumen ini:
+         FORK SUSPENSION GSFXCEDSZ0000533, HS CODE: 8714.91
+         FORK SUSPENSION GSFXCEDSZ0000532, HS CODE: 8714.91
+         FORK SUSPENSION GSFXCEDSZ0000690, HS CODE: 8714.91
+         FORK SUSPENSION GSFXCEDSZ0000530, HS CODE: 8714.91
 
-   - Contoh:
-     FRAME PART A-F3306-1 HS NUMBER: 8714.91
-     FRAME PART A-HG009 HS NUMBER: 8714.91
-     FRAME PART A-HG011 HS NUMBER: 8714.91
-     FRAME PART A-HG045 HS NUMBER: 8714.91
-     FRAME TUBING HS NUMBER: 8714.91
+1. bl_description:
+   - Untuk SETIAP baris item, cocokkan KODE ITEM baris tersebut
+     (inv_spart_item_no, mis. "GSFXCEDSZ0000533", atau kode yang sama di inv_description)
+     dengan salah satu baris di daftar BL.
+   - Isi bl_description dengan teks deskripsi BL pada baris yang cocok, yaitu teks
+     SEBELUM ", HS CODE:" (mis. "FORK SUSPENSION GSFXCEDSZ0000533").
+   - Jika kode item baris tidak ada di daftar BL, isi null.
+   - ABAIKAN baris generik "BICYCLE PARTS", "STC ... CARTON(S)", "... CONTAINER",
+     dan kolom marks ("N/M").
+   - Hanya boleh mengambil dari dokumen Bill Of Lading (BL), TIDAK dari dokumen lain.
 
-     - Misalkan pada inv_description ada value FRAME PART AF-9F-0270, dimana itu tidak ada pada description item BL. 
-       Maka bl_description dan bl_hs_code isi null saja.
-     - Misalkan pada inv_description ada value FRAME PART A-HG009, dimana itu ada pada description item BL.
-       Maka bl_description isi FRAME PART A-HG009 dan bl_hs_code isi 8714.91
+2. bl_hs_code:
+   - Isi dengan kode HS SETELAH "HS CODE:" pada baris BL yang sama (mis. "8714.91").
+   - bl_description dan bl_hs_code SATU PAKET: keduanya terisi atau keduanya null.
 
 CERTIFICATE OF ORIGIN (COO)
 

@@ -8387,6 +8387,10 @@ VENDORS_WITH_AGGREGATED_COO = {
     # continuation sheet -> coo_* line item null semua. Pakai extractor COO
     # terfokus yang sama seperti joy lalu petakan deterministik di Python.
     "novatec",
+    # SUNTOUR SHENZHEN: dokumen sekeluarga dengan NOVATEC (forwarder MGF/ITC).
+    # COO form RCEP multi-halaman (Continuation Sheet) dengan 6 item ter-agregat
+    # per produk (kode item mis. GSFXCEDSZ0000533 muncul di beberapa item COO).
+    "suntour_shenzhen",
 }
 
 
