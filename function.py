@@ -13657,6 +13657,7 @@ def run_ocr(
                 row.pop("page", None)
                 row.pop("page_index", None)
                 row.pop("_confidence_label_source", None)
+                row.pop("_merged_qty_zero_row", None)
 
         # =========================
         # FINAL RESULT OBJECT
