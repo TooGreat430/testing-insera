@@ -78,7 +78,7 @@ pl_nw, pl_gw, pl_volume):
 
 6. pl_package_count:
    - Ekstrak total jumlah kemasan per item.
-   - Ekstrak dan hitung dari kolom range CTN# / PTL#.
+   - Ekstrak dan hitung dari kolom range CTN# / PTL# yang terletak pada bagian paling kiri dokumen.
    - Jika item yang sama terpecah ke beberapa baris, jumlahkan semua nilai range "PTL# / CTN#"
      - Contoh: 
        PTL# / CTN#
