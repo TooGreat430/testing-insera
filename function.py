@@ -8550,6 +8550,11 @@ VENDORS_PL_MERGED_NUMERIC = {
     "novatec",
 }
 
+# Berapa kali ekstraksi terfokus PL diulang sampai ada pembacaan yang lolos
+# rekonsiliasi total (retry-until-valid). Layout merged-cell tidak konsisten
+# terbaca model, jadi beberapa percobaan menaikkan peluang dapat 1 bacaan benar.
+PL_MERGED_NUMERIC_MAX_ATTEMPTS = 5
+
 
 def _is_pl_merged_numeric_vendor(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in VENDORS_PL_MERGED_NUMERIC
@@ -8564,6 +8569,52 @@ def _is_merged_pl_zero_row(row) -> bool:
     dan _is_merged_qty_collapsed_zero_row).
     """
     return isinstance(row, dict) and row.get("_merged_pl_zero_row") is True
+
+
+def _flag_collapsed_pl_merge_rows(rows: list, vendor_id: str = "default"):
+    """
+    Safety net (gated vendor PL merged-cell, mis. novatec): tandai baris yang
+    PUNYA pl_quantity (>0) tetapi SEMUA field additif PL-nya 0
+    (pl_package_count/pl_nw/pl_gw/pl_volume) sebagai _merged_pl_zero_row.
+
+    Pada PL vendor ini beberapa line item dikemas dalam satu carton, sehingga
+    nilai additif hanya muncul di SATU baris group dan baris lain memang 0 -- itu
+    BUKAN data hilang. Penanda ini membuat validasi tidak mem-flag 0 sebagai
+    "missing". Dipakai untuk kasus di mana _assign_pl_merged_numerics_to_rows
+    tidak sempat menandai (mis. retry tidak rekonsiliasi tapi ekstraksi utama
+    sudah menaruh agregat di salah satu baris group).
+    """
+    if not _is_pl_merged_numeric_vendor(vendor_id):
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    flagged = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if r.get("_merged_pl_zero_row") is True:
+            continue
+        # Child PO split sudah di-exempt jalur lain; jangan campur aduk.
+        if _is_secondary_po_split_row(r):
+            continue
+        qty = _to_float(r.get("pl_quantity"))
+        if qty is None or qty <= 1e-9:
+            continue
+        pkg = _to_float(r.get("pl_package_count")) or 0.0
+        nw = _to_float(r.get("pl_nw")) or 0.0
+        gw = _to_float(r.get("pl_gw")) or 0.0
+        vol = _to_float(r.get("pl_volume")) or 0.0
+        if abs(pkg) <= 1e-9 and abs(nw) <= 1e-9 and abs(gw) <= 1e-9 and abs(vol) <= 1e-9:
+            r["_merged_pl_zero_row"] = True
+            flagged += 1
+
+    if flagged:
+        print(
+            f"[PL_MERGED_NUMERIC] flagged {flagged} collapsed merge row(s) "
+            f"vendor={normalize_vendor_id(vendor_id)} (validation exemption)"
+        )
+    return rows
 
 
 COO_ITEM_LIST_COPY_FIELDS = [
@@ -8949,15 +9000,27 @@ def _extract_pl_item_list(file_uri: str, vendor_id: str = "default") -> dict:
         vendor_id=vendor_id,
     )
 
-    if not isinstance(obj, dict):
-        return {}
+    # Model kadang mengembalikan ARRAY (rows saja) alih-alih object {rows, merge_groups}.
+    if isinstance(obj, list):
+        rows, groups = obj, []
+    elif isinstance(obj, dict):
+        rows = obj.get("rows")
+        groups = obj.get("merge_groups")
+        # Toleransi bila rows/merge_groups dibungkus dalam satu sub-key.
+        if not isinstance(rows, list):
+            rows = obj.get("pl_rows") if isinstance(obj.get("pl_rows"), list) else []
+        if not isinstance(groups, list):
+            groups = obj.get("groups") if isinstance(obj.get("groups"), list) else []
+    else:
+        rows, groups = [], []
 
-    rows = obj.get("rows")
-    groups = obj.get("merge_groups")
-    return {
-        "rows": rows if isinstance(rows, list) else [],
-        "merge_groups": groups if isinstance(groups, list) else [],
-    }
+    rows = rows if isinstance(rows, list) else []
+    groups = groups if isinstance(groups, list) else []
+    print(
+        f"[PL_MERGED_NUMERIC][EXTRACT] vendor={normalize_vendor_id(vendor_id)} "
+        f"rows={len(rows)} merge_groups={len(groups)}"
+    )
+    return {"rows": rows, "merge_groups": groups}
 
 
 # Field numerik PL yang ditempatkan agregat-per-group di baris teratas + 0 di sisanya.
@@ -8986,17 +9049,20 @@ def _assign_pl_merged_numerics_to_rows(rows: list, pl_data: dict, vendor_id: str
     rekonstruksi (pkg/nw/gw/volume) cocok dengan pl_total_* dokumen DAN jumlah
     baris + QTY-nya sejajar 1:1. Bila tidak, data PL dibiarkan apa adanya.
     Hanya menyentuh PL_MERGED_NUMERIC_FIELDS.
+
+    Return: True bila assignment berhasil diterapkan (rekonsiliasi lolos), False
+    bila di-skip (dipakai caller untuk retry-until-valid).
     """
     if not _is_pl_merged_numeric_vendor(vendor_id):
-        return rows
+        return False
     if not isinstance(rows, list) or not isinstance(pl_data, dict):
-        return rows
+        return False
 
     pl_rows = pl_data.get("rows") or []
     pl_groups = pl_data.get("merge_groups") or []
     if not pl_rows:
         print("[PL_MERGED_NUMERIC][SKIP] focused PL rows kosong")
-        return rows
+        return False
 
     # --- 1) Normalisasi baris terfokus + klasifikasi standalone vs merged ---
     fr = []
@@ -9115,7 +9181,7 @@ def _assign_pl_merged_numerics_to_rows(rows: list, pl_data: dict, vendor_id: str
             f"gw {sum_gw}/{doc_gw}; vol {sum_vol}/{doc_vol}); "
             "data PL dibiarkan apa adanya"
         )
-        return rows
+        return False
 
     # --- 6) Map ke all_rows (urut, dijaga kesamaan QTY) lalu set nilai ---
     target_idx = [
@@ -9127,7 +9193,7 @@ def _assign_pl_merged_numerics_to_rows(rows: list, pl_data: dict, vendor_id: str
             f"[PL_MERGED_NUMERIC][SKIP] jumlah baris all_rows ({len(target_idx)}) "
             f"!= focused PL ({len(fr)}); data PL dibiarkan apa adanya"
         )
-        return rows
+        return False
 
     for pos, idx in enumerate(target_idx):
         rq = _to_float(rows[idx].get("pl_quantity"))
@@ -9137,7 +9203,7 @@ def _assign_pl_merged_numerics_to_rows(rows: list, pl_data: dict, vendor_id: str
                 f"[PL_MERGED_NUMERIC][SKIP] QTY tidak sejajar pada pos {pos} "
                 f"(all_rows={rq}, focused={fq}); data PL dibiarkan apa adanya"
             )
-            return rows
+            return False
 
     def _clean(v):
         f = float(v)
@@ -9162,7 +9228,7 @@ def _assign_pl_merged_numerics_to_rows(rows: list, pl_data: dict, vendor_id: str
         f"rows={len(fr)} groups_used={sum(1 for g in groups if g['used'])}/{len(groups)} "
         f"zeroed_rows={zeroed} applied=OK"
     )
-    return rows
+    return True
 
 
 def _postprocess_bl_description_novatec(rows: list):
@@ -13813,15 +13879,38 @@ def run_ocr(
         # + assignment deterministik (agregat-per-group ke baris teratas, 0 di
         # sisanya). Dijalankan SEBELUM PO mapping agar all_rows masih sejajar 1:1
         # dengan baris PL (sebelum kemungkinan split PO).
+        #
+        # RETRY-UNTIL-VALID: layout merged-cell sulit dibaca model secara konsisten,
+        # tapi rekonstruksi punya validator kuat (total HARUS rekonsiliasi dengan
+        # pl_total_*). Jadi ulangi ekstraksi terfokus sampai ada satu pembacaan yang
+        # lolos rekonsiliasi (maks PL_MERGED_NUMERIC_MAX_ATTEMPTS percobaan).
         if _is_pl_merged_numeric_vendor(vendor_id) and file_uri_packing:
-            try:
-                pl_data = _extract_pl_item_list(
-                    file_uri=file_uri_packing,
-                    vendor_id=vendor_id,
+            applied = False
+            for attempt in range(1, PL_MERGED_NUMERIC_MAX_ATTEMPTS + 1):
+                try:
+                    pl_data = _extract_pl_item_list(
+                        file_uri=file_uri_packing,
+                        vendor_id=vendor_id,
+                    )
+                    applied = _assign_pl_merged_numerics_to_rows(
+                        all_rows, pl_data, vendor_id=vendor_id
+                    )
+                except Exception as e:
+                    print(f"[PL_MERGED_NUMERIC][WARN] attempt {attempt} error: {e}")
+                    applied = False
+                if applied:
+                    print(f"[PL_MERGED_NUMERIC] applied on attempt {attempt}")
+                    break
+                else:
+                    print(
+                        f"[PL_MERGED_NUMERIC] attempt {attempt}/"
+                        f"{PL_MERGED_NUMERIC_MAX_ATTEMPTS} not reconciled"
+                    )
+            if not applied:
+                print(
+                    "[PL_MERGED_NUMERIC][GIVEUP] tidak ada pembacaan PL yang "
+                    "rekonsiliasi; data PL dari ekstraksi utama dipertahankan"
                 )
-                _assign_pl_merged_numerics_to_rows(all_rows, pl_data, vendor_id=vendor_id)
-            except Exception as e:
-                print(f"[PL_MERGED_NUMERIC][WARN] skipped: {e}")
 
         all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
 
@@ -13928,6 +14017,10 @@ def run_ocr(
         # code). Sekarang selaraskan ulang inv_description / pl_description ke
         # baris yang benar. Murni post-processing teks; tidak menyentuh nw/gw/volume.
         _kunshan_landon_realign_descriptions(all_rows, vendor_id)
+
+        # Vendor PL merged-cell (mis. novatec): tandai baris merge yang di-nol-kan
+        # (qty ada, additif 0) supaya tidak di-flag "missing" oleh validasi.
+        _flag_collapsed_pl_merge_rows(all_rows, vendor_id=vendor_id)
 
         _validate_invoice_rows(all_rows)
         _validate_packing_rows(all_rows, vendor_id=vendor_id)
