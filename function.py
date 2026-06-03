@@ -7474,7 +7474,11 @@ def _is_pt_insera_sena_name(value) -> bool:
     return ("INSERA SENA" in s) or ("INSERA" in s and "SENA" in s)
 
 
-def _validate_packing_rows(rows: list):
+def _validate_packing_rows(rows: list, vendor_id: str = "default"):
+    # Vendors whose PL never contains a MEAS'T / volume column
+    _NO_VOLUME_PL_VENDORS = {"sram"}
+    _skip_volume = normalize_vendor_id(vendor_id) in _NO_VOLUME_PL_VENDORS
+
     required = [
         "pl_invoice_no","pl_invoice_date","pl_messrs","pl_messrs_address","pl_item_no",
         "pl_description","pl_quantity","pl_package_unit","pl_package_count","pl_weight_unit",
@@ -7483,11 +7487,11 @@ def _validate_packing_rows(rows: list):
 
     # normalize PT Insera Sena
     def norm(s):
-        if _is_null(s): 
+        if _is_null(s):
             return ""
-        
+
         s = str(s).upper().strip()
-        
+
         # hapus punctuation
         s = re.sub(r"[^\w\s]", "", s)
 
@@ -7511,6 +7515,11 @@ def _validate_packing_rows(rows: list):
             "pl_package_unit","pl_weight_unit","pl_volume_unit","pl_item_no"
         ]
         required_num = ["pl_quantity","pl_package_count","pl_nw","pl_gw","pl_volume"]
+
+        # SRAM PL never has MEAS'T data — skip volume field validation
+        if _skip_volume:
+            required_str = [f for f in required_str if f != "pl_volume_unit"]
+            required_num = [f for f in required_num if f != "pl_volume"]
 
         for k in required_str:
             if _is_null(r.get(k)):
@@ -9199,7 +9208,7 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             # Hitung ulang sum dan berikan error total yang benar-benar akurat
             for inv_no, group_rows in rows_by_inv.items():
                 _validate_invoice_rows(group_rows)
-                _validate_packing_rows(group_rows)
+                _validate_packing_rows(group_rows, vendor_id=forced_vendor_id)
             
             # Pastikan status final (TRUE/FALSE) sinkron dengan error terupdate
             _finalize_match_fields(merged_detail_rows)
@@ -11401,7 +11410,7 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
         print("[COO_NUMERIC_FROM_PL][PRECHECK] skipped for vendor liow_ko")
         
     _validate_invoice_rows(rows)
-    _validate_packing_rows(rows)
+    _validate_packing_rows(rows, vendor_id=vendor_id)
     _validate_invoice_vs_packing_extra(rows, vendor_id=vendor_id)
     _validate_bl_rows(rows)
     _validate_coo_rows(rows)
@@ -13510,6 +13519,13 @@ def run_ocr(
         _postprocess_null_fields_for_vendor(
             rows=all_rows,
             current_vendor_id=vendor_id,
+            target_vendor_ids="sram",
+            columns=["pl_volume_unit"],
+        )
+
+        _postprocess_null_fields_for_vendor(
+            rows=all_rows,
+            current_vendor_id=vendor_id,
             target_vendor_ids="liow_ko",
             columns=["coo_gw_unit", "pl_weight_unit"],
         )
@@ -13543,7 +13559,7 @@ def run_ocr(
         _kunshan_landon_realign_descriptions(all_rows, vendor_id)
 
         _validate_invoice_rows(all_rows)
-        _validate_packing_rows(all_rows)
+        _validate_packing_rows(all_rows, vendor_id=vendor_id)
         _validate_invoice_vs_packing_extra(all_rows, vendor_id=vendor_id)
 
         if has_bl_doc:

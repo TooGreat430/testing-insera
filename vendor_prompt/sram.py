@@ -10,29 +10,54 @@ INVOICE (INV):
 8. `inv_amount`: Ekstrak nilai angka dari kolom 'Amount' di sebelah paling kanan / kolom mata uang USD (misalnya "2,055.90", hapus koma ribuan).
 
 PACKING LIST (PL):
+
+CATATAN STRUKTUR PL SRAM — BACA DULU SEBELUM MENGEKSTRAK:
+- C/NO. (nomor karton) bersifat LOKAL per PO. Setiap bagian "P.O.#" baru mereset urutan C/NO.-nya sendiri.
+  Contoh: PO 43018080 punya C/NO. 1, lalu PO 43018083 juga punya C/NO. 1 sendiri — ini bukan duplikat.
+- Beberapa item muncul TANPA C/NO. eksplisit di kolom kiri (hanya Part Number dan Q'TY/NW tanpa nomor karton).
+  Ini berarti item tersebut berbagi karton dengan item di atasnya — JANGAN hitung sebagai karton tambahan.
+- Kolom MEAS'T selalu kosong di seluruh PL SRAM. pl_volume dan pl_volume_unit SELALU null.
+- Jumlah baris output yang dihasilkan HARUS SAMA PERSIS dengan jumlah baris invoice. Jangan membuat baris ekstra.
+
 1. `pl_customer_po_no`: Ekstrak dari teks awalan "P.O.#" di dalam blok "DESCRIPTION" (misalnya "43018080").
 2. `pl_item_no`: Ekstrak kode Part Number (berformat angka dengan titik) dari kolom "DESCRIPTION" (misalnya "00.3018.201.000").
 3. `pl_description`: Ekstrak teks deskripsi barang yang berada di bawah Part Number.
 4. `pl_package_unit`: Simpulkan sebagai "CTNS" berdasarkan header "C/NO.".
-5. `pl_package_count`: 
-    - Hitung jumlah kemasan berdasarkan rentang nomor di kolom "C/NO.". 
-    - Jika formatnya rentang (misalnya "1-5"), maka `pl_package_count` adalah 5. 
-    - Jika formatnya "1-2", maka `pl_package_count` adalah 2. 
-    - Jika hanya ada 1 angka (misalnya "46"), maka `pl_package_count` adalah 1.
-6. `pl_quantity`: 
-    - Ekstrak nilai angka dari kolom "Q'TY". 
-    - Apabila terdapat simbol "@" di depannya (misalnya "@21"), maka kalikan angka tersebut dengan `pl_package_count` untuk mendapatkan total kuantitas (Contoh: @21 dikali 2 = 42).
-    - Apabila tidak ada simbol "@", ambil angka tersebut apa adanya.
-7. `pl_nw`: 
-    - Ekstrak nilai angka dari kolom "N.W. KGS".
-    - Apabila terdapat simbol "@" (misalnya "@22.68"), kalikan dengan `pl_package_count`. Jika tidak ada "@", ambil apa adanya.
-8. `pl_gw`: 
-    - Ekstrak nilai angka dari kolom "G.W. KGS".
-    - Apabila terdapat simbol "@" (misalnya "@24.18"), kalikan dengan `pl_package_count`. Jika tidak ada "@", ambil apa adanya.
-9. `pl_volume`: 
-    - Apabila tidak ada informasi pada kolom "MEAS'T", maka ekstrak 'null'. DILARANG KERAS MENGASUMSIKAN NILAI pl_volume.
-    - Ekstrak nilai angka dari kolom "MEAS'T".
-    - Apabila terdapat simbol "@", kalikan dengan `pl_package_count`. Jika tidak ada "@", ambil apa adanya.
+5. `pl_package_count`:
+    - Hitung jumlah kemasan dari rentang C/NO. untuk baris ini (dalam konteks PO yang sama).
+    - Rentang "1-5" → 5 CTNs. "1-2" → 2. Angka tunggal "46" → 1.
+    - ITEM TANPA C/NO. (berbagi karton): Jika item muncul tanpa nomor di kolom C/NO., pl_package_count = 0.
+    - SATU ARTIKEL DENGAN BEBERAPA KELOMPOK C/NO. DALAM SATU PO — PEMETAAN KE BARIS INVOICE:
+      Jika satu artikel dalam satu PO memiliki beberapa kelompok C/NO. di PL (mis. C/NO. 1-5 dan C/NO. 6-10
+      dan C/NO. 11 dan C/NO. 12), DAN invoice juga memiliki beberapa baris untuk artikel + PO yang sama,
+      maka cocokkan kelompok C/NO. secara berurutan ke baris invoice berdasarkan kuantitas invoice:
+        * Baris invoice 1 (mis. 50 PCS) → kelompok C/NO. pertama yang Q'TY-nya = 50 PCS
+        * Baris invoice 2 (mis. 50 PCS) → kelompok C/NO. berikutnya yang Q'TY-nya = 50 PCS
+        * Baris invoice N (mis. 17 PCS) → GABUNGKAN sisa kelompok C/NO. yang jumlah Q'TY-nya = 17 PCS
+          (mis. C/NO. 11: 10 PCS + C/NO. 12: 7 PCS → pl_package_count = 1+1 = 2, pl_quantity = 17)
+      PENTING: Hasilkan TEPAT sebanyak baris invoice yang ada — jangan lebih, jangan kurang.
+
+6. `pl_quantity`:
+    - Ekstrak nilai dari kolom "Q'TY".
+    - Jika ada simbol "@" (mis. "@20"), kalikan dengan jumlah karton dalam kelompok ini untuk mendapat total.
+      Baris ringkasan total (mis. "100 PCS") langsung di bawah baris "@" adalah angka yang sudah dikalikan — gunakan itu.
+    - Tanpa "@", ambil langsung.
+    - Jika satu baris output menggabungkan beberapa kelompok C/NO. (lihat aturan pl_package_count di atas),
+      JUMLAHKAN kuantitas semua kelompok tersebut.
+
+7. `pl_nw`:
+    - Ekstrak dari kolom "N.W. KGS". Jika "@", kalikan dengan jumlah karton kelompok ini.
+    - Jika menggabungkan beberapa kelompok C/NO., JUMLAHKAN NW semua kelompok.
+    - Item tanpa NW → 0.
+
+8. `pl_gw`:
+    - Ekstrak dari kolom "G.W. KGS". Jika "@", kalikan dengan jumlah karton kelompok ini.
+    - Jika menggabungkan beberapa kelompok C/NO., JUMLAHKAN GW semua kelompok.
+    - Item tanpa GW (tidak tercantum di dokumen) → 0. JANGAN mengasumsikan nilai GW.
+
+9. `pl_volume`:
+    - Kolom MEAS'T SELALU KOSONG di PL SRAM. SELALU isi pl_volume = null dan pl_volume_unit = null.
+    - DILARANG KERAS mengasumsikan atau mengarang nilai pl_volume.
 
 BILL OF LADING (BL):
 1. `bl_description`: 
