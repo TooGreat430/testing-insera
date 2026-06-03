@@ -12,6 +12,9 @@ def _is_karet_deli_vendor_id(vendor_id: str = "default") -> bool:
 def _is_fox_vendor_id(vendor_id: str = "default") -> bool:
     return str(vendor_id or "default").strip().lower() == "fox"
 
+def _is_suntour_shenzhen_vendor_id(vendor_id: str = "default") -> bool:
+    return str(vendor_id or "default").strip().lower() == "suntour_shenzhen"
+
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -452,6 +455,35 @@ Untuk dokumen Packing List ambil dari "Delivery:" (Contoh: Delivery: 91609521).
 maka inv_invoice_no = 91609521 dan pl_invoice_no = 91609521.
         """
 
+    suntour_shenzhen_header_rule = ""
+    if _is_suntour_shenzhen_vendor_id(vendor_id):
+        suntour_shenzhen_header_rule = """
+
+ATURAN KHUSUS VENDOR suntour_shenzhen:
+
+CARA MEMBACA BARIS TOTAL PACKING LIST (SANGAT PENTING):
+- Baris total PL berbentuk: "Total:  <N> CARTONS   <TOTAL QTY>   <TOTAL NW>   <TOTAL GW>   <TOTAL VOL>"
+  Contoh nyata: "Total:  414 CARTONS   4126   11383.2   12623   2187.60"
+- Ada juga kalimat: "SAY TOTAL PACKED IN ( 414 ) CARTONS ONLY."
+
+pl_total_package:
+- WAJIB diambil dari JUMLAH KARTON, yaitu angka yang BERLABEL "CARTONS" pada baris total
+  (mis. dari "414 CARTONS" -> pl_total_package = 414), ATAU dari kalimat
+  "SAY TOTAL PACKED IN ( 414 ) CARTONS ONLY." (-> 414).
+- Patokan tambahan: pl_total_package = nomor carton TERAKHIR pada kolom "PTL# / CTN#"
+  (mis. range terakhir "0385-0414" -> carton terakhir = 414).
+- DILARANG KERAS mengisi pl_total_package dengan total quantity (mis. 4126).
+- pl_total_package TIDAK BOLEH sama dengan pl_total_quantity.
+
+pl_total_quantity:
+- Diambil dari kolom "Qty" pada baris total, yaitu angka SETELAH "<N> CARTONS"
+  (mis. 4126). Ini penjumlahan seluruh quantity SET line item (angka besar).
+
+pl_total_nw / pl_total_gw / pl_total_volume:
+- Diambil dari kolom N.W.(KG) / G.W.(KG) / Measurement pada baris total
+  (mis. 11383.2 / 12623 / 2187.60). JANGAN ambil nilai per-carton yang diakhiri "@".
+"""
+
     template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
@@ -541,7 +573,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
-{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}
+{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}{suntour_shenzhen_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -790,6 +822,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
         .replace("{shimano_header_rule}", shimano_header_rule)
         .replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
         .replace("{karet_deli_header_rule}", karet_deli_header_rule)
+        .replace("{suntour_shenzhen_header_rule}", suntour_shenzhen_header_rule)
     )
 
 def build_detail_prompt_from_index(

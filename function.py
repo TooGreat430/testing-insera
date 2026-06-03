@@ -8670,13 +8670,41 @@ def _map_coo_items_to_rows(
     if not isinstance(rows, list) or not coo_items:
         return rows
 
+    # Pra-ekstrak kode per item COO sekali saja (mis. "GSFXCEDSZ0000533").
+    coo_code_index = [
+        (coo_item, _extract_bl_description_codes(coo_item.get("coo_description")))
+        for coo_item in coo_items
+    ]
+
     mapped = 0
+    mapped_by_code = 0
     nulled = 0
 
     for row in rows:
         if not isinstance(row, dict):
             continue
 
+        # Jalur 1: pencocokan berbasis KODE ITEM (sinyal identitas terkuat; hanya
+        # field item-number, JANGAN inv_description, supaya token dimensi generik
+        # mis. "255MM" tidak ikut mencocokkan). Tahan terhadap inv_description
+        # bentuk singkat (mis. SUNTOUR) yang membuat coverage token < min_coverage.
+        row_item_values = [row.get("inv_spart_item_no"), row.get("pl_item_no")]
+        best_code_item = None
+        best_code_score = (0.0, 0.0)
+        for coo_item, coo_codes in coo_code_index:
+            if not coo_codes:
+                continue
+            if any(
+                _code_exists_in_value(code, item_val)
+                for code in coo_codes
+                for item_val in row_item_values
+            ):
+                score = _coo_item_row_match_score(coo_item, row)
+                if score > best_code_score:
+                    best_code_score = score
+                    best_code_item = coo_item
+
+        # Jalur 2 (fallback): gate model-token + coverage token deskripsi.
         inv_model = _leading_model_token(row.get("inv_description"))
 
         best_item = None
@@ -8696,10 +8724,17 @@ def _map_coo_items_to_rows(
                 best_score = score
                 best_item = coo_item
 
-        if best_item is not None and best_score[0] >= min_coverage:
+        chosen = None
+        if best_code_item is not None:
+            chosen = best_code_item
+            mapped_by_code += 1
+        elif best_item is not None and best_score[0] >= min_coverage:
+            chosen = best_item
+
+        if chosen is not None:
             for field in COO_ITEM_LIST_COPY_FIELDS:
-                if field in best_item:
-                    row[field] = best_item.get(field)
+                if field in chosen:
+                    row[field] = chosen.get(field)
             mapped += 1
         else:
             _nullify_coo_item_fields(row)
@@ -8708,7 +8743,7 @@ def _map_coo_items_to_rows(
     print(
         f"[COO_DETERMINISTIC_MAP] vendor={normalize_vendor_id(vendor_id)} "
         f"coo_items={len(coo_items)} rows={len(rows)} "
-        f"mapped={mapped} nulled={nulled}"
+        f"mapped={mapped} (by_code={mapped_by_code}) nulled={nulled}"
     )
     return rows
 
