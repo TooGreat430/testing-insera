@@ -85,6 +85,7 @@ pl_nw, pl_gw, pl_volume):
        0001- 0559  -> 559
        0560- 0560  -> 1
        maka pl_package_count = 560 (559 + 1)
+   - DILARANG KERAS ambil dari kolom "Qty"!!!
 
 7. pl_nw:
    - Ekstrak total net weight per item.
