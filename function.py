@@ -6070,6 +6070,101 @@ def _derive_inv_qty_from_pl_for_merged_vendors(rows: list, vendor_id: str = "def
 
     return rows
 
+
+def _is_merged_qty_collapsed_zero_row(row) -> bool:
+    """
+    Baris non-teratas dari satu merged-cell QTY/AMOUNT invoice yang nilainya
+    sengaja di-nol-kan oleh _postprocess_inv_qty_aggregate_to_top_row. Dipakai
+    agar validasi required-numeric tidak menganggap 0 sebagai missing
+    (analog dengan _is_secondary_po_split_row).
+    """
+    return isinstance(row, dict) and row.get("_merged_qty_zero_row") is True
+
+
+def _postprocess_inv_qty_aggregate_to_top_row(rows: list, vendor_id: str = "default"):
+    """
+    Vendor dengan invoice merged-cell QTY/AMOUNT (lihat
+    VENDORS_WITH_MERGED_INVOICE_QTY, mis. joy): pada dokumen invoice, beberapa
+    line item dengan produk sama digabung dalam SATU merged-cell QTY (mis. 480)
+    dan SATU merged-cell AMOUNT (mis. 5760).
+
+    _derive_inv_qty_from_pl_for_merged_vendors sengaja men-distribusi nilai itu
+    per-baris (mis. 130/50/270/30) supaya tiap baris bisa di-map ke PO line-nya.
+    SETELAH PO mapping selesai, fungsi ini meringkasnya kembali agar SESUAI
+    tampilan dokumen invoice: nilai merged ditaruh di SATU baris (baris teratas
+    group) + 0 di baris lain.
+
+    Contoh (1 merged-cell mewakili 4 baris):
+        inv_quantity: 480, 0, 0, 0   (BUKAN 130, 50, 270, 30)
+        inv_amount  : 5760, 0, 0, 0
+
+    Group = run baris BERURUTAN dengan inv_spart_item_no sama dalam satu invoice
+    (persis cakupan visual satu merged-cell). Hanya menyentuh inv_quantity &
+    inv_amount; field lain (PO, pl_*, deskripsi, unit price) tidak diubah.
+    """
+    if not _is_merged_invoice_qty_vendor(vendor_id):
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    # Bangun contiguous runs berdasarkan (invoice group, inv_spart_item_no).
+    runs = []
+    prev_key = None
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            prev_key = None
+            continue
+        item_key = _normalize_code_compare_value(row.get("inv_spart_item_no"))
+        if not item_key:
+            prev_key = None
+            continue
+        key = (_get_detail_total_group_key(row, idx), item_key)
+        if not runs or key != prev_key:
+            runs.append([idx])
+        else:
+            runs[-1].append(idx)
+        prev_key = key
+
+    def _as_clean_number(dec_value):
+        if dec_value == dec_value.to_integral_value():
+            return int(dec_value)
+        return float(dec_value)
+
+    zeroed = 0
+    for run in runs:
+        if len(run) < 2:
+            continue  # baris tunggal -> tidak ada merged-cell yang perlu diringkas
+
+        # Keeper = baris teratas yang BUKAN child PO split (child memang harus 0).
+        keeper = next(
+            (i for i in run if not _is_secondary_po_split_row(rows[i])),
+            run[0],
+        )
+
+        sum_qty = Decimal(0)
+        sum_amt = Decimal(0)
+        for i in run:
+            sum_qty += _to_decimal_or_zero(rows[i].get("inv_quantity"))
+            sum_amt += _to_decimal_or_zero(rows[i].get("inv_amount"))
+
+        rows[keeper]["inv_quantity"] = _as_clean_number(sum_qty)
+        rows[keeper]["inv_amount"] = _as_clean_number(sum_amt)
+
+        for i in run:
+            if i == keeper:
+                continue
+            rows[i]["inv_quantity"] = 0
+            rows[i]["inv_amount"] = 0
+            rows[i]["_merged_qty_zero_row"] = True
+            zeroed += 1
+
+    print(
+        f"[INV_QTY_AGGREGATE_TOP_ROW] vendor={normalize_vendor_id(vendor_id)} "
+        f"runs={len(runs)} zeroed_rows={zeroed}"
+    )
+    return rows
+
+
 def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan lupa param vendor_id
     po_article_index, po_desc_index = _build_po_indexes(po_lines)
     remaining_state = {}
@@ -7292,7 +7387,12 @@ def _validate_invoice_rows(rows: list):
         for k in required_num:
             # Untuk secondary PO split, inv_quantity dan inv_amount sengaja dibuat 0
             # supaya tidak overcount. Jangan dianggap missing.
-            if _is_secondary_po_split_row(r) and k in {"inv_quantity", "inv_amount", "inv_unit_price"}:
+            # Idem untuk baris non-teratas merged-cell invoice (mis. joy) yang
+            # nilainya diringkas ke baris teratas group.
+            if (
+                _is_secondary_po_split_row(r)
+                or _is_merged_qty_collapsed_zero_row(r)
+            ) and k in {"inv_quantity", "inv_amount", "inv_unit_price"}:
                 continue
 
             if _is_missing_num(r.get(k)):
@@ -13430,6 +13530,10 @@ def run_ocr(
             _postprocess_coo_numeric_fields_from_pl(all_rows)
         else:
             print("[COO_NUMERIC_FROM_PL] skipped for vendor liow_ko")
+
+        # JOY: setelah PO mapping, ringkas inv_quantity/inv_amount merged-cell
+        # ke baris teratas group (mis. 480/0/0/0), sesuai dokumen invoice.
+        _postprocess_inv_qty_aggregate_to_top_row(all_rows, vendor_id=vendor_id)
 
         all_rows = _validate_po(all_rows)
 
