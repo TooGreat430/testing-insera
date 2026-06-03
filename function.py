@@ -8507,6 +8507,148 @@ def _is_aggregated_coo_vendor(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in VENDORS_WITH_AGGREGATED_COO
 
 
+# =========================================================
+# DEDICATED BL EXTRACTION (OCR run terpisah khusus Bill of Lading)
+# =========================================================
+# Mirror dari mekanisme COO ter-agregat: untuk vendor di set ini, BL diekstrak
+# lewat SATU panggilan terfokus (HANYA baca BL) lalu dipetakan deterministik ke
+# baris detail berdasarkan KODE ITEM. Mengurangi attention dilution dibanding
+# pass gabungan INV+PL+BL+COO. Gated per-vendor -> nol dampak ke vendor lain.
+# (Untuk test, dimulai hanya untuk suntour_shenzhen.)
+VENDORS_WITH_SEPARATED_BL = {
+    "suntour_shenzhen",
+}
+
+
+def _is_separated_bl_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_WITH_SEPARATED_BL
+
+
+def _build_bl_item_list_prompt() -> str:
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Bill of Lading (BL) SAJA.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Bill of Lading / BL.
+- ABAIKAN dokumen Invoice, Packing List, dan Certificate of Origin (COO).
+
+STRUKTUR BL:
+- Pada kolom "Number and Kind of packages / Description of Goods" terdapat baris umum
+  ("1 x 40HC CONTAINER", "STC <N> CARTON(S)", "BICYCLE PARTS") lalu DIIKUTI DAFTAR ITEM
+  per produk dengan format: "<DESKRIPSI termasuk KODE ITEM>, HS CODE: <kode HS>".
+  Contoh:
+    FORK SUSPENSION GSFXCEDSZ0000533, HS CODE: 8714.91
+    FORK SUSPENSION GSFXCEDSZ0000532, HS CODE: 8714.91
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP baris item barang pada Description of Goods.
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+
+FIELD PER ITEM:
+- "bl_description": teks deskripsi item SEBELUM ", HS CODE:" (mis. "FORK SUSPENSION GSFXCEDSZ0000533").
+  PERTAHANKAN KODE ITEM apa adanya di dalam teks (mis. "GSFXCEDSZ0000533").
+- "bl_hs_code": kode HS SETELAH "HS CODE:" / "HS NUMBER:" (mis. "8714.91").
+
+ATURAN:
+- ABAIKAN baris generik: "BICYCLE PARTS", "STC ... CARTON(S)", "... CONTAINER", dan kolom marks ("N/M").
+- EKSTRAK HANYA YANG TERTULIS. Jika tidak ada item -> kembalikan array kosong [].
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  { "bl_description": "string", "bl_hs_code": "string" }
+]
+""".strip()
+
+
+def _extract_bl_item_list(file_uri: str, vendor_id: str = "default") -> list:
+    if not file_uri:
+        return []
+
+    items = _call_gemini_json_uri(
+        file_uri,
+        _build_bl_item_list_prompt(),
+        expect_array=True,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if not isinstance(items, list):
+        return []
+
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        desc = it.get("bl_description")
+        if _is_null(desc):
+            continue
+        cleaned.append({
+            "bl_description": str(desc).strip(),
+            "bl_hs_code": it.get("bl_hs_code"),
+        })
+
+    print(
+        f"[BL_ITEM_LIST] vendor={normalize_vendor_id(vendor_id)} "
+        f"raw={len(items)} usable={len(cleaned)}"
+    )
+    return cleaned
+
+
+def _map_bl_items_to_rows(rows: list, bl_items: list, vendor_id: str = "default") -> list:
+    """
+    Petakan tiap base row ke item BL berdasarkan KODE ITEM: kode di dalam
+    bl_description (mis. "GSFXCEDSZ0000533") cocok dengan inv_spart_item_no /
+    pl_item_no baris. Salin bl_description + bl_hs_code. Row tanpa item BL yang
+    cocok -> kedua field di-null-kan. bl_mark_number TIDAK disentuh (header-level).
+    """
+    if not isinstance(rows, list) or not bl_items:
+        return rows
+
+    bl_code_index = [
+        (it, _extract_bl_description_codes(it.get("bl_description")))
+        for it in bl_items
+    ]
+
+    mapped = 0
+    nulled = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        # Hanya field item-number (JANGAN inv_description) supaya token dimensi
+        # generik tidak ikut mencocokkan.
+        row_item_values = [row.get("inv_spart_item_no"), row.get("pl_item_no")]
+        chosen = None
+        for bl_item, codes in bl_code_index:
+            if not codes:
+                continue
+            if any(
+                _code_exists_in_value(code, item_val)
+                for code in codes
+                for item_val in row_item_values
+            ):
+                chosen = bl_item
+                break
+
+        if chosen is not None:
+            row["bl_description"] = chosen.get("bl_description")
+            row["bl_hs_code"] = chosen.get("bl_hs_code")
+            mapped += 1
+        else:
+            row["bl_description"] = "null"
+            row["bl_hs_code"] = "null"
+            nulled += 1
+
+    print(
+        f"[BL_DETERMINISTIC_MAP] vendor={normalize_vendor_id(vendor_id)} "
+        f"bl_items={len(bl_items)} rows={len(rows)} mapped={mapped} nulled={nulled}"
+    )
+    return rows
+
+
 # Subset dari VENDORS_WITH_AGGREGATED_COO yang nilai NUMERIK COO-nya ditampilkan
 # meng-agregat per produk pada SATU baris (baris pertama group) + 0 di baris lain,
 # SESUAI dokumen COO -- BUKAN didistribusi per-baris mengikuti Packing List.
@@ -13340,6 +13482,27 @@ def run_ocr(
                 _map_coo_items_to_rows(all_rows, coo_items, vendor_id=vendor_id)
             except Exception as e:
                 print(f"[COO_DETERMINISTIC_MAP][WARN] skipped: {e}")
+
+        # =========================================================
+        # DETERMINISTIC BL MAPPING (vendor BL terpisah, mis. suntour_shenzhen)
+        # OCR run BL terpisah (hanya baca BL) -> daftar item (deskripsi + HS),
+        # lalu petakan ke baris detail berdasarkan KODE ITEM. Hasil meng-overwrite
+        # bl_description/bl_hs_code dari pass gabungan (yang masih jalan tapi kini
+        # jadi sekadar fallback). Gated per-vendor -> nol dampak ke vendor lain.
+        # =========================================================
+        if (
+            has_bl_doc
+            and optional_detail_input_uri
+            and _is_separated_bl_vendor(vendor_id)
+        ):
+            try:
+                bl_items = _extract_bl_item_list(
+                    file_uri=optional_detail_input_uri,
+                    vendor_id=vendor_id,
+                )
+                _map_bl_items_to_rows(all_rows, bl_items, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[BL_DETERMINISTIC_MAP][WARN] skipped: {e}")
 
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
