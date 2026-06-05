@@ -93,10 +93,21 @@ def _get_detail_csv_field_order(vendor_id: str = "default"):
         if k != "inv_hs_code"
     ]
 
-# Tambahkan vendor lain ke dalam set ini di masa depan jika butuh deduplikasi PL
-DEDUPLICATE_PL_NUMERIC_VENDORS = {
-    "liow_ko",
-}
+# Tambahkan vendor lain ke dalam set ini di masa depan jika butuh deduplikasi PL.
+#
+# CATATAN PENTING: dedup PL-numeric ini menol-kan baris yang signature PL-nya
+# (item::qty::pkg::nw::gw::vol) SAMA dengan baris sebelumnya, dengan asumsi
+# "1 baris PL fisik dipecah ke beberapa baris Invoice berurutan". Asumsi itu
+# TIDAK aman untuk dokumen yang punya GENUINE duplicate PL row (beberapa baris
+# PL fisik berbeda yang kebetulan punya article+qty+nw+gw identik). liow_ko
+# adalah kasus seperti itu (mis. IS18PFP15 x3 @300, IS23PFK02 x2 @100 = baris
+# PL terpisah dari PO berbeda) -> dedup ini malah membuang qty/nw/gw asli dan
+# bikin total PL mismatch. Ini error konseptual yang SAMA dengan dedup index;
+# untuk liow_ko, split 1-PL-row sudah ditangani oleh PO-split (_po_split_primary
+# is False / CHILD PO) yang dilewati kedua fungsi. Jadi liow_ko TIDAK boleh ada
+# di sini. Lihat juga _backfill_zeroed_pl_numeric_from_recheck dan komentar di
+# DEDUPLICATE_INDEX_VENDORS.
+DEDUPLICATE_PL_NUMERIC_VENDORS = set()
 
 def _should_deduplicate_pl_numeric(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in DEDUPLICATE_PL_NUMERIC_VENDORS
