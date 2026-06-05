@@ -121,8 +121,21 @@ TRAILING_GHOST_RUN_INDEX_VENDORS = {
     "liow_ko",
 }
 
+# Vendor yang recheck-nya label-only (tidak menulis-balik nilai), TAPI butuh
+# pengecualian khusus: kalau PL numeric per baris ke-nol-kan oleh extraction
+# (mis. halaman lanjutan PL tanpa header sehingga NW/GW dibaca 0 padahal tercetak),
+# nilai non-zero hasil recheck boleh ditulis-balik HANYA untuk baris yang
+# signature-nya jelas (pl_quantity>0 tapi pl_nw/pl_gw=0). Lihat
+# _backfill_zeroed_pl_numeric_from_recheck.
+PL_NUMERIC_RECHECK_BACKFILL_VENDORS = {
+    "liow_ko",
+}
+
 def _should_deduplicate_index(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in DEDUPLICATE_INDEX_VENDORS
+
+def _should_backfill_zeroed_pl_numeric(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in PL_NUMERIC_RECHECK_BACKFILL_VENDORS
 
 def _should_strip_trailing_ghost_run(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in TRAILING_GHOST_RUN_INDEX_VENDORS
@@ -11826,6 +11839,102 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
     return rows
 
 
+# PL numeric yang aman di-backfill dari recheck (additif per baris).
+# pl_volume sengaja TIDAK diikutkan: untuk liow_ko volume memang null.
+_PL_NUMERIC_BACKFILL_FIELDS = ("pl_quantity", "pl_package_count", "pl_nw", "pl_gw")
+
+
+def _backfill_zeroed_pl_numeric_from_recheck(rows: list, repaired_rows: list, vendor_id: str = "default"):
+    """
+    Backfill TARGETED untuk PL numeric yang ke-nol-kan oleh extraction tapi
+    sebenarnya tercetak di dokumen (kasus halaman lanjutan PL tanpa header,
+    NW/GW dibaca 0 padahal ada angkanya).
+
+    Sangat konservatif supaya tidak meng-override merge sub-row yang memang 0:
+    - Hanya untuk vendor di PL_NUMERIC_RECHECK_BACKFILL_VENDORS.
+    - Lewati row TRUE / CHILD PO dan child-split (_po_split_primary is False).
+    - Hanya isi field PL numeric (pl_quantity, pl_package_count, pl_nw, pl_gw)
+      kalau:
+        nilai row saat ini 0 / null / missing, DAN
+        nilai hasil recheck adalah angka > 0.
+    - pl_nw / pl_gw hanya di-backfill kalau baris itu BUKAN merge sub-row,
+      yaitu pl_quantity baris (existing ATAU hasil recheck) > 0. Ini mencegah
+      menulis NW/GW ke sub-row yang seharusnya 0.
+    """
+    if not _should_backfill_zeroed_pl_numeric(vendor_id):
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    repaired_by_no = {}
+    for repaired in repaired_rows or []:
+        if not isinstance(repaired, dict):
+            continue
+        rn = repaired.get("_detail_row_no")
+        if rn is None:
+            continue
+        try:
+            repaired_by_no[int(rn)] = repaired
+        except Exception:
+            continue
+
+    if not repaired_by_no:
+        return rows
+
+    backfilled = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        match_score = str(row.get("match_score", "")).strip().upper()
+        if match_score in ("TRUE", "CHILD PO"):
+            continue
+        if row.get("_po_split_primary") is False:
+            continue
+
+        row_no = _safe_row_no_int(row)
+        if row_no is None:
+            continue
+
+        repaired = repaired_by_no.get(row_no)
+        if not repaired:
+            continue
+
+        # Apakah baris ini sebuah merge sub-row (pl_quantity benar-benar 0)?
+        cur_qty = _to_float(row.get("pl_quantity")) or 0
+        rechk_qty = _to_float(repaired.get("pl_quantity")) or 0
+        is_real_pl_row = (cur_qty > 0) or (rechk_qty > 0)
+
+        for field in _PL_NUMERIC_BACKFILL_FIELDS:
+            cur_val = _to_float(row.get(field))
+            # current dianggap "kosong" kalau None atau 0
+            if cur_val not in (None, 0) and cur_val != 0.0:
+                continue
+
+            new_val = _to_float(repaired.get(field))
+            if new_val is None or new_val <= 0:
+                continue
+
+            # pl_nw / pl_gw / pl_package_count hanya untuk baris PL nyata
+            # (bukan merge sub-row yang pl_quantity-nya memang 0). Mencegah
+            # menulis nilai ke sub-row yang seharusnya 0.
+            if field in ("pl_nw", "pl_gw", "pl_package_count") and not is_real_pl_row:
+                continue
+
+            row[field] = new_val
+            backfilled += 1
+            print(
+                f"[PL_NUMERIC_BACKFILL] row_no={row_no} field={field} "
+                f"0/null -> {new_val}"
+            )
+
+    if backfilled:
+        print(f"[PL_NUMERIC_BACKFILL] total fields backfilled={backfilled}")
+
+    return rows
+
+
 # =========================================================================
 # NEW: Gemini recheck suggestion -> match_description
 #
@@ -13346,6 +13455,15 @@ def run_ocr(
                 all_rows = _apply_detail_line_recheck_label_only(
                     all_rows,
                     repaired_rows
+                )
+                # Label-only TIDAK menulis nilai. Tapi untuk vendor yang PL
+                # numeric per baris-nya rawan ke-nol-kan oleh extraction
+                # (halaman lanjutan PL tanpa header), backfill TARGETED nilai
+                # non-zero hasil recheck ke baris yang signature-nya jelas.
+                all_rows = _backfill_zeroed_pl_numeric_from_recheck(
+                    all_rows,
+                    repaired_rows,
+                    vendor_id=vendor_id,
                 )
             else:
                 all_rows = _apply_detail_line_recheck_result(

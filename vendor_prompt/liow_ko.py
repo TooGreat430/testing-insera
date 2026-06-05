@@ -220,6 +220,23 @@ ATURAN IDENTITAS BARIS PL (CARTON MARK = ANCHOR BARIS):
   dan GW per baris seperti halaman sebelumnya. Baris di halaman terakhir yang punya
   carton mark sendiri (mis. LK-78..LK-88) WAJIB diisi NW/GW sendiri, JANGAN di-nol-kan.
 
+ATURAN HALAMAN LANJUTAN PL TANPA HEADER (KRITIS — SERING SALAH):
+- Packing list LIOW KO bisa lebih dari satu halaman. HALAMAN LANJUTAN (mis. halaman
+  terakhir) SERING TIDAK MENCETAK ULANG baris header kolom
+  ("PART NUMBER | DESCRIPTION | QUANTITY | CTN | TOTAL CTN | NW | GW").
+- Walau header tidak dicetak ulang, URUTAN KOLOM TETAP SAMA seperti halaman pertama.
+- Pada setiap baris item di halaman lanjutan, DUA ANGKA TERAKHIR di baris itu SELALU
+  = NW (angka kedua dari kanan) dan GW (angka paling kanan). BACA SECARA POSISIONAL.
+  Contoh baris halaman terakhir:
+    "45331687  FRXLKIS15PH600  300 SET  LK-78  1  4.44  4.84"
+    → pl_quantity = 300, pl_package_count = 1, pl_nw = 4.44, pl_gw = 4.84
+    "45333135  FRPLKIS21PFP1600  626 SET  LK-85-88  4  43.55  44.26"
+    → pl_quantity = 626, pl_package_count = 4, pl_nw = 43.55, pl_gw = 44.26
+- DILARANG mengisi pl_nw = 0 / pl_gw = 0 di halaman lanjutan hanya karena header
+  tidak terlihat. Selama baris itu punya dua angka di posisi NW/GW, AMBIL angkanya.
+- Kalau pl_quantity baris itu berhasil dibaca (bukan 0), maka pl_nw dan pl_gw baris
+  itu HAMPIR PASTI juga tercetak — JANGAN tinggalkan 0.
+
 KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
 - Hanya untuk SUB-ROW yang merupakan pecahan dari SATU baris PL yang sama yang
   ter-match ke beberapa row invoice (lihat aturan "Jangan split nilai PL" di atas),
@@ -292,6 +309,19 @@ KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
      - "LK-1 1" -> pl_package_count = 1
      - "LK-2-8 7" -> pl_package_count = 7
      - "LK-19-27 9" -> pl_package_count = 9
+     - "LK-82-84 3" -> pl_package_count = 3
+     - "LK-85-88 4" -> pl_package_count = 4
+   - PENTING: angka TOTAL CTN itu = jumlah karton dalam range, BUKAN selalu 1.
+     Carton range "LK-82-84" mencakup LK-82, LK-83, LK-84 = 3 karton; angka TOTAL CTN
+     yang tercetak di sebelahnya (3) itulah pl_package_count. JANGAN default ke 1
+     hanya karena range terlihat seperti satu sel.
+   - Untuk baris yang BERBAGI carton dengan baris di atasnya (carton mark/TOTAL CTN
+     kosong karena merge), pl_package_count = 0 (jangan menghitung ganda karton yang
+     sama). Contoh: dua baris berbagi "LK-77 1" → top row pl_package_count = 1,
+     baris berikutnya = 0.
+   - DI HALAMAN LANJUTAN TANPA HEADER: TOTAL CTN tetap angka tepat SEBELUM kolom NW
+     (yaitu angka ketiga dari kanan: ... TOTAL_CTN NW GW). Baca posisional, jangan
+     default 1.
    - Jangan ambil carton mark/range seperti LK-2-8 sebagai package_count.
    - Jangan ambil total shipment seperti "47 CTN" sebagai package_count item-level.
    - Jangan memakai data invoice untuk mengisi pl_package_count.
