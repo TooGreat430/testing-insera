@@ -338,6 +338,21 @@ CATATAN:
 - Jangan menganggap perubahan CTN NO / carton range sebagai item baru
   jika description / item_no / PO masih konsisten.
 - Row TOTAL/SUBTOTAL tidak boleh dijumlahkan bersama detail row yang sama karena akan menyebabkan double count.
+
+ANTI-DUPLIKASI & RECALL TAIL ITEM (SANGAT PENTING):
+- Setiap baris fisik pada tabel line item Invoice = TEPAT 1 object index. Jangan
+  pernah mengeluarkan baris yang sama dua kali.
+- DILARANG menduplikasi / mengulang object yang sudah pernah dikeluarkan hanya untuk
+  memenuhi panjang array {total_row}. Lebih baik array kurang dari {total_row} daripada
+  diisi duplikat. Duplikat akan menyebabkan double count pada total quantity/amount.
+- Sebelum menambah object baru, cek apakah kombinasi (PART NUMBER + QUANTITY + AMOUNT + PO)
+  sudah pernah muncul di object sebelumnya. Kalau ya, itu BUKAN item baru — jangan tambah.
+- Line item bisa tersebar di beberapa halaman. Item yang berdiri sendiri (hanya 1 baris)
+  di halaman terakhir SETELAH page break TETAP item valid dan WAJIB diindeks.
+  Jangan berhenti menghitung hanya karena halaman sebelumnya terlihat "penuh".
+- Telusuri SEMUA halaman invoice sampai baris TOTAL/grand total. Baris item terakhir
+  yang nyata (tepat sebelum TOTAL) WAJIB ikut sebagai object index terakhir.
+- Baris TOTAL/grand total BUKAN line item — jangan diindeks.
 """
 
 def build_header_prompt(vendor_id: str = "default") -> str:

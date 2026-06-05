@@ -58,6 +58,21 @@ Struktur umum invoice LIOW KO:
      invoice (tidak termasuk baris TOTAL/grand total).
    - Kalau di akhir tabel ada baris TOTAL summary (mis. "TOTAL: 17,805  46,213.61"),
      itu BUKAN line item — JANGAN ekstrak sebagai row.
+   - JANGAN mengulang baris tail (baris-baris terakhir) untuk "memenuhi" jumlah row
+     yang diharapkan. Kalau jumlah baris fisik lebih sedikit dari ekspektasi, biarkan
+     lebih sedikit — JANGAN ditambal dengan menyalin ulang baris yang sudah diekstrak.
+   - CATATAN: invoice ini boleh punya dua baris identik (PART NUMBER + QUANTITY +
+     AMOUNT + PO sama) yang memang dua baris fisik berbeda dan TER-PISAH oleh baris
+     item lain — itu valid, keduanya tetap diekstrak. Yang DILARANG adalah menyalin
+     ulang baris di EKOR output (back-to-back) hanya untuk menambah jumlah.
+
+   ATURAN ITEM DI HALAMAN TERAKHIR (PAGE BREAK):
+   - Line item bisa tersebar di beberapa halaman. Halaman terakhir kadang hanya
+     berisi 1 baris item (lalu baris TOTAL).
+   - Baris item tunggal yang berdiri sendiri di halaman terakhir SETELAH page break
+     TETAP item valid dan WAJIB diekstrak sebagai row.
+   - Telusuri SEMUA halaman invoice sampai baris TOTAL. Jangan berhenti hanya karena
+     halaman sebelumnya terlihat sudah penuh.
 
 2. inv_seq
    - Hanya ambil jika invoice benar-benar mencetak nomor item / seq yang eksplisit.

@@ -101,6 +101,32 @@ DEDUPLICATE_PL_NUMERIC_VENDORS = {
 def _should_deduplicate_pl_numeric(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in DEDUPLICATE_PL_NUMERIC_VENDORS
 
+# Vendor yang index anchor-nya rawan duplicate row karena CHUNK BOUNDARY OVERLAP
+# (Gemini mengulang block sama di akhir chunk N dan awal chunk N+1). Untuk vendor
+# di set ini, index di-dedupe global berbasis key (PART#, qty, amount, PO).
+# CATATAN: dedup global ini TIDAK aman untuk dokumen yang punya genuine duplicate
+# line item (PART#+qty+amount+PO identik tapi memang 2 baris fisik berbeda).
+# Vendor seperti itu (mis. liow_ko) memakai _strip_trailing_ghost_run.
+DEDUPLICATE_INDEX_VENDORS = {
+    "shimano_inc",
+    "shimano_singapore",
+}
+
+# Vendor yang index single-shot-nya rawan GHOST TAIL RUN: Gemini mengulang satu
+# blok baris tail (yang sudah pernah dikeluarkan) untuk memenuhi {total_row}
+# alih-alih menemukan item tunggal di halaman terakhir setelah page break.
+# Untuk vendor ini, hanya RUN DUPLIKAT DI EKOR yang dibuang — genuine duplicate
+# yang ter-interleave dengan item lain tetap aman.
+TRAILING_GHOST_RUN_INDEX_VENDORS = {
+    "liow_ko",
+}
+
+def _should_deduplicate_index(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in DEDUPLICATE_INDEX_VENDORS
+
+def _should_strip_trailing_ghost_run(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in TRAILING_GHOST_RUN_INDEX_VENDORS
+
 def _deduplicate_pl_numeric_fields_for_vendors(rows: list, vendor_id: str = "default"):
     """
     Mencegah duplikasi field aditif PL ketika 1 baris PL dipecah ke beberapa baris Invoice secara berurutan.
@@ -4556,10 +4582,15 @@ def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
         return 0
 
 
-def _shimano_dedupe_index_items(index_items: list) -> list:
-    # Drop duplicate anchor rows yang muncul karena chunk boundary overlap.
-    # Key = (PART#, qty, amount, PO). Hanya non-empty key yang di-dedupe
-    # supaya row kosong (placeholder/null) tetap aman.
+def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
+    # Drop duplicate anchor rows. Dua sumber duplikat yang ditangani:
+    #   1) chunk boundary overlap (shimano): block sama diulang di akhir chunk N
+    #      dan awal chunk N+1.
+    #   2) ghost tail row (liow_ko dkk): single-shot index mengulang baris tail
+    #      untuk memenuhi {total_row} alih-alih menemukan item tunggal di halaman
+    #      terakhir.
+    # Key = (PART#, qty, amount, PO). Hanya non-empty key yang di-dedupe supaya
+    # row kosong (placeholder/null) tetap aman.
     if not isinstance(index_items, list):
         return index_items
 
@@ -4583,7 +4614,7 @@ def _shimano_dedupe_index_items(index_items: list) -> list:
 
         if is_full_key and key in seen_keys:
             print(
-                f"[SHIMANO_DEDUPE] drop duplicate anchor: "
+                f"[{log_tag}] drop duplicate anchor: "
                 f"PART#={part_no} qty={qty} amount={amount} po={po}"
             )
             dropped += 1
@@ -4594,9 +4625,63 @@ def _shimano_dedupe_index_items(index_items: list) -> list:
         deduped.append(item)
 
     if dropped:
-        print(f"[SHIMANO_DEDUPE] total dropped={dropped} kept={len(deduped)}")
+        print(f"[{log_tag}] total dropped={dropped} kept={len(deduped)}")
 
     return deduped
+
+
+def _index_item_key(item):
+    # Key dedup index = (PART#, qty, amount, PO). Return None kalau key tidak
+    # cukup kuat (komponen utama kosong) supaya row placeholder/null tidak
+    # ikut ter-dedupe.
+    if not isinstance(item, dict):
+        return None
+    part_no = str(item.get("inv_spart_item_no") or "").strip().upper()
+    qty = _to_float(item.get("inv_quantity")) or 0
+    amount = _to_float(item.get("inv_amount")) or 0
+    po = _norm_po_number(item.get("inv_customer_po_no"))
+    if not part_no or qty <= 0:
+        return None
+    return (part_no, qty, amount, po)
+
+
+def _strip_trailing_ghost_run(index_items: list, log_tag: str = "INDEX_GHOST_TAIL") -> list:
+    # Buang GHOST TAIL RUN: deretan duplikat di EKOR index yang key-nya sudah
+    # muncul lebih awal. Ini menangani kasus single-shot index yang mengulang
+    # blok tail (untuk memenuhi {total_row}) alih-alih menemukan item tunggal
+    # di halaman terakhir setelah page break.
+    #
+    # AMAN untuk genuine duplicate yang ter-interleave dengan item lain: hanya
+    # item paling belakang yang dibuang, dan hanya selama key-nya sudah ada di
+    # PREFIX (item-item sebelum titik potong). Begitu ketemu satu item ekor yang
+    # key-nya unik (atau key None / tidak kuat), proses berhenti.
+    if not isinstance(index_items, list) or len(index_items) < 2:
+        return index_items
+
+    n = len(index_items)
+    cut = n
+    i = n - 1
+    while i >= 1:
+        k = _index_item_key(index_items[i])
+        if k is None:
+            break
+        prefix_keys = {
+            pk for pk in (_index_item_key(x) for x in index_items[:i]) if pk is not None
+        }
+        if k in prefix_keys:
+            cut = i
+            i -= 1
+        else:
+            break
+
+    if cut < n:
+        for ghost in index_items[cut:]:
+            gk = _index_item_key(ghost)
+            print(f"[{log_tag}] drop ghost tail anchor: {gk}")
+        print(f"[{log_tag}] total dropped={n - cut} kept={cut}")
+        return index_items[:cut]
+
+    return index_items
 
 
 def _build_detail_batch_contract_prompt(
@@ -13070,19 +13155,35 @@ def run_ocr(
         if not isinstance(index_items, list) or not index_items:
             raise Exception("INDEX line items kosong")
 
-        # SHIMANO: dedupe anchor rows yang ke-duplikat karena chunk boundary overlap.
-        # Gemini kadang mengulang block yang sama di akhir chunk N dan awal chunk N+1.
-        # Hanya aktif untuk shimano_inc / shimano_singapore supaya blast radius nol
-        # untuk vendor lain.
-        if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+        # GLOBAL DEDUPE (chunk boundary overlap, shimano): block sama diulang di
+        # akhir chunk N dan awal chunk N+1. Key dedup = (PART#, qty, amount, PO).
+        # Gated ke DEDUPLICATE_INDEX_VENDORS supaya blast radius nol untuk vendor
+        # lain. CATATAN: dedup global ini membuang SEMUA duplikat by-key, jadi
+        # TIDAK aman untuk dokumen yang punya genuine duplicate line item.
+        if _should_deduplicate_index(vendor_id):
             before_dedupe = len(index_items)
-            index_items = _shimano_dedupe_index_items(index_items)
+            index_items = _dedupe_index_items(index_items)
             after_dedupe = len(index_items)
             if before_dedupe != after_dedupe:
                 print(
-                    f"[SHIMANO_DEDUPE] index_items: "
+                    f"[INDEX_DEDUPE] index_items: "
                     f"before={before_dedupe} after={after_dedupe} "
                     f"dropped={before_dedupe - after_dedupe}"
+                )
+
+        # GHOST TAIL RUN: buang deretan duplikat di ekor index (key sudah muncul
+        # lebih awal). Aman untuk genuine duplicate yang ter-interleave karena
+        # hanya run paling belakang yang dibuang. Mencegah double count total
+        # quantity/amount tanpa menyentuh vendor lain.
+        if _should_strip_trailing_ghost_run(vendor_id):
+            before_ghost = len(index_items)
+            index_items = _strip_trailing_ghost_run(index_items)
+            after_ghost = len(index_items)
+            if before_ghost != after_ghost:
+                print(
+                    f"[INDEX_GHOST_TAIL] index_items: "
+                    f"before={before_ghost} after={after_ghost} "
+                    f"dropped={before_ghost - after_ghost}"
                 )
 
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
