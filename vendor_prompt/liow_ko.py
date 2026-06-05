@@ -182,14 +182,50 @@ Struktur umum packing list LIOW KO:
 - Semua field pl_* harus diekstrak dari dokumen PACKING LIST saja.
 - Dilarang menggunakan data Invoice untuk mengisi field PL.
 
-- Jika satu item PACKING LIST yang sama ter-match ke beberapa row invoice/customer PO, jangan menduplikasi nilai numerik PL.
+- Jika SATU baris PACKING LIST yang sama (satu baris fisik) ter-match ke beberapa row
+  invoice/customer PO, jangan menduplikasi nilai numerik PL.
   Nilai numerik PL hanya muncul pada kemunculan pertama.
-  Kemunculan berikutnya untuk item PL yang sama isi 0 pada field numerik aditif PL:
+  Kemunculan berikutnya untuk baris PL yang sama isi 0 pada field numerik aditif PL:
   pl_quantity, pl_package_count, pl_nw, pl_gw, pl_volume.
+  PENTING: aturan nol ini HANYA untuk pecahan dari SATU baris fisik PL yang sama.
+  Kalau di PDF ada BEBERAPA baris fisik berbeda (masing-masing mencetak NW/GW sendiri),
+  itu BUKAN duplikat — ikuti angka per baris (lihat "ATURAN NW/GW PER BARIS" di bawah).
 - Jangan split nilai PL mengikuti quantity invoice.
-  Contoh: 
-  jika PL mencetak 469 SET, lalu invoice memecah menjadi 64, 225, 180, 
+  Contoh:
+  jika PL mencetak 1 baris 469 SET, lalu invoice memecah menjadi 64, 225, 180,
   maka output PL harus 469, 0, 0; bukan 64, 225, 180 atau 469, 469, 469.
+
+ATURAN NW/GW PER BARIS (PALING PENTING UNTUK LIOW KO):
+- Pada packing list LIOW KO, kolom NW dan GW DICETAK PER BARIS untuk hampir
+  setiap baris item — termasuk baris yang berada di bawah satu carton range
+  yang sama (mis. group "LK-43-57" punya beberapa baris, masing-masing mencetak
+  NW/GW sendiri seperti 123.82 / 51.72 / 59.84).
+- ATURAN UTAMA: AMBIL NW dan GW DARI ANGKA YANG TERCETAK PADA BARIS ITU SENDIRI.
+  Nilai NW/GW LIOW KO bersifat ADITIF per baris (kalau semua baris dijumlahkan =
+  total dokumen). Karena itu, JANGAN men-nol-kan pl_nw / pl_gw selama angka NW/GW
+  memang TERCETAK pada baris tersebut.
+- pl_nw / pl_gw HANYA boleh 0 jika kolom NW / GW pada baris itu BENAR-BENAR KOSONG
+  di PDF (tidak ada angka tercetak sama sekali untuk baris itu).
+- DILARANG men-nol-kan NW/GW hanya karena:
+  - PART NUMBER mirip dengan baris lain,
+  - baris berurutan dengan baris lain,
+  - baris berada di bawah carton range yang sama,
+  - baris berada di halaman terakhir setelah page break.
+
+ATURAN IDENTITAS BARIS PL (CARTON MARK = ANCHOR BARIS):
+- Carton mark (mis. "LK-1", "LK-78", "LK-82-84", "LK-85-88") adalah ANCHOR IDENTITAS
+  untuk satu BARIS FISIK packing list. Setiap baris PL yang memiliki carton mark
+  SENDIRI = baris fisik berbeda = WAJIB mempertahankan nilai numeriknya sendiri.
+- KHUSUS HALAMAN TERAKHIR / SETELAH PAGE BREAK: tetap baca kolom carton mark, NW,
+  dan GW per baris seperti halaman sebelumnya. Baris di halaman terakhir yang punya
+  carton mark sendiri (mis. LK-78..LK-88) WAJIB diisi NW/GW sendiri, JANGAN di-nol-kan.
+
+KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
+- Hanya untuk SUB-ROW yang merupakan pecahan dari SATU baris PL yang sama yang
+  ter-match ke beberapa row invoice (lihat aturan "Jangan split nilai PL" di atas),
+  DAN sub-row itu TIDAK punya angka NW/GW tercetak sendiri.
+- Patokan praktis: kalau ragu, IKUTI ANGKA YANG TERCETAK. Lebih baik mengisi NW/GW
+  apa adanya daripada salah men-nol-kan baris yang sebenarnya punya nilai sendiri.
 
 1. pl_customer_po_no
    - HANYA isi jika packing list secara eksplisit mencantumkan customer PO untuk item tersebut.
