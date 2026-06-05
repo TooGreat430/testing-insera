@@ -24,8 +24,8 @@ Struktur umum invoice LIOW KO:
 - Tidak ada gross weight per item pada sampel invoice.
 
 1. inv_customer_po_no
-   - Ambil dari kolom "Purchase order Number" pada row item yang sama.
-   - Customer PO berbentuk angka dan berlaku per row, bukan grouping block.
+   - Ambil dari kolom "Purchase order Number" pada row item YANG SAMA.
+   - Customer PO berbentuk angka dan berlaku PER ROW, BUKAN grouping block.
    - Ambil angka PO-nya saja sebagai string.
    - Contoh:
      - "45327072" -> inv_customer_po_no = "45327072"
@@ -35,6 +35,29 @@ Struktur umum invoice LIOW KO:
      - BL number
      - container number
      - tanggal invoice
+
+   ATURAN KETAT KOLOM PO (SANGAT PENTING):
+   - Setiap row WAJIB punya PO sendiri yang dibaca dari sel di KOLOM PERTAMA
+     (kolom "Purchase order Number") pada baris row tersebut. Posisi kolom PO
+     adalah PALING KIRI di tabel line item.
+   - DILARANG copy/fill-forward PO dari row sebelumnya.
+     - Jika row N punya PO yang berbeda dari row N-1, ekstrak PO row N sebagaimana
+       tercetak — JANGAN diturunkan dari row N-1.
+     - PO row N-1 hanya boleh dipakai untuk row N HANYA kalau sel PO row N benar-benar
+       blank/kosong di PDF (sangat jarang di liow_ko).
+   - Cek alignment kolom secara visual. Jangan tertukar dengan kolom PART NUMBER
+     (kolom kedua) yang formatnya alfanumerik. PO selalu numeric 8 digit yang dimulai
+     dengan "453..." atau "452..." (kadang "45281...", "45283..." dst — pokoknya
+     8 digit dimulai "45").
+
+   ATURAN ANTI-DUPLIKASI ROW (HINDARI GHOST ROW):
+   - Tiap baris fisik di tabel invoice = TEPAT 1 row output.
+   - JANGAN extract baris yang sama dua kali. Jangan menambah row baru yang tidak
+     ada di tabel asli.
+   - Total jumlah row output WAJIB sama persis dengan jumlah baris item di
+     invoice (tidak termasuk baris TOTAL/grand total).
+   - Kalau di akhir tabel ada baris TOTAL summary (mis. "TOTAL: 17,805  46,213.61"),
+     itu BUKAN line item — JANGAN ekstrak sebagai row.
 
 2. inv_seq
    - Hanya ambil jika invoice benar-benar mencetak nomor item / seq yang eksplisit.
