@@ -215,13 +215,27 @@ ATURAN NW/GW PER BARIS (PALING PENTING UNTUK LIOW KO):
   - baris berada di bawah carton range yang sama,
   - baris berada di halaman terakhir setelah page break.
 
-ATURAN IDENTITAS BARIS PL (CARTON MARK = ANCHOR BARIS):
-- Carton mark (mis. "LK-1", "LK-78", "LK-82-84", "LK-85-88") adalah ANCHOR IDENTITAS
-  untuk satu BARIS FISIK packing list. Setiap baris PL yang memiliki carton mark
-  SENDIRI = baris fisik berbeda = WAJIB mempertahankan nilai numeriknya sendiri.
-- KHUSUS HALAMAN TERAKHIR / SETELAH PAGE BREAK: tetap baca kolom carton mark, NW,
-  dan GW per baris seperti halaman sebelumnya. Baris di halaman terakhir yang punya
-  carton mark sendiri (mis. LK-78..LK-88) WAJIB diisi NW/GW sendiri, JANGAN di-nol-kan.
+ATURAN IDENTITAS BARIS PL (PURCHASE ORDER NUMBER = ANCHOR UTAMA):
+- Kolom PALING KIRI "Purchase order Number" TERCETAK di SETIAP baris PL — termasuk
+  baris lanjutan yang TIDAK punya carton mark sendiri. Inilah ANCHOR IDENTITAS UTAMA
+  untuk satu BARIS FISIK packing list (lebih andal daripada carton mark).
+- ATURAN INTI: dua baris dengan Purchase order Number BERBEDA adalah DUA BARIS FISIK
+  BERBEDA. Masing-masing WAJIB mempertahankan NW/GW-nya sendiri. DILARANG men-nol-kan
+  NW/GW sebuah baris hanya karena PART NUMBER + QUANTITY + NW + GW-nya KEBETULAN SAMA
+  dengan baris sebelumnya — kalau PO-nya beda, itu BUKAN duplikat.
+  Contoh (WAJIB isi NW/GW SEMUA baris, JANGAN nol-kan baris ke-2/ke-3):
+    45329829  FRPLK18PFP1500  300 PCS  LK-29-32  4  24.60  25.00  -> nw 24.60 gw 25.00
+    45331613  FRPLK18PFP1500  300 PCS            24.60  25.00     -> nw 24.60 gw 25.00
+    45331609  FRPLK18PFP1500  300 PCS            24.60  25.00     -> nw 24.60 gw 25.00
+  PO ketiganya beda (45329829 / 45331613 / 45331609) = 3 baris fisik = 3x (24.60/25.00),
+  bukan satu baris yang diulang. Total grup NW = 73.80, bukan 24.60.
+- JANGAN MENYALIN NW/GW dari baris tetangga. Tiap baris punya angka NW/GW-nya SENDIRI
+  di dua posisi paling kanan. Kalau baris di atasnya bernilai 6.00/6.20 lalu baris
+  berikut (PO beda) tercetak 0.87/1.07, AMBIL 0.87/1.07 — jangan ikut 6.00/6.20.
+- Carton mark (mis. "LK-1", "LK-29-32") = anchor SEKUNDER saja. Baris lanjutan yang
+  BERBAGI carton range dengan baris di atasnya TETAP baris fisik sendiri jika PO beda.
+- KHUSUS HALAMAN TERAKHIR / SETELAH PAGE BREAK: tetap baca PO, NW, dan GW per baris
+  seperti halaman sebelumnya. JANGAN di-nol-kan dan JANGAN disalin dari baris lain.
 
 ATURAN HALAMAN LANJUTAN PL TANPA HEADER (KRITIS — SERING SALAH):
 - Packing list LIOW KO bisa lebih dari satu halaman. HALAMAN LANJUTAN (mis. halaman
@@ -243,9 +257,13 @@ ATURAN HALAMAN LANJUTAN PL TANPA HEADER (KRITIS — SERING SALAH):
   itu HAMPIR PASTI juga tercetak — JANGAN tinggalkan 0.
 
 KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
-- Hanya untuk SUB-ROW yang merupakan pecahan dari SATU baris PL yang sama yang
-  ter-match ke beberapa row invoice (lihat aturan "Jangan split nilai PL" di atas),
-  DAN sub-row itu TIDAK punya angka NW/GW tercetak sendiri.
+- HANYA jika SEMUA syarat ini benar:
+  (a) Purchase order Number baris itu SAMA dengan baris di atasnya (benar-benar
+      pecahan dari SATU baris PL fisik yang sama yang ter-match ke beberapa row
+      invoice — lihat aturan "Jangan split nilai PL" di atas), DAN
+  (b) sub-row itu TIDAK punya angka NW/GW tercetak sendiri.
+- Kalau Purchase order Number-nya BEDA dari baris sebelumnya: JANGAN PERNAH nol —
+  itu baris fisik berbeda walaupun part/qty/NW/GW-nya mirip.
 - Patokan praktis: kalau ragu, IKUTI ANGKA YANG TERCETAK. Lebih baik mengisi NW/GW
   apa adanya daripada salah men-nol-kan baris yang sebenarnya punya nilai sendiri.
 
