@@ -167,9 +167,12 @@ PACKING LIST (PL)
 
 Struktur umum packing list LIOW KO:
 - Dokumen berjudul "PACKING LIST".
-- Header item pada sampel berbentuk:
-  PART NUMBER | DESCRIPTION | QUANTITY | [carton no./range] | TOTAL CTN | NW | GW
-- Pada packing list LIOW KO, tidak ada customer PO per item yang tercetak jelas.
+- Header item pada sampel berbentuk (kolom PERTAMA = "Purchase order Number"):
+  Purchase order Number | PART NUMBER | DESCRIPTION | QUANTITY | [unit] | [carton no./range] | TOTAL CTN | NW | GW
+- Pada packing list LIOW KO, customer PO TERCETAK PER BARIS di kolom PALING KIRI
+  ("Purchase order Number"), numeric 8 digit (mis. 45331690). Setiap baris item
+  punya PO sendiri dan WAJIB diekstrak ke pl_customer_po_no (lihat aturan #1).
+  PO pada PL bisa BERBEDA dari customer PO invoice untuk baris yang sama.
 - Pada packing list sampel, tidak ada kolom volume item-level yang jelas.
 - Setelah quantity biasanya ada carton mark / carton range seperti:
   - LK-1
@@ -223,7 +226,9 @@ ATURAN IDENTITAS BARIS PL (CARTON MARK = ANCHOR BARIS):
 ATURAN HALAMAN LANJUTAN PL TANPA HEADER (KRITIS — SERING SALAH):
 - Packing list LIOW KO bisa lebih dari satu halaman. HALAMAN LANJUTAN (mis. halaman
   terakhir) SERING TIDAK MENCETAK ULANG baris header kolom
-  ("PART NUMBER | DESCRIPTION | QUANTITY | CTN | TOTAL CTN | NW | GW").
+  ("Purchase order Number | PART NUMBER | DESCRIPTION | QUANTITY | CTN | TOTAL CTN | NW | GW").
+- Kolom PALING KIRI "Purchase order Number" tetap ada di halaman lanjutan walau
+  header tidak dicetak ulang. Tetap baca PO numeric 8 digit di awal tiap baris.
 - Walau header tidak dicetak ulang, URUTAN KOLOM TETAP SAMA seperti halaman pertama.
 - Pada setiap baris item di halaman lanjutan, DUA ANGKA TERAKHIR di baris itu SELALU
   = NW (angka kedua dari kanan) dan GW (angka paling kanan). BACA SECARA POSISIONAL.
@@ -245,11 +250,17 @@ KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
   apa adanya daripada salah men-nol-kan baris yang sebenarnya punya nilai sendiri.
 
 1. pl_customer_po_no
-   - HANYA isi jika packing list secara eksplisit mencantumkan customer PO untuk item tersebut.
-   - Pada sampel packing list LIOW KO, tidak ada customer PO item-level yang jelas.
-   - Jangan copy PO dari invoice ke field packing list.
-   - Karena itu, jika PO tidak tercetak jelas di packing list:
-     pl_customer_po_no = "null"
+   - WAJIB diisi untuk SETIAP baris. Ambil dari kolom PALING KIRI "Purchase order
+     Number" pada baris PL yang SAMA. Nilainya numeric 8 digit (mis. 45331690).
+   - Kolom ini TERCETAK di setiap baris packing list LIOW KO (kolom pertama, SEBELUM
+     PART NUMBER). Jangan tertukar dengan PART NUMBER (kolom kedua, alfanumerik
+     seperti FRXLK891000000) — PO selalu numeric.
+   - BACA nilai yang TERCETAK di PL. JANGAN copy PO dari invoice: PO pada PL bisa
+     BERBEDA dari customer PO invoice untuk baris yang sama (mis. PL mencetak
+     45333609 untuk baris yang di invoice ber-PO 45281816), jadi menyalin dari
+     invoice akan SALAH.
+   - Set "null" HANYA jika kolom Purchase order Number pada baris itu benar-benar
+     kosong di PDF (kasus langka).
 
 2. pl_item_no
    - Ambil dari kolom "PART NUMBER".
@@ -334,10 +345,10 @@ KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
      - "118.30" -> 118.3
      - "49.55" -> 49.55
    - Jika ada kasus seperti ini:
-   PART NUMBER      | DESCRIPTION                                |  QUANTITY |  CTN   | TOTAL CTN | NW    | GW    |
-   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
-   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40|
-   maka pl_nw = 25.63
+   Purchase order No | PART NUMBER      | DESCRIPTION                                |  QUANTITY |  CTN   | TOTAL CTN | NW    | GW    |
+   45332698          | FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
+   45332698          | FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40 |
+   maka pl_nw = 25.63 (kolom PALING KIRI = Purchase order Number -> pl_customer_po_no)
    - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_nw.
 
 
@@ -349,10 +360,10 @@ KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
      - "120.30" -> 120.3
      - "51.15" -> 51.15
      - Jika ada kasus seperti ini:
-   PART NUMBER      | DESCRIPTION                                |  QUANTITY |  CTN   | TOTAL CTN | NW    | GW    |
-   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
-   FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40 |
-   maka pl_gw = 26.23
+   Purchase order No | PART NUMBER      | DESCRIPTION                                |  QUANTITY |  CTN   | TOTAL CTN | NW    | GW    |
+   45332698          | FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  5 PCS    |        |           | 0.63  | 0.83  |
+   45332698          | FRXLKIS21PFP1800 | FRAME PART; LIOW KO;IS21PFP18_F5;-;AL6061; |  200 PCS  |  LK-31 | 1         | 25.00 | 25.40 |
+   maka pl_gw = 26.23 (kolom PALING KIRI = Purchase order Number -> pl_customer_po_no)
    - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_gw.
 
 
