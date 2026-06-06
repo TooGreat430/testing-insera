@@ -13290,28 +13290,17 @@ def run_ocr(
 ):
     uploaded_pdf_paths = uploaded_pdf_paths or []
 
-    explicit_has_bl_doc = has_bl_doc is not None
-    explicit_has_coo_doc = has_coo_doc is not None
-
-    # Infer default untuk flow lama:
-    # urutan file legacy diasumsikan: invoice, packing, BL, COO
+    # Urutan file: [INV, PL, BL?, COO?]
+    # BL selalu 1, INV/PL/COO bisa multiple.
+    # has_bl_doc TIDAK tergantung with_total_container —
+    # BL juga dipakai untuk header extraction meski container tidak diminta.
     if has_bl_doc is None:
-        has_bl_doc = bool(with_total_container and len(uploaded_pdf_paths) >= 3)
+        has_bl_doc = bool(len(uploaded_pdf_paths) >= 3)
 
     if has_coo_doc is None:
         has_coo_doc = bool(len(uploaded_pdf_paths) >= 4)
 
-    # Preserve guard lama hanya untuk flow legacy/non-explicit.
-    # Kalau caller explicit bilang file ke-3 adalah BL, jangan direject.
-    if (
-        not explicit_has_bl_doc
-        and not explicit_has_coo_doc
-        and len(uploaded_pdf_paths) == 3
-        and not with_total_container
-    ):
-        raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
-
-    # Guard eksplisit: COO tidak boleh tanpa BL.
+    # COO tidak boleh tanpa BL (BL adalah file ke-3).
     if has_coo_doc and not has_bl_doc:
         raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
 
@@ -13390,13 +13379,14 @@ def run_ocr(
             coo_pdf_path = normalized_pdf_paths[3]
 
         # ==========================================
-        # HEADER EXTRACTION
-        # Base:     INV+PL merged  → inv_* + pl_* (selalu)
-        # Optional: INV+PL+BL+COO → bl_* + coo_*  (hanya jika ada BL/COO)
-        # Merge: inv_pl dari base, bl_/coo_ dari optional
+        # HEADER EXTRACTION (3 CALLS TERPISAH)
+        # 1. INV+PL merged   → inv_* + pl_* (selalu)
+        # 2. BL PDF saja     → bl_*          (jika has_bl_doc)
+        # 3. COO PDF saja    → coo_* header  (jika has_coo_doc)
+        # Tiap dokumen dikirim ke Gemini sendiri → ekstraksi lebih akurat
         # ==========================================
 
-        # 1. INV+PL combined header (base)
+        # 1. INV+PL combined header
         merged_inv_pl_for_header = _merge_pdfs([invoice_onepage_pdf, packing_onepage_pdf])
         temp_local_paths.append(merged_inv_pl_for_header)
         merged_inv_pl_for_header = _compress_pdf_if_needed(merged_inv_pl_for_header)
@@ -13407,76 +13397,57 @@ def run_ocr(
             merged_inv_pl_for_header, run_prefix, name="header_inv_pl"
         )
 
-        print("OCR Header - BASE INV+PL")
-        base_header_obj = _call_gemini_json_uri(
+        print("OCR Header - INV+PL")
+        inv_pl_header = _call_gemini_json_uri(
             file_uri_inv_pl_header,
             build_header_prompt(vendor_id=vendor_id),
             expect_array=False,
             retries=3,
             vendor_id=vendor_id,
         )
-        if not isinstance(base_header_obj, dict):
-            base_header_obj = {}
+        if not isinstance(inv_pl_header, dict):
+            inv_pl_header = {}
 
-        inv_pl_header = base_header_obj  # alias untuk karet_deli refocus
-
-        # 2. Full merged header (optional: hanya jika ada BL atau COO)
-        optional_header_obj = {}
+        # 2. BL header — BL PDF saja (selalu 1 dokumen)
+        bl_header = {}
         file_uri_bl = None
-        file_uri_coo = None
-        file_uri_full_header = None
-
-        has_extra_docs = (has_bl_doc and bl_pdf_path) or (has_coo_doc and coo_pdf_path)
-        if has_extra_docs:
-            extra_paths = []
-            if has_bl_doc and bl_pdf_path:
-                bl_pdf_compressed = _compress_pdf_if_needed(bl_pdf_path)
-                if bl_pdf_compressed not in temp_local_paths and bl_pdf_compressed != bl_pdf_path:
-                    temp_local_paths.append(bl_pdf_compressed)
-                extra_paths.append(bl_pdf_compressed)
-            if has_coo_doc and coo_pdf_path:
-                coo_pdf_compressed = _compress_pdf_if_needed(coo_pdf_path)
-                if coo_pdf_compressed not in temp_local_paths and coo_pdf_compressed != coo_pdf_path:
-                    temp_local_paths.append(coo_pdf_compressed)
-                extra_paths.append(coo_pdf_compressed)
-
-            full_input_paths = [invoice_onepage_pdf, packing_onepage_pdf] + extra_paths
-            merged_full_for_header = _merge_pdfs(full_input_paths)
-            temp_local_paths.append(merged_full_for_header)
-            merged_full_for_header = _compress_pdf_if_needed(merged_full_for_header)
-            if merged_full_for_header not in temp_local_paths:
-                temp_local_paths.append(merged_full_for_header)
-
-            file_uri_full_header = _upload_temp_pdf_to_gcs(
-                merged_full_for_header, run_prefix, name="header_full"
-            )
-
-            print("OCR Header - OPTIONAL FULL DOCS")
-            optional_header_obj = _call_gemini_json_uri(
-                file_uri_full_header,
-                build_header_prompt(vendor_id=vendor_id),
+        if has_bl_doc and bl_pdf_path:
+            bl_pdf_compressed = _compress_pdf_if_needed(bl_pdf_path)
+            if bl_pdf_compressed not in temp_local_paths and bl_pdf_compressed != bl_pdf_path:
+                temp_local_paths.append(bl_pdf_compressed)
+            file_uri_bl = _upload_temp_pdf_to_gcs(bl_pdf_compressed, run_prefix, name="bl")
+            print("OCR Header - BL")
+            raw_bl = _call_gemini_json_uri(
+                file_uri_bl,
+                build_bl_header_prompt(vendor_id=vendor_id),
                 expect_array=False,
                 retries=3,
                 vendor_id=vendor_id,
             )
-            if not isinstance(optional_header_obj, dict):
-                optional_header_obj = {}
+            if isinstance(raw_bl, dict):
+                bl_header = {k: v for k, v in raw_bl.items() if str(k).startswith("bl_")}
 
-            # Reuse URI untuk BL/COO line-item extraction nanti
-            if has_bl_doc and bl_pdf_path:
-                file_uri_bl = _upload_temp_pdf_to_gcs(
-                    bl_pdf_compressed, run_prefix, name="bl"
-                )
-            if has_coo_doc and coo_pdf_path:
-                file_uri_coo = _upload_temp_pdf_to_gcs(
-                    coo_pdf_compressed, run_prefix, name="coo"
-                )
+        # 3. COO header — COO PDF saja (bisa multiple, tapi 1 call untuk header)
+        coo_header = {}
+        file_uri_coo = None
+        if has_coo_doc and coo_pdf_path:
+            coo_pdf_compressed = _compress_pdf_if_needed(coo_pdf_path)
+            if coo_pdf_compressed not in temp_local_paths and coo_pdf_compressed != coo_pdf_path:
+                temp_local_paths.append(coo_pdf_compressed)
+            file_uri_coo = _upload_temp_pdf_to_gcs(coo_pdf_compressed, run_prefix, name="coo")
+            print("OCR Header - COO")
+            raw_coo = _call_gemini_json_uri(
+                file_uri_coo,
+                build_coo_header_prompt(),
+                expect_array=False,
+                retries=3,
+                vendor_id=vendor_id,
+            )
+            if isinstance(raw_coo, dict):
+                coo_header = {k: v for k, v in raw_coo.items() if str(k).startswith("coo_")}
 
-        # inv_* + pl_* dari base; bl_* + coo_* dari optional
-        header_obj = _merge_optional_header_into_base_header(
-            base_header_obj=base_header_obj,
-            optional_header_obj=optional_header_obj,
-        )
+        # Gabungkan: inv_/pl_* dari inv_pl_header, bl_* dari bl_header, coo_* dari coo_header
+        header_obj = _merge_separate_doc_headers(inv_pl_header, bl_header, coo_header)
         _enforce_absent_optional_docs_empty(
             header_obj=header_obj,
             has_bl_doc=has_bl_doc,
