@@ -30,12 +30,20 @@ from detail import (
     build_detail_prompt_from_index,
     build_header_prompt,
     build_index_prompt,
+    build_inv_index_prompt,
+    build_inv_detail_prompt_from_index,
+    build_pl_index_prompt,
+    build_pl_detail_prompt_from_index,
+    build_bl_header_prompt,
+    build_coo_header_prompt,
     DETAIL_CSV_FIELD_ORDER_FINAL,
     DETAIL_LINE_FIELDS,
     DETAIL_LINE_NUM_FIELDS,
     HEADER_SCHEMA_TEXT as HEADER_FIELDS,
+    INV_DETAIL_SCHEMA_TEXT,
+    PL_DETAIL_SCHEMA_TEXT,
 )
-from row import ROW_SYSTEM_INSTRUCTION, KARET_DELI_ROW_SYSTEM_INSTRUCTION
+from row import ROW_SYSTEM_INSTRUCTION, KARET_DELI_ROW_SYSTEM_INSTRUCTION, PL_ROW_SYSTEM_INSTRUCTION
 from vendor_detection import (
     load_vendor_prompt_text,
     normalize_vendor_id,
@@ -9029,6 +9037,314 @@ def _postprocess_item_no_fields(rows: list):
 # MAIN RUN OCR
 # ==============================
 
+def _merge_separate_doc_headers(
+    inv_pl_header: dict,
+    bl_header: dict,
+    coo_header: dict,
+) -> dict:
+    """
+    Gabungkan 3 header terpisah: INV+PL, BL, COO.
+    INV/PL tetap master. BL dan COO hanya menambah field dengan prefix masing-masing.
+    """
+    merged = dict(inv_pl_header or {})
+    for key, value in (bl_header or {}).items():
+        if str(key).startswith("bl_"):
+            merged[key] = value
+    for key, value in (coo_header or {}).items():
+        if str(key).startswith("coo_"):
+            merged[key] = value
+    return merged
+
+
+def _norm_po_for_map(v) -> str:
+    return str(v or "").strip().upper()
+
+
+def _norm_item_for_map(v) -> str:
+    return re.sub(r"\s+", "", str(v or "").strip().upper())
+
+
+def _norm_qty_for_map(v) -> float:
+    try:
+        return round(float(str(v or "0").replace(",", ".")), 3)
+    except Exception:
+        return 0.0
+
+
+def _desc_token_overlap(a: str, b: str) -> float:
+    ta = set(re.findall(r"\w+", str(a or "").upper()))
+    tb = set(re.findall(r"\w+", str(b or "").upper()))
+    if not ta or not tb:
+        return 0.0
+    union = ta | tb
+    return len(ta & tb) / len(union)
+
+
+def _merge_pl_into_inv_row(inv_row: dict, pl_row: dict):
+    PL_LINE_FIELDS = [
+        "pl_customer_po_no", "pl_item_no", "pl_description",
+        "pl_quantity", "pl_package_unit", "pl_package_count",
+        "pl_nw", "pl_gw", "pl_volume",
+    ]
+    for f in PL_LINE_FIELDS:
+        if f in pl_row:
+            inv_row[f] = pl_row[f]
+
+
+def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
+    """
+    Map pl_* fields dari pl_rows ke inv_rows yang bersesuaian.
+
+    Strategi (berurutan, stop di match pertama):
+    1. (po_no, item_no, quantity) — unique triple
+    2. (po_no, item_no)           — sequential dalam group
+    3. po_no + description similarity + quantity weight
+    4. No match → pl_* fields tetap null/0
+
+    Mengembalikan inv_rows yang sudah di-enrich dengan pl_* fields.
+    """
+    PL_NUM_FIELDS = {"pl_quantity", "pl_package_count", "pl_nw", "pl_gw", "pl_volume"}
+    PL_LINE_FIELDS = [
+        "pl_customer_po_no", "pl_item_no", "pl_description",
+        "pl_quantity", "pl_package_unit", "pl_package_count",
+        "pl_nw", "pl_gw", "pl_volume",
+    ]
+
+    # Pre-fill semua inv_rows dengan null pl_* fields
+    for inv_row in inv_rows:
+        for f in PL_LINE_FIELDS:
+            if f not in inv_row:
+                inv_row[f] = 0 if f in PL_NUM_FIELDS else "null"
+
+    if not pl_rows:
+        print("[PL_MAP] Tidak ada pl_rows, semua pl_* fields tetap null/0")
+        return inv_rows
+
+    # Build lookup maps dari pl_rows
+    triple_map = {}   # (po, item, qty) -> [pl_idx, ...]
+    pair_map = {}     # (po, item)      -> [pl_idx, ...]
+    po_map = {}       # po              -> [pl_idx, ...]
+
+    for i, pr in enumerate(pl_rows):
+        po = _norm_po_for_map(pr.get("pl_customer_po_no"))
+        item = _norm_item_for_map(pr.get("pl_item_no"))
+        qty = _norm_qty_for_map(pr.get("pl_quantity"))
+
+        triple_map.setdefault((po, item, qty), []).append(i)
+        pair_map.setdefault((po, item), []).append(i)
+        if po:
+            po_map.setdefault(po, []).append(i)
+
+    used = set()
+    matched = 0
+    unmatched = 0
+
+    for inv_row in inv_rows:
+        inv_po = _norm_po_for_map(inv_row.get("inv_customer_po_no"))
+        inv_item = _norm_item_for_map(inv_row.get("inv_spart_item_no"))
+        inv_qty = _norm_qty_for_map(inv_row.get("inv_quantity"))
+
+        # --- Strategy 1: exact triple (po + item + qty) ---
+        candidates = [i for i in triple_map.get((inv_po, inv_item, inv_qty), []) if i not in used]
+        if candidates:
+            chosen = candidates[0]
+            used.add(chosen)
+            _merge_pl_into_inv_row(inv_row, pl_rows[chosen])
+            matched += 1
+            continue
+
+        # --- Strategy 2: (po + item) sequential ---
+        candidates = [i for i in pair_map.get((inv_po, inv_item), []) if i not in used]
+        if candidates:
+            chosen = candidates[0]
+            used.add(chosen)
+            _merge_pl_into_inv_row(inv_row, pl_rows[chosen])
+            matched += 1
+            continue
+
+        # --- Strategy 3: composite scoring (po + desc + qty) ---
+        po_candidates = [i for i in po_map.get(inv_po, []) if i not in used]
+        if po_candidates:
+            best_score = -1.0
+            best_idx = None
+            inv_desc = str(inv_row.get("inv_description") or "")
+
+            for i in po_candidates:
+                pr = pl_rows[i]
+                desc_score = _desc_token_overlap(inv_desc, pr.get("pl_description"))
+
+                pl_qty = _norm_qty_for_map(pr.get("pl_quantity"))
+                if inv_qty > 0 and pl_qty > 0:
+                    qty_ratio = min(inv_qty, pl_qty) / max(inv_qty, pl_qty)
+                else:
+                    qty_ratio = 0.0
+
+                score = desc_score * 0.6 + qty_ratio * 0.4
+
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
+
+            if best_idx is not None and best_score > 0.25:
+                used.add(best_idx)
+                _merge_pl_into_inv_row(inv_row, pl_rows[best_idx])
+                matched += 1
+                continue
+
+        unmatched += 1
+
+    print(
+        f"[PL_MAP] inv_rows={len(inv_rows)} pl_rows={len(pl_rows)} "
+        f"matched={matched} unmatched={unmatched} "
+        f"unused_pl={len(pl_rows) - len(used)}"
+    )
+    return inv_rows
+
+
+def _build_inv_detail_jobs(
+    file_uri_inv: str,
+    inv_index: list,
+    total_inv_row: int,
+    vendor_id: str,
+    vendor_prompt_text: str,
+    local_inv_pdf: str,
+    run_prefix: str,
+    temp_local_paths: list,
+    batch_size: int,
+) -> list:
+    """Build batch job list untuk Invoice-only detail extraction."""
+    jobs = []
+    first_index = 1
+    batch_no = 1
+    total_pages = _count_pdf_pages(local_inv_pdf)
+
+    is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
+
+    while first_index <= total_inv_row:
+        last_index = min(first_index + batch_size - 1, total_inv_row)
+        index_slice = inv_index[first_index - 1:last_index]
+
+        prompt = build_inv_detail_prompt_from_index(
+            total_row=total_inv_row,
+            index_slice=index_slice,
+            first_index=first_index,
+            last_index=last_index,
+            vendor_id=vendor_id,
+            vendor_prompt_text=vendor_prompt_text,
+        )
+
+        batch_file_uri = file_uri_inv
+
+        if total_inv_row >= 90 or is_karet_deli:
+            pages = [
+                int(x.get("page_no") or x.get("page", 0))
+                for x in index_slice
+                if x.get("page_no") or x.get("page")
+            ]
+            if pages:
+                start_idx = max(0, min(pages) - 1 - 1)
+                end_idx = min(total_pages - 1, max(pages) - 1 + 1)
+                sliced_local = _create_sliced_pdf_for_batch(local_inv_pdf, start_idx, end_idx)
+                temp_local_paths.append(sliced_local)
+                batch_file_uri = _upload_temp_pdf_to_gcs(
+                    sliced_local,
+                    run_prefix,
+                    name=f"inv_batch_{batch_no}_{start_idx}_{end_idx}",
+                )
+                prompt += (
+                    f"\n\nPERHATIAN GUARDRAIL INDEKS:\n"
+                    f"Anda sedang membaca POTONGAN DOKUMEN (Halaman fisik ke-{start_idx+1} sampai {end_idx+1}). "
+                    f"Tugas Anda HANYA mengekstrak line item ke-{first_index} sampai {last_index}."
+                )
+
+        jobs.append({
+            "batch_no": batch_no,
+            "file_uri": batch_file_uri,
+            "prompt": prompt,
+            "first_index": first_index,
+            "last_index": last_index,
+            "expected_indices": list(range(first_index, last_index + 1)),
+            "batch_size": batch_size,
+        })
+
+        first_index = last_index + 1
+        batch_no += 1
+
+    return jobs
+
+
+def _build_pl_detail_jobs(
+    file_uri_pl: str,
+    pl_index: list,
+    total_pl_row: int,
+    vendor_id: str,
+    vendor_prompt_text: str,
+    local_pl_pdf: str,
+    run_prefix: str,
+    temp_local_paths: list,
+    batch_size: int,
+) -> list:
+    """Build batch job list untuk PL-only detail extraction."""
+    jobs = []
+    first_index = 1
+    batch_no = 1
+    total_pages = _count_pdf_pages(local_pl_pdf)
+
+    is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
+
+    while first_index <= total_pl_row:
+        last_index = min(first_index + batch_size - 1, total_pl_row)
+        index_slice = pl_index[first_index - 1:last_index]
+
+        prompt = build_pl_detail_prompt_from_index(
+            total_row=total_pl_row,
+            index_slice=index_slice,
+            first_index=first_index,
+            last_index=last_index,
+            vendor_id=vendor_id,
+            vendor_prompt_text=vendor_prompt_text,
+        )
+
+        batch_file_uri = file_uri_pl
+
+        if total_pl_row >= 90 or is_karet_deli:
+            pages = [
+                int(x.get("page_no") or x.get("page", 0))
+                for x in index_slice
+                if x.get("page_no") or x.get("page")
+            ]
+            if pages:
+                start_idx = max(0, min(pages) - 1 - 1)
+                end_idx = min(total_pages - 1, max(pages) - 1 + 1)
+                sliced_local = _create_sliced_pdf_for_batch(local_pl_pdf, start_idx, end_idx)
+                temp_local_paths.append(sliced_local)
+                batch_file_uri = _upload_temp_pdf_to_gcs(
+                    sliced_local,
+                    run_prefix,
+                    name=f"pl_batch_{batch_no}_{start_idx}_{end_idx}",
+                )
+                prompt += (
+                    f"\n\nPERHATIAN GUARDRAIL INDEKS:\n"
+                    f"Anda sedang membaca POTONGAN DOKUMEN (Halaman fisik ke-{start_idx+1} sampai {end_idx+1}). "
+                    f"Tugas Anda HANYA mengekstrak line item PL ke-{first_index} sampai {last_index}."
+                )
+
+        jobs.append({
+            "batch_no": batch_no,
+            "file_uri": batch_file_uri,
+            "prompt": prompt,
+            "first_index": first_index,
+            "last_index": last_index,
+            "expected_indices": list(range(first_index, last_index + 1)),
+            "batch_size": batch_size,
+        })
+
+        first_index = last_index + 1
+        batch_no += 1
+
+    return jobs
+
+
 def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_vendor_id=None):
     """
     uploaded_docs format:
@@ -13025,25 +13341,24 @@ def run_ocr(
             if os.path.abspath(str(normalized)) != os.path.abspath(str(p)):
                 temp_local_paths.append(normalized)
 
-        # DETAIL: invoice+packing saja (2 file pertama dari UI)
         if len(normalized_pdf_paths) < 2:
             raise Exception("Minimal harus ada 2 file: invoice dan packing list.")
 
         # ==========================================
-        # PREPROCESS HANYA INVOICE + PACKING LIST
+        # VENDOR CONTEXT
         # ==========================================
-        # Default: merge semua halaman invoice/PL jadi 1 page panjang.
-        # Pre-processing ini menolong Gemini melihat seluruh tabel sekaligus
-        # untuk vendor dengan format tabular standar (chengs dkk).
-        #
-        # Khusus shimano_inc / shimano_singapore: SKIP merge ini. Format
-        # invoice SHIMANO berbasis BLOK vertikal (PART#/PRODUCT CD/S.PART#
-        # di kanan + CTN NO. sub-rows + baris TOTAL per blok), dengan 30+
-        # halaman per invoice. Saat di-merge jadi satu page yang sangat
-        # tinggi, Gemini bingung membedakan blok-blok individual dan
-        # cenderung balikin halusinasi atau array kosong. Mengirim PDF
-        # multi-page asli membiarkan Gemini membaca tiap halaman secara
-        # alami.
+        vendor_id = normalize_vendor_id(forced_vendor_id)
+
+        if vendor_id == "default":
+            raise Exception("Vendor wajib dipilih dari UI. forced_vendor_id kosong atau tidak valid.")
+
+        vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+        print(f"[VENDOR CONTEXT] vendor_id={vendor_id} forced_vendor_id={forced_vendor_id}")
+
+        # ==========================================
+        # PREPROCESS — INVOICE & PL (TERPISAH)
+        # BL dan COO: pakai PDF asli (tidak perlu merge halaman)
+        # ==========================================
         _skip_onepage_preprocess = normalize_vendor_id(forced_vendor_id) in {
             "shimano_inc",
             "shimano_singapore",
@@ -13051,525 +13366,302 @@ def run_ocr(
         }
 
         if _skip_onepage_preprocess:
-            print(
-                f"[PREPROCESS] vendor_id={forced_vendor_id}: skip one-page "
-                "merge, kirim PDF multi-page asli ke Gemini."
-            )
+            print(f"[PREPROCESS] vendor_id={forced_vendor_id}: skip one-page merge.")
             invoice_onepage_pdf = normalized_pdf_paths[0]
             packing_onepage_pdf = normalized_pdf_paths[1]
         else:
             invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-                normalized_pdf_paths[0],
-                "invoice"
+                normalized_pdf_paths[0], "invoice"
             )
             temp_local_paths.append(invoice_onepage_pdf)
 
             packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-                normalized_pdf_paths[1],
-                "packing"
+                normalized_pdf_paths[1], "packing"
             )
             temp_local_paths.append(packing_onepage_pdf)
 
-        preprocessed_detail_inputs = [
-            invoice_onepage_pdf,
-            packing_onepage_pdf,
-        ]
+        # Resolve BL dan COO path dari urutan upload:
+        # [invoice, packing, BL?, COO?]
+        bl_pdf_path = None
+        coo_pdf_path = None
+        if has_bl_doc and len(normalized_pdf_paths) >= 3:
+            bl_pdf_path = normalized_pdf_paths[2]
+        if has_coo_doc and len(normalized_pdf_paths) >= 4:
+            coo_pdf_path = normalized_pdf_paths[3]
 
-        # DETAIL: invoice + packing yang sudah di-merge jadi 1 page masing-masing
-        merged_pdf_detail = _merge_pdfs(preprocessed_detail_inputs)
-        temp_local_paths.append(merged_pdf_detail)
+        # ==========================================
+        # HEADER EXTRACTION (3 CALLS TERPISAH)
+        # 1. INV+PL merged → inv_* + pl_* headers (cost-efficient, combined)
+        # 2. BL PDF         → bl_* headers
+        # 3. COO PDF        → coo_* headers
+        # ==========================================
 
-        merged_pdf_detail = _compress_pdf_if_needed(merged_pdf_detail)
-        if merged_pdf_detail not in temp_local_paths:
-            temp_local_paths.append(merged_pdf_detail)
+        # 1. INV+PL combined header
+        merged_inv_pl_for_header = _merge_pdfs([invoice_onepage_pdf, packing_onepage_pdf])
+        temp_local_paths.append(merged_inv_pl_for_header)
+        merged_inv_pl_for_header = _compress_pdf_if_needed(merged_inv_pl_for_header)
+        if merged_inv_pl_for_header not in temp_local_paths:
+            temp_local_paths.append(merged_inv_pl_for_header)
 
-        file_uri_detail = _upload_temp_pdf_to_gcs(
-            merged_pdf_detail,
-            run_prefix,
-            name="detail"
+        file_uri_inv_pl_header = _upload_temp_pdf_to_gcs(
+            merged_inv_pl_for_header, run_prefix, name="header_inv_pl"
         )
 
-        file_uri_full = None
-        file_uri_container_bl = None
-
-        # FULL:
-        # invoice + packing pakai hasil preprocess
-        # BL / COO / dokumen lain tetap original
-        # Dipakai untuk optional header/detail enrichment.
-        has_extra_docs = (
-            len(normalized_pdf_paths) > 2
-            and (has_bl_doc or has_coo_doc)
-        )
-        if has_extra_docs:
-            full_input_paths = [
-                invoice_onepage_pdf,
-                packing_onepage_pdf,
-            ] + normalized_pdf_paths[2:]
-
-            merged_pdf_full = _merge_pdfs(full_input_paths)
-            temp_local_paths.append(merged_pdf_full)
-
-            merged_pdf_full = _compress_pdf_if_needed(merged_pdf_full)
-            if merged_pdf_full not in temp_local_paths:
-                temp_local_paths.append(merged_pdf_full)
-
-            file_uri_full = _upload_temp_pdf_to_gcs(
-                merged_pdf_full,
-                run_prefix,
-                name="full"
-            )
-
-        # CONTAINER:
-        # Khusus output container, input Gemini harus hanya dokumen BL.
-        # Urutan input legacy/grouped: [invoice, packing, BL, COO?]
-        if with_total_container:
-            if not has_bl_doc or len(normalized_pdf_paths) < 3:
-                raise Exception("Output total/container membutuhkan dokumen Bill of Lading.")
-
-            bl_pdf_for_container = _compress_pdf_if_needed(normalized_pdf_paths[2])
-            if (
-                bl_pdf_for_container not in temp_local_paths
-                and bl_pdf_for_container != normalized_pdf_paths[2]
-            ):
-                temp_local_paths.append(bl_pdf_for_container)
-
-            file_uri_container_bl = _upload_temp_pdf_to_gcs(
-                bl_pdf_for_container,
-                run_prefix,
-                name="container_bl"
-            )
-
-        # =========================
-        # TWO-PASS INPUT MODE
-        # =========================
-        base_detail_input_uri = file_uri_detail          # INV + PL only
-        optional_detail_input_uri = file_uri_full        # INV + PL + BL/COO, jika ada
-
-        # =========================
-        # VENDOR CONTEXT
-        # Dipakai sejak header pass karena shimano_inc punya aturan khusus:
-        # bl_mark_number diambil dari content/detail, bukan header.
-        # =========================
-        vendor_id = normalize_vendor_id(forced_vendor_id)
-
-        if vendor_id == "default":
-            raise Exception("Vendor wajib dipilih dari UI. forced_vendor_id kosong atau tidak valid.")
-
-        vendor_prompt_text = load_vendor_prompt_text(vendor_id)
-        vendor_source = "ui"
-
-        print(
-            f"[VENDOR CONTEXT] vendor_id={vendor_id} "
-            f"vendor_source={vendor_source} forced_vendor_id={forced_vendor_id}"
-        )
-
-        print("OCR Header - BASE INV+PL")
-
-        base_header_obj = _call_gemini_json_uri(
-            file_uri_detail,
+        print("OCR Header - INV+PL combined")
+        inv_pl_header = _call_gemini_json_uri(
+            file_uri_inv_pl_header,
             build_header_prompt(vendor_id=vendor_id),
             expect_array=False,
             retries=3,
-            vendor_id=vendor_id
+            vendor_id=vendor_id,
         )
-        if not isinstance(base_header_obj, dict):
-            base_header_obj = {}
+        if not isinstance(inv_pl_header, dict):
+            inv_pl_header = {}
 
-        optional_header_obj = {}
-
-        if optional_detail_input_uri:
-            print("OCR Header - OPTIONAL FULL DOCS")
-
-            optional_header_obj = _call_gemini_json_uri(
-                optional_detail_input_uri,
-                build_header_prompt(vendor_id=vendor_id),
+        # 2. BL header (separate)
+        bl_header = {}
+        file_uri_bl = None
+        if has_bl_doc and bl_pdf_path:
+            bl_pdf_compressed = _compress_pdf_if_needed(bl_pdf_path)
+            if bl_pdf_compressed not in temp_local_paths and bl_pdf_compressed != bl_pdf_path:
+                temp_local_paths.append(bl_pdf_compressed)
+            file_uri_bl = _upload_temp_pdf_to_gcs(bl_pdf_compressed, run_prefix, name="bl")
+            print("OCR Header - BL")
+            raw_bl_header = _call_gemini_json_uri(
+                file_uri_bl,
+                build_bl_header_prompt(vendor_id=vendor_id),
                 expect_array=False,
                 retries=3,
-                vendor_id=vendor_id
+                vendor_id=vendor_id,
             )
-            if not isinstance(optional_header_obj, dict):
-                optional_header_obj = {}
+            if isinstance(raw_bl_header, dict):
+                bl_header = raw_bl_header
 
-        # header_obj final:
-        # - inv_* dan pl_* dari base_header_obj
-        # - bl_* dan coo_* dari optional_header_obj
-        header_obj = _merge_optional_header_into_base_header(
-            base_header_obj=base_header_obj,
-            optional_header_obj=optional_header_obj,
-        )
+        # 3. COO header (separate)
+        coo_header = {}
+        file_uri_coo = None
+        if has_coo_doc and coo_pdf_path:
+            coo_pdf_compressed = _compress_pdf_if_needed(coo_pdf_path)
+            if coo_pdf_compressed not in temp_local_paths and coo_pdf_compressed != coo_pdf_path:
+                temp_local_paths.append(coo_pdf_compressed)
+            file_uri_coo = _upload_temp_pdf_to_gcs(coo_pdf_compressed, run_prefix, name="coo")
+            print("OCR Header - COO")
+            raw_coo_header = _call_gemini_json_uri(
+                file_uri_coo,
+                build_coo_header_prompt(),
+                expect_array=False,
+                retries=3,
+                vendor_id=vendor_id,
+            )
+            if isinstance(raw_coo_header, dict):
+                coo_header = raw_coo_header
 
+        # Merge semua header
+        header_obj = _merge_separate_doc_headers(inv_pl_header, bl_header, coo_header)
         _enforce_absent_optional_docs_empty(
             header_obj=header_obj,
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
 
-        # GET TOTAL ROW FROM GEMINI
+        # ==========================================
+        # INVOICE OCR — SEPARATE (BATCHED)
+        # Row count → Index → Batched detail → Recheck
+        # ==========================================
+        inv_pdf_compressed = _compress_pdf_if_needed(invoice_onepage_pdf)
+        if inv_pdf_compressed not in temp_local_paths and inv_pdf_compressed != invoice_onepage_pdf:
+            temp_local_paths.append(inv_pdf_compressed)
+        file_uri_inv = _upload_temp_pdf_to_gcs(inv_pdf_compressed, run_prefix, name="inv")
+
+        # Row count (Invoice)
         if normalize_vendor_id(vendor_id) == "karet_deli":
-            prompt_to_use = KARET_DELI_ROW_SYSTEM_INSTRUCTION
-            print("[ROW_COUNT] Menggunakan prompt custom KARET_DELI_ROW_SYSTEM_INSTRUCTION")
+            inv_row_prompt = KARET_DELI_ROW_SYSTEM_INSTRUCTION
+            print("[ROW_COUNT_INV] Menggunakan KARET_DELI_ROW_SYSTEM_INSTRUCTION")
         else:
-            prompt_to_use = ROW_SYSTEM_INSTRUCTION
-            
-        data_row = _call_gemini_json_uri(file_uri_detail, prompt_to_use, expect_array=False, retries=3, vendor_id=vendor_id)
+            inv_row_prompt = ROW_SYSTEM_INSTRUCTION
 
+        data_row = _call_gemini_json_uri(
+            file_uri_inv, inv_row_prompt, expect_array=False, retries=3, vendor_id=vendor_id
+        )
         if isinstance(data_row, dict) and "total_row" in data_row:
-            total_row = int(data_row["total_row"])
+            total_inv_row = int(data_row["total_row"])
         else:
-            raise Exception(f"total_row tidak ditemukan di response: {data_row}")
+            raise Exception(f"total_inv_row tidak ditemukan di response: {data_row}")
 
-        # SHIMANO: override total_row dengan deterministic PART# count via pymupdf.
-        # Gemini's row.py count untuk SHIMANO unreliable karena format BLOCK
-        # (bukan tabular) — variance tinggi run-to-run dan sering undercount,
-        # akibatnya chunked extraction kehilangan tail items.
-        # Hanya aktif untuk shimano_inc / shimano_singapore, vendor lain
-        # sama sekali tidak ter-sentuh.
+        # SHIMANO: override dengan deterministic count
         if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
-            invoice_pdf_for_count = normalized_pdf_paths[0]
-            deterministic_total_row = _shimano_count_line_items_from_invoice_pdf(
-                invoice_pdf_for_count
-            )
-            if deterministic_total_row > 0:
-                print(
-                    f"[SHIMANO_PART_COUNT] override total_row: "
-                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
-                )
-                total_row = deterministic_total_row
-            else:
-                print(
-                    f"[SHIMANO_PART_COUNT] pymupdf count returned 0, "
-                    f"fallback ke gemini total_row={total_row}"
-                )
+            det_count = _shimano_count_line_items_from_invoice_pdf(normalized_pdf_paths[0])
+            if det_count > 0:
+                print(f"[SHIMANO_PART_COUNT] override total_inv_row: gemini={total_inv_row} -> pymupdf={det_count}")
+                total_inv_row = det_count
 
-        # NEW: INDEX extraction (anchor line item)
-        # Untuk dokumen dengan banyak line item (total_row > threshold),
-        # output JSON index dalam satu shot melebihi max_output_tokens
-        # sehingga Gemini ter-truncate dan retry gagal.
-        # Pakai chunked extraction kalau total_row melewati threshold.
-        # Trigger berbasis jumlah row, BUKAN vendor, supaya dokumen besar
-        # dari vendor apa pun otomatis ter-cover.
-        index_chunk_size = _get_index_chunk_size_for_total_row(total_row, vendor_id=vendor_id)
+        # Index extraction (Invoice)
+        index_chunk_size = _get_index_chunk_size_for_total_row(total_inv_row, vendor_id=vendor_id)
 
         if index_chunk_size > 0:
             print(
-                f"[INDEX_CHUNK_MODE] vendor_id={vendor_id} "
-                f"total_row={total_row} chunk_size={index_chunk_size} "
-                f"threshold={INDEX_CHUNK_TOTAL_ROW_THRESHOLD}"
+                f"[INV_INDEX_CHUNK_MODE] total_inv_row={total_inv_row} chunk_size={index_chunk_size}"
             )
-            index_items = _call_gemini_index_chunked(
-                file_uri=file_uri_detail,
-                total_row=total_row,
+            inv_index = _call_gemini_index_chunked(
+                file_uri=file_uri_inv,
+                total_row=total_inv_row,
                 vendor_id=vendor_id,
                 chunk_size=index_chunk_size,
             )
         else:
-            index_items = _call_gemini_json_uri(
-                file_uri_detail,
-                build_index_prompt(total_row),
+            inv_index = _call_gemini_json_uri(
+                file_uri_inv,
+                build_inv_index_prompt(total_inv_row),
                 expect_array=True,
                 retries=3,
-                vendor_id=vendor_id
+                vendor_id=vendor_id,
             )
 
-        # fallback safety
-        if not isinstance(index_items, list) or not index_items:
-            raise Exception("INDEX line items kosong")
+        if not isinstance(inv_index, list) or not inv_index:
+            raise Exception("INV INDEX line items kosong")
 
-        # GLOBAL DEDUPE (chunk boundary overlap, shimano): block sama diulang di
-        # akhir chunk N dan awal chunk N+1. Key dedup = (PART#, qty, amount, PO).
-        # Gated ke DEDUPLICATE_INDEX_VENDORS supaya blast radius nol untuk vendor
-        # lain. CATATAN: dedup global ini membuang SEMUA duplikat by-key, jadi
-        # TIDAK aman untuk dokumen yang punya genuine duplicate line item.
         if _should_deduplicate_index(vendor_id):
-            before_dedupe = len(index_items)
-            index_items = _dedupe_index_items(index_items)
-            after_dedupe = len(index_items)
-            if before_dedupe != after_dedupe:
-                print(
-                    f"[INDEX_DEDUPE] index_items: "
-                    f"before={before_dedupe} after={after_dedupe} "
-                    f"dropped={before_dedupe - after_dedupe}"
-                )
+            before = len(inv_index)
+            inv_index = _dedupe_index_items(inv_index)
+            print(f"[INV_INDEX_DEDUPE] before={before} after={len(inv_index)}")
 
-        # GHOST TAIL RUN: buang deretan duplikat di ekor index (key sudah muncul
-        # lebih awal). Aman untuk genuine duplicate yang ter-interleave karena
-        # hanya run paling belakang yang dibuang. Mencegah double count total
-        # quantity/amount tanpa menyentuh vendor lain.
         if _should_strip_trailing_ghost_run(vendor_id):
-            before_ghost = len(index_items)
-            index_items = _strip_trailing_ghost_run(index_items)
-            after_ghost = len(index_items)
-            if before_ghost != after_ghost:
-                print(
-                    f"[INDEX_GHOST_TAIL] index_items: "
-                    f"before={before_ghost} after={after_ghost} "
-                    f"dropped={before_ghost - after_ghost}"
-                )
+            before = len(inv_index)
+            inv_index = _strip_trailing_ghost_run(inv_index)
+            print(f"[INV_INDEX_GHOST_TAIL] before={before} after={len(inv_index)}")
 
-        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
-        if len(index_items) != total_row:
-            print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
-            total_row = len(index_items)
+        if len(inv_index) != total_inv_row:
+            print(f"[WARN] total_inv_row={total_inv_row} vs index={len(inv_index)}, pakai len(index)")
+            total_inv_row = len(inv_index)
 
-        _fill_forward(index_items, "inv_customer_po_no")
-        _fill_forward(index_items, "pl_customer_po_no")
+        _fill_forward(inv_index, "inv_customer_po_no")
 
-        # BATCH DETAIL EXTRACTION
+        # Batched Invoice detail extraction
         detail_batch_size = _get_detail_batch_size_for_vendor(vendor_id)
+        print(f"[INV_DETAIL_BATCH] vendor_id={vendor_id} batch_size={detail_batch_size}")
 
-        print(
-            f"[DETAIL_BATCH_SIZE] "
-            f"vendor_id={vendor_id} "
-            f"batch_size={detail_batch_size}"
-        )
-
-        jobs = []
-        first_index = 1
-        batch_no = 1
-        total_detail_pages = _count_pdf_pages(merged_pdf_detail)
-
-        while first_index <= total_row:
-            last_index = min(first_index + detail_batch_size - 1, total_row)
-            index_slice = index_items[first_index - 1:last_index]  # 1-based -> 0-based
-            expected_indices = list(range(first_index, last_index + 1))
-
-            if len(index_slice) != len(expected_indices):
-                raise Exception(f"Index slice mismatch. batch_no={batch_no}")
-
-            prompt = build_detail_prompt_from_index(
-                total_row=total_row,
-                index_slice=index_slice,
-                first_index=first_index,
-                last_index=last_index,
-                vendor_id=vendor_id,
-                vendor_prompt_text=vendor_prompt_text
-            )
-
-            # === LOGIC TRIGGER >= 90 LINE ITEMS ===
-            batch_file_uri = base_detail_input_uri  # Default uri (Full PDF)
-            
-            is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
-            if total_row >= 90 or is_karet_deli:
-                pages = [
-                    int(x.get("page_no") or x.get("page", 0)) 
-                    for x in index_slice 
-                    if x.get("page_no") or x.get("page")
-                ]
-                
-                if pages:
-                    min_p = min(pages)
-                    max_p = max(pages)
-                    
-                    # Potong dengan overlap +/- 1 halaman sebagai safety net
-                    start_idx = max(0, min_p - 1 - 1) 
-                    end_idx = min(total_detail_pages - 1, max_p - 1 + 1)
-                    
-                    sliced_local = _create_sliced_pdf_for_batch(merged_pdf_detail, start_idx, end_idx)
-                    temp_local_paths.append(sliced_local)
-                    
-                    batch_file_uri = _upload_temp_pdf_to_gcs(
-                        sliced_local,
-                        run_prefix,
-                        name=f"detail_batch_{batch_no}_{start_idx}_{end_idx}"
-                    )
-                    
-                    prompt += (
-                        f"\n\nPERHATIAN GUARDRAIL INDEKS:\n"
-                        f"Anda sedang membaca POTONGAN DOKUMEN (Halaman fisik ke-{start_idx+1} sampai {end_idx+1}). "
-                        f"JANGAN mereset indeks hitungan Anda dari 1! "
-                        f"Tugas Anda HANYA mengekstrak line item ke-{first_index} sampai {last_index} "
-                        f"secara berurutan menggunakan _expected_index yang diberikan."
-                    )
-
-            jobs.append({
-                "batch_no": batch_no,
-                "file_uri": batch_file_uri,
-                "prompt": prompt,
-                "first_index": first_index,
-                "last_index": last_index,
-                "expected_indices": expected_indices,
-                "batch_size": detail_batch_size,
-            })
-
-            first_index = last_index + 1
-            batch_no += 1
-
-        MAX_WORKERS = max(1, len(jobs))
-
-        # =========================================
-        # PASS 1: BASE DETAIL OCR
-        # Input hanya INV + PL.
-        # Vendor prompt tetap sama.
-        # Schema tetap sama.
-        # =========================================
-        all_rows = _run_detail_jobs(
-            input_uri=base_detail_input_uri,
-            run_prefix=f"{run_prefix}/detail_base",
-            jobs=jobs,
-            total_row=total_row,
-            label="BASE_INV_PL",
-            batch_size=detail_batch_size,
-            vendor_id=vendor_id
-        )
-
-        # =========================================
-        # KARET DELI: DETECT-THEN-REFOCUSED-RETRY untuk pl_total_quantity.
-        # Setelah detail extraction selesai, sum(pl_quantity) dari rows
-        # bisa dipakai sebagai sanity check terhadap pl_total_quantity
-        # yang Gemini extract di header pass. Kalau diff kecil (≤1%),
-        # kemungkinan besar Gemini salah pilih antara TOTAL parent vs
-        # GRAND TOTAL — panggil Gemini 1x dengan prompt super-fokus
-        # supaya pilih yang benar. Bounded 1 retry, tidak ada loop.
-        # =========================================
-        if normalize_vendor_id(vendor_id) == "karet_deli":
-            _karet_deli_refocus_pl_total_quantity(
-                file_uri=base_detail_input_uri,
-                all_rows=all_rows,
-                base_header_obj=base_header_obj,
-                vendor_id=vendor_id,
-            )
-            # Sinkronkan header_obj kalau base_header_obj sudah di-update.
-            # _merge_optional_header_into_base_header tidak override pl_*,
-            # jadi header_obj juga harus disinkronkan manual.
-            if base_header_obj.get("pl_total_quantity") != header_obj.get("pl_total_quantity"):
-                header_obj["pl_total_quantity"] = base_header_obj.get("pl_total_quantity")
-
-        # =========================================
-        # PRECHECK PYTHON
-        # Untuk base INV/PL, pakai base_header_obj.
-        # Jangan pakai optional header supaya BL/COO tidak memengaruhi precheck INV/PL.
-        # =========================================
-        all_rows = _run_detail_precheck_pass(
-            all_rows,
-            base_header_obj,
-            vendor_id=vendor_id
-        )
-        _assign_detail_row_numbers(all_rows)
-
-        # =========================================
-        # GEMINI RECHECK SEKALI
-        # Recheck INV/PL juga HARUS pakai file_uri_detail.
-        # =========================================
-        repaired_rows = _call_gemini_detail_line_recheck_once(
-            base_detail_input_uri,
-            all_rows,
+        inv_jobs = _build_inv_detail_jobs(
+            file_uri_inv=file_uri_inv,
+            inv_index=inv_index,
+            total_inv_row=total_inv_row,
             vendor_id=vendor_id,
             vendor_prompt_text=vendor_prompt_text,
-            total_row=total_row,
-            index_items=index_items,
-            local_pdf_path=merged_pdf_detail,
-            run_prefix=run_prefix
+            local_inv_pdf=invoice_onepage_pdf,
+            run_prefix=f"{run_prefix}/inv_detail",
+            temp_local_paths=temp_local_paths,
+            batch_size=detail_batch_size,
         )
 
-        if repaired_rows:
-            if _is_recheck_label_only_vendor(vendor_id):
-                all_rows = _apply_detail_line_recheck_label_only(
-                    all_rows,
-                    repaired_rows
-                )
-                # Label-only TIDAK menulis nilai. Tapi untuk vendor yang PL
-                # numeric per baris-nya rawan ke-nol-kan oleh extraction
-                # (halaman lanjutan PL tanpa header), backfill TARGETED nilai
-                # non-zero hasil recheck ke baris yang signature-nya jelas.
-                all_rows = _backfill_zeroed_pl_numeric_from_recheck(
-                    all_rows,
-                    repaired_rows,
-                    vendor_id=vendor_id,
-                )
-            else:
-                all_rows = _apply_detail_line_recheck_result(
-                    all_rows,
-                    repaired_rows
-                )
-
-        print(
-            f"[DETAIL_COUNT_AFTER_RECHECK] "
-            f"expected={total_row} actual={len(all_rows)}"
-        )
-
-        if len(all_rows) != total_row:
-            raise Exception(
-                f"Detail row count changed after recheck. "
-                f"expected={total_row}, actual={len(all_rows)}"
-            )
-        
-        # =========================================
-        # HAOMENG: DROP EMPTY ROWS (HALUSINASI)
-        # Harus ditaruh di sini agar lolos pengecekan Exception di atas
-        # =========================================
-        all_rows = _drop_empty_rows_for_haomeng(all_rows, vendor_id)
-
-        # =========================================
-        # SHIMANO INC ONLY: HS# extraction
-        # Tidak grouping ulang.
-        # Jalan per invoice group karena run_grouped_ocr()
-        # memanggil run_ocr() per group.
-        #
-        # Pakai base_detail_input_uri = INV + PL only,
-        # supaya tidak salah ambil HS code dari COO/BL.
-        # =========================================
-        all_rows = _run_shimano_hs_code_pass(
-            file_uri=base_detail_input_uri,
-            rows=all_rows,
+        inv_rows = _run_detail_jobs(
+            input_uri=file_uri_inv,
+            run_prefix=f"{run_prefix}/inv_detail",
+            jobs=inv_jobs,
+            total_row=total_inv_row,
+            label="INV_ONLY",
+            batch_size=detail_batch_size,
             vendor_id=vendor_id,
         )
-        
-        # =========================================
-        # PASS 2: OPTIONAL FULL DOC OCR
-        # Input full docs jika ada BL/COO.
-        # Prompt vendor tetap sama, tapi ditambah base_rows sebagai anchor.
-        # Hasil optional TIDAK BOLEH overwrite inv_* / pl_*.
-        # =========================================
-        if optional_detail_input_uri:
+
+        # ==========================================
+        # PL OCR — SEPARATE (BATCHED)
+        # Row count → Index → Batched detail
+        # ==========================================
+        pl_pdf_compressed = _compress_pdf_if_needed(packing_onepage_pdf)
+        if pl_pdf_compressed not in temp_local_paths and pl_pdf_compressed != packing_onepage_pdf:
+            temp_local_paths.append(pl_pdf_compressed)
+        file_uri_pl = _upload_temp_pdf_to_gcs(pl_pdf_compressed, run_prefix, name="pl")
+
+        # Row count (PL)
+        print("[ROW_COUNT_PL] Menghitung baris PL")
+        pl_row_data = _call_gemini_json_uri(
+            file_uri_pl, PL_ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id
+        )
+        if isinstance(pl_row_data, dict) and "total_row" in pl_row_data:
+            total_pl_row = int(pl_row_data["total_row"])
+        else:
+            print(f"[WARN] total_pl_row tidak ditemukan, fallback ke total_inv_row={total_inv_row}")
+            total_pl_row = total_inv_row
+
+        # Index extraction (PL)
+        pl_index = _call_gemini_json_uri(
+            file_uri_pl,
+            build_pl_index_prompt(total_pl_row),
+            expect_array=True,
+            retries=3,
+            vendor_id=vendor_id,
+        )
+
+        if not isinstance(pl_index, list) or not pl_index:
+            print("[WARN] PL INDEX kosong, PL OCR akan di-skip")
+            pl_index = []
+            total_pl_row = 0
+
+        if pl_index and len(pl_index) != total_pl_row:
+            print(f"[WARN] total_pl_row={total_pl_row} vs pl_index={len(pl_index)}, pakai len(pl_index)")
+            total_pl_row = len(pl_index)
+
+        if pl_index:
+            _fill_forward(pl_index, "pl_customer_po_no")
+
+        pl_rows = []
+        if pl_index and total_pl_row > 0:
+            pl_jobs = _build_pl_detail_jobs(
+                file_uri_pl=file_uri_pl,
+                pl_index=pl_index,
+                total_pl_row=total_pl_row,
+                vendor_id=vendor_id,
+                vendor_prompt_text=vendor_prompt_text,
+                local_pl_pdf=packing_onepage_pdf,
+                run_prefix=f"{run_prefix}/pl_detail",
+                temp_local_paths=temp_local_paths,
+                batch_size=detail_batch_size,
+            )
+
+            pl_rows = _run_detail_jobs(
+                input_uri=file_uri_pl,
+                run_prefix=f"{run_prefix}/pl_detail",
+                jobs=pl_jobs,
+                total_row=total_pl_row,
+                label="PL_ONLY",
+                batch_size=detail_batch_size,
+                vendor_id=vendor_id,
+            )
+
+        # ==========================================
+        # COO ITEM EXTRACTION (single pass, no batching)
+        # ==========================================
+        coo_items = []
+        if has_coo_doc and file_uri_coo:
             try:
-                print("[OPTIONAL_PASS] Start full-doc OCR for BL/COO enrichment")
-
-                optional_jobs = _build_optional_jobs_from_base_rows(
-                    jobs=jobs,
-                    base_rows=all_rows,
-                )
-
-                optional_rows = _run_detail_jobs(
-                    input_uri=optional_detail_input_uri,
-                    run_prefix=f"{run_prefix}/detail_optional",
-                    jobs=optional_jobs,
-                    total_row=total_row,
-                    label="OPTIONAL_FULL_DOCS",
-                    batch_size=detail_batch_size,
-                    vendor_id=vendor_id
-                )
-
-                all_rows = _merge_optional_rows_into_base_rows(
-                    base_rows=all_rows,
-                    optional_rows=optional_rows,
-                )
-
-                print("[OPTIONAL_PASS] Done")
-
+                coo_items = _extract_coo_item_list(file_uri=file_uri_coo, vendor_id=vendor_id)
             except Exception as e:
-                # Optional docs tidak boleh menghancurkan hasil INV/PL.
-                print(f"[OPTIONAL_PASS][WARN] optional BL/COO enrichment skipped: {e}")
+                print(f"[COO_ITEM_EXTRACT][WARN] skipped: {e}")
 
-        # =========================================================
-        # DETERMINISTIC COO MAPPING (vendor COO ter-agregat, mis. joy)
-        # PASS 2 di-anchor ke base row invoice sehingga sulit mem-fan-out
-        # 1 item COO ke banyak baris dalam panggilan yang juga urus BL.
-        # Ekstrak daftar item COO apa adanya lalu petakan di Python.
-        # Gated per-vendor -> nol dampak ke vendor lain & ke mapping BL.
-        # =========================================================
-        if (
-            has_coo_doc
-            and optional_detail_input_uri
-            and _is_aggregated_coo_vendor(vendor_id)
-        ):
+        # ==========================================
+        # MAPPING: PL → INVOICE
+        # ==========================================
+        all_rows = _map_pl_rows_to_invoice_rows(inv_rows, pl_rows)
+
+        # KARET DELI: refocus pl_total_quantity setelah mapping
+        if normalize_vendor_id(vendor_id) == "karet_deli":
+            _karet_deli_refocus_pl_total_quantity(
+                file_uri=file_uri_inv_pl_header,
+                all_rows=all_rows,
+                base_header_obj=inv_pl_header,
+                vendor_id=vendor_id,
+            )
+            if inv_pl_header.get("pl_total_quantity") != header_obj.get("pl_total_quantity"):
+                header_obj["pl_total_quantity"] = inv_pl_header.get("pl_total_quantity")
+
+        # Apply headers ke semua rows
+        _apply_header_to_rows(all_rows, header_obj, vendor_id=vendor_id)
+
+        # MAPPING: COO items → invoice rows
+        if has_coo_doc and coo_items:
             try:
-                coo_items = _extract_coo_item_list(
-                    file_uri=optional_detail_input_uri,
-                    vendor_id=vendor_id,
-                )
                 _map_coo_items_to_rows(all_rows, coo_items, vendor_id=vendor_id)
             except Exception as e:
-                print(f"[COO_DETERMINISTIC_MAP][WARN] skipped: {e}")
+                print(f"[COO_MAP][WARN] skipped: {e}")
 
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
@@ -13578,11 +13670,72 @@ def run_ocr(
             has_coo_doc=has_coo_doc,
         )
 
+        # CONTAINER: BL PDF only
+        file_uri_container_bl = None
+        if with_total_container:
+            if not has_bl_doc or not bl_pdf_path:
+                raise Exception("Output total/container membutuhkan dokumen Bill of Lading.")
+            bl_pdf_for_container = _compress_pdf_if_needed(bl_pdf_path)
+            if bl_pdf_for_container not in temp_local_paths and bl_pdf_for_container != bl_pdf_path:
+                temp_local_paths.append(bl_pdf_for_container)
+            file_uri_container_bl = file_uri_bl or _upload_temp_pdf_to_gcs(
+                bl_pdf_for_container, run_prefix, name="container_bl"
+            )
+
+        # ==========================================
+        # PRECHECK PYTHON
+        # ==========================================
+        all_rows = _run_detail_precheck_pass(
+            all_rows,
+            inv_pl_header,
+            vendor_id=vendor_id,
+        )
+        _assign_detail_row_numbers(all_rows)
+
+        # ==========================================
+        # GEMINI RECHECK (pakai merged INV+PL PDF)
+        # ==========================================
+        repaired_rows = _call_gemini_detail_line_recheck_once(
+            file_uri_inv_pl_header,
+            all_rows,
+            vendor_id=vendor_id,
+            vendor_prompt_text=vendor_prompt_text,
+            total_row=total_inv_row,
+            index_items=inv_index,
+            local_pdf_path=merged_inv_pl_for_header,
+            run_prefix=run_prefix,
+        )
+
+        if repaired_rows:
+            if _is_recheck_label_only_vendor(vendor_id):
+                all_rows = _apply_detail_line_recheck_label_only(all_rows, repaired_rows)
+                all_rows = _backfill_zeroed_pl_numeric_from_recheck(
+                    all_rows, repaired_rows, vendor_id=vendor_id
+                )
+            else:
+                all_rows = _apply_detail_line_recheck_result(all_rows, repaired_rows)
+
+        print(f"[DETAIL_COUNT_AFTER_RECHECK] expected={total_inv_row} actual={len(all_rows)}")
+
+        if len(all_rows) != total_inv_row:
+            raise Exception(
+                f"Detail row count changed after recheck. "
+                f"expected={total_inv_row}, actual={len(all_rows)}"
+            )
+
+        # HAOMENG: drop empty rows
+        all_rows = _drop_empty_rows_for_haomeng(all_rows, vendor_id)
+
+        # SHIMANO: HS# extraction (dari Invoice PDF)
+        all_rows = _run_shimano_hs_code_pass(
+            file_uri=file_uri_inv,
+            rows=all_rows,
+            vendor_id=vendor_id,
+        )
+
         # =========================
-        # OPTIONAL: total/container
+        # CONTAINER: Gemini extraction (BL only)
         # =========================
-        total_data = None
-        container_data = None
         if with_total_container and file_uri_container_bl:
             container_data = _call_gemini_json_uri(
                 file_uri_container_bl,
@@ -13591,13 +13744,11 @@ def run_ocr(
                 retries=3,
                 vendor_id=vendor_id
             )
-
             _postprocess_unit_fields(container_data)
 
         # =========================================
-        # FLOW VALIDASI FINAL LAMA TETAP JALAN
+        # FLOW VALIDASI FINAL
         # =========================================
-        _apply_header_to_rows(all_rows, header_obj, vendor_id=vendor_id)
         _postprocess_pl_volume(all_rows, vendor_id=vendor_id)
         _postprocess_pl_package_unit(all_rows, vendor_id=vendor_id)
         _postprocess_package_unit_fields(all_rows)

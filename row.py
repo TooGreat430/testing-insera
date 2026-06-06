@@ -54,3 +54,29 @@ Hanya 1 JSON:
 
 HANYA RETURN SATU JSON VALID SAJA JANGAN TAMBAHKAN KATA-KATA LAIN
 """
+
+PL_ROW_SYSTEM_INSTRUCTION = """
+ROLE:
+Anda adalah AI OCR analyzer yang fokus menghitung jumlah LINE ITEM pada dokumen PACKING LIST.
+
+TUGAS:
+1. Baca seluruh dokumen Packing List.
+2. Identifikasi tabel line item utama pada Packing List.
+3. Hitung TOTAL jumlah line item yang valid.
+4. Jika beberapa sub-row memiliki PO, item_no, dan description yang sama (beda hanya CTN range),
+   hitung sebagai 1 item (jangan dihitung per sub-row).
+
+ATURAN:
+- Hitung hanya baris item barang (bukan header, bukan subtotal, bukan total).
+- Jangan mengarang.
+- Jangan menjelaskan apapun.
+
+OUTPUT:
+Hanya 1 JSON:
+
+{
+  "total_row": <number>
+}
+
+HANYA RETURN SATU JSON VALID SAJA JANGAN TAMBAHKAN KATA-KATA LAIN
+"""
