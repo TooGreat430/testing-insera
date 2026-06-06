@@ -8935,6 +8935,191 @@ def _postprocess_coo_aggregate_to_top_row(rows: list, vendor_id: str = "default"
     return rows
 
 
+# =========================================================
+# BL LINE-ITEM EXTRACTION + MAPPING
+# Mengekstrak daftar item dari "Description of Goods" BL dan
+# mem-map ke invoice rows berdasarkan kemiripan deskripsi.
+# bl_mark_number juga di-map per PO jika BL menyertakan mark blocks.
+# =========================================================
+
+def _build_bl_item_list_prompt(vendor_id: str = "default") -> str:
+    shimano_mark_rule = ""
+    if _is_shimano_inc_vendor(vendor_id):
+        shimano_mark_rule = """
+ATURAN KHUSUS VENDOR shimano_inc:
+- Untuk bl_mark_number, lihat bagian "Marks and Numbers" atau halaman 2 dokumen BL.
+- Setiap blok marks berisi: "PT. IS / P/O No. -> [PO] / SURABAYA / MADE IN [NEGARA] / PLT No. -> [range] / CTN No. -> [range]"
+- Untuk setiap blok marks, buat 1 item dengan format:
+  bl_mark_number: "PT. IS PO# [PO] P/L No.: [PLT range] C/T No.: [CTN range] MADE IN [NEGARA]"
+  bl_po_no: nilai PO Number
+- Sertakan HANYA nilai yang tercantum dalam blok tersebut (P/L No. jika ada PLT, C/T No. jika ada CTN).
+- Jika satu PO sudah menjadi item dari "Description of Goods", gabungkan bl_mark_number ke item tersebut.
+"""
+
+    return f"""
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen BILL OF LADING (BL) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP item barang yang tercantum di kolom "Description of Goods" pada BL.
+- Output HANYA JSON ARRAY. Mulai '[', diakhiri ']'.
+- Jika BL hanya memiliki 1 deskripsi generik (mis. "BICYCLE PARTS AND ACCESSORIES"), return SATU item saja.
+
+FIELD PER ITEM:
+- "bl_description": deskripsi barang dari "Description of Goods". Ambil teks deskripsi per item, bukan HS code.
+- "bl_hs_code": HS Code per item (mis. "8714.94"). Jika tidak ada, "null".
+- "bl_mark_number": teks lengkap dari blok marks/numbers yang berkaitan dengan item ini. Jika tidak ada, "null".
+- "bl_po_no": PO number yang tercantum di dalam blok marks/numbers untuk item ini. Jika tidak ada, "null".
+
+{shimano_mark_rule}
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. Jangan mengarang.
+- Tidak boleh JSON literal null -> gunakan "null".
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  {{
+    "bl_description": "string",
+    "bl_hs_code": "string",
+    "bl_mark_number": "string",
+    "bl_po_no": "string"
+  }}
+]
+""".strip()
+
+
+BL_ITEM_LIST_COPY_FIELDS = ["bl_description", "bl_hs_code", "bl_mark_number"]
+
+
+def _extract_bl_item_list(file_uri: str, vendor_id: str = "default") -> list:
+    if not file_uri:
+        return []
+
+    items = _call_gemini_json_uri(
+        file_uri,
+        _build_bl_item_list_prompt(vendor_id=vendor_id),
+        expect_array=True,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if not isinstance(items, list):
+        return []
+
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        desc = it.get("bl_description")
+        if _is_null(desc):
+            continue
+        cleaned.append(it)
+
+    print(
+        f"[BL_ITEM_LIST] vendor={normalize_vendor_id(vendor_id)} "
+        f"raw={len(items)} usable={len(cleaned)}"
+    )
+    return cleaned
+
+
+def _bl_desc_tokens(value) -> set:
+    s = str(value or "").strip().upper()
+    if not s or s == "NULL":
+        return set()
+    return {t for t in re.findall(r"\b[A-Z0-9]+\b", s) if len(t) >= 2}
+
+
+def _bl_item_row_match_score(bl_item: dict, row: dict) -> float:
+    bl_tokens = _bl_desc_tokens(bl_item.get("bl_description"))
+    inv_tokens = _bl_desc_tokens(row.get("inv_description"))
+    if not bl_tokens or not inv_tokens:
+        return 0.0
+    overlap = bl_tokens & inv_tokens
+    return len(overlap) / len(inv_tokens)
+
+
+def _map_bl_items_to_rows(
+    rows: list,
+    bl_items: list,
+    vendor_id: str = "default",
+    min_coverage: float = 0.3,
+):
+    """
+    Map BL items to invoice rows by description similarity, then apply
+    bl_description, bl_hs_code, bl_mark_number per row.
+
+    - Single BL item: apply to all rows (generic BL document).
+    - Multiple BL items: map each row to best-matching BL item.
+    - bl_mark_number: also matched by inv_customer_po_no against bl_po_no.
+    """
+    if not isinstance(rows, list) or not bl_items:
+        return
+
+    # Build PO → mark_number lookup from bl_po_no field
+    marks_by_po = {}
+    for it in bl_items:
+        po = it.get("bl_po_no")
+        mark = it.get("bl_mark_number")
+        if not _is_null(po) and not _is_null(mark):
+            marks_by_po[str(po).strip().upper()] = str(mark).strip()
+
+    if len(bl_items) == 1:
+        single = bl_items[0]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for field in ["bl_description", "bl_hs_code"]:
+                v = single.get(field, "null")
+                row[field] = v if not _is_null(v) else "null"
+            # Apply mark_number from PO match if available, else from single item
+            inv_po = str(row.get("inv_customer_po_no") or "").strip().upper()
+            if inv_po and inv_po != "NULL" and inv_po in marks_by_po:
+                row["bl_mark_number"] = marks_by_po[inv_po]
+            else:
+                v = single.get("bl_mark_number", "null")
+                row["bl_mark_number"] = v if not _is_null(v) else "null"
+        print(f"[BL_ITEM_MAP] single item applied to all {len(rows)} rows")
+        return
+
+    mapped = 0
+    unmatched = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        best_item = None
+        best_score = 0.0
+        for bl_item in bl_items:
+            score = _bl_item_row_match_score(bl_item, row)
+            if score > best_score:
+                best_score = score
+                best_item = bl_item
+
+        if best_item is not None and best_score >= min_coverage:
+            row["bl_description"] = best_item.get("bl_description") or "null"
+            row["bl_hs_code"] = best_item.get("bl_hs_code") or "null"
+            mapped += 1
+        else:
+            unmatched += 1
+
+        # PO-based bl_mark_number — match by inv_customer_po_no
+        inv_po = str(row.get("inv_customer_po_no") or "").strip().upper()
+        if inv_po and inv_po != "NULL" and inv_po in marks_by_po:
+            row["bl_mark_number"] = marks_by_po[inv_po]
+        elif best_item is not None and best_score >= min_coverage:
+            v = best_item.get("bl_mark_number", "null")
+            row["bl_mark_number"] = v if not _is_null(v) else "null"
+
+    print(
+        f"[BL_ITEM_MAP] items={len(bl_items)} rows={len(rows)} "
+        f"mapped_desc={mapped} unmatched_desc={unmatched}"
+    )
+
+
 def _postprocess_bl_description_novatec(rows: list):
     """
     BL NOVATEC: kolom "Description of Goods" memakai NAMA KATEGORI produk
@@ -13628,6 +13813,17 @@ def run_ocr(
                 print(f"[COO_ITEM_EXTRACT][WARN] skipped: {e}")
 
         # ==========================================
+        # BL ITEM EXTRACTION (single pass, no batching)
+        # Mengekstrak bl_description, bl_hs_code, bl_mark_number per item dari BL
+        # ==========================================
+        bl_items = []
+        if has_bl_doc and file_uri_bl:
+            try:
+                bl_items = _extract_bl_item_list(file_uri=file_uri_bl, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[BL_ITEM_EXTRACT][WARN] skipped: {e}")
+
+        # ==========================================
         # MAPPING: PL → INVOICE
         # ==========================================
         all_rows = _map_pl_rows_to_invoice_rows(inv_rows, pl_rows)
@@ -13653,6 +13849,13 @@ def run_ocr(
             except Exception as e:
                 print(f"[COO_MAP][WARN] skipped: {e}")
 
+        # MAPPING: BL items → invoice rows (bl_description, bl_hs_code, bl_mark_number per row)
+        if has_bl_doc and bl_items:
+            try:
+                _map_bl_items_to_rows(all_rows, bl_items, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[BL_ITEM_MAP][WARN] skipped: {e}")
+
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
             header_obj=header_obj,
@@ -13677,7 +13880,7 @@ def run_ocr(
         # ==========================================
         all_rows = _run_detail_precheck_pass(
             all_rows,
-            inv_pl_header,
+            header_obj,
             vendor_id=vendor_id,
         )
         _assign_detail_row_numbers(all_rows)
