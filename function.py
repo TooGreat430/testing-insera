@@ -8962,15 +8962,30 @@ Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen BILL OF LADING (BL) 
 Rule-based, deterministik, anti-halusinasi.
 
 TUGAS:
-- Keluarkan SATU objek JSON untuk SETIAP item barang yang tercantum di kolom "Description of Goods" pada BL.
-- Output HANYA JSON ARRAY. Mulai '[', diakhiri ']'.
-- Jika BL hanya memiliki 1 deskripsi generik (mis. "BICYCLE PARTS AND ACCESSORIES"), return SATU item saja.
+Pada kolom "Description of Goods" / "Number and Kind of Packages", cari baris-baris yang merupakan
+ITEM BARANG SPESIFIK — yaitu baris yang mencantumkan NAMA PRODUK diikuti HS CODE.
+
+Pola yang umum ditemukan:
+  [NAMA PRODUK] HS NUMBER: [HS CODE]
+  Contoh:
+    HUB 751DSE HS NUMBER: 8714.93  →  bl_description="HUB 751DSE", bl_hs_code="8714.93"
+    HUB 753DSE HS NUMBER: 8714.93  →  bl_description="HUB 753DSE", bl_hs_code="8714.93"
+    HUB D761DSE HS NUMBER: 8714.93 →  bl_description="HUB D761DSE", bl_hs_code="8714.93"
+
+ABAIKAN baris-baris berikut (bukan item barang):
+- Baris jumlah container: "1 x 40HC CONTAINER", "STC N CARTON(S)"
+- Deskripsi generik tanpa HS code: "BICYCLE PARTS", "BICYCLE PARTS AND ACCESSORIES"
+- Informasi pengiriman lainnya
+
+JIKA tidak ada satupun item spesifik dengan HS code → baru return 1 item generic dari deskripsi terbaik yang ada.
+
+Output HANYA JSON ARRAY. Mulai '[', diakhiri ']'.
 
 FIELD PER ITEM:
-- "bl_description": deskripsi barang dari "Description of Goods". Ambil teks deskripsi per item, bukan HS code.
-- "bl_hs_code": HS Code per item (mis. "8714.94"). Jika tidak ada, "null".
-- "bl_mark_number": teks lengkap dari blok marks/numbers yang berkaitan dengan item ini. Jika tidak ada, "null".
-- "bl_po_no": PO number yang tercantum di dalam blok marks/numbers untuk item ini. Jika tidak ada, "null".
+- "bl_description": nama produk spesifik (mis. "HUB 751DSE"). JANGAN sertakan "HS NUMBER: XXX".
+- "bl_hs_code": HS Code yang mengikuti item tersebut (mis. "8714.93"). Jika tidak ada, "null".
+- "bl_mark_number": teks lengkap dari blok marks/numbers untuk item ini. Jika tidak ada, "null".
+- "bl_po_no": PO number dari blok marks/numbers untuk item ini. Jika tidak ada, "null".
 
 {shimano_mark_rule}
 
