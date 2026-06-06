@@ -9033,12 +9033,17 @@ def _bl_desc_tokens(value) -> set:
 
 
 def _bl_item_row_match_score(bl_item: dict, row: dict) -> float:
+    """
+    Score = berapa banyak token dari bl_description yang ditemukan di inv_description.
+    Pakai len(bl_tokens) sebagai denominator karena bl_description biasanya pendek
+    (mis. "HUB 751DSE" 2 token) sedangkan inv_description panjang (~9+ token).
+    """
     bl_tokens = _bl_desc_tokens(bl_item.get("bl_description"))
     inv_tokens = _bl_desc_tokens(row.get("inv_description"))
     if not bl_tokens or not inv_tokens:
         return 0.0
     overlap = bl_tokens & inv_tokens
-    return len(overlap) / len(inv_tokens)
+    return len(overlap) / len(bl_tokens)
 
 
 def _map_bl_items_to_rows(
