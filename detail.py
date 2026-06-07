@@ -1080,6 +1080,12 @@ Anda sekarang hanya mengerjakan item index {first_index}..{last_index}.
 ANCHOR INDEX (hanya dari Invoice):
 {anchors_json}
 
+ATURAN POSISI (inv_seq):
+- Ekstrak item berdasarkan URUTAN POSISI (inv_seq) di dokumen — bukan berdasarkan anchor inv_spart_item_no.
+- inv_seq = urutan kemunculan item di seluruh Invoice, dibaca halaman demi halaman dari atas ke bawah.
+- Jika item pada posisi inv_seq BERBEDA dari anchor inv_spart_item_no, tetap ekstrak item yang BENAR ADA di posisi tersebut.
+- JANGAN mencari anchor inv_spart_item_no di halaman lain atau halaman sebelumnya jika tidak ditemukan di posisi yang diharapkan.
+
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS DARI INVOICE. JANGAN MENGARANG.
 - Jika suatu field tidak ada → isi "null" (string) atau 0 (angka).
@@ -1237,6 +1243,13 @@ ATURAN:
 - Untuk FIELD BERTIPE NUMBER jika tidak ada → isi 0.
 - Output HANYA JSON ARRAY, tanpa teks tambahan.
 - pl_* HANYA boleh diambil dari dokumen Packing List.
+
+ATURAN LOKASI BARIS (page_index — PATOKAN UTAMA):
+- `page_index` adalah nomor urut item pada halaman tersebut (1 = item pertama di halaman itu).
+- Temukan baris dengan MENGHITUNG dari atas ke bawah pada halaman `page` yang ditentukan.
+- Setelah menemukan baris berdasarkan page_index, BACA SEMUA field dari baris tersebut secara langsung.
+- Jangan menggunakan pl_item_no atau pl_customer_po_no dari anchor sebagai patokan lokasi baris.
+- Baris tanpa CTN sendiri (dipack bersama CTN sebelumnya) TETAP dihitung sebagai baris terpisah saat menghitung page_index.
 
 ATURAN KHUSUS pl_customer_po_no:
 - pl_customer_po_no HARUS dibaca langsung dari kolom Purchase Order Number di dokumen PL.

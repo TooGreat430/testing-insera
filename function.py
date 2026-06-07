@@ -4699,15 +4699,14 @@ def _strip_trailing_ghost_run(index_items: list, log_tag: str = "INDEX_GHOST_TAI
         item = index_items[i]
         k = _index_item_key(item)
         if k is None:
-            # Cek apakah ini phantom murni (part_no kosong DAN qty <= 0)
-            part_no = str(item.get("inv_spart_item_no") or "").strip()
+            # Cek apakah ini phantom (qty <= 0, dengan atau tanpa part_no hallusinasi)
             qty = _to_float(item.get("inv_quantity")) or 0
-            if not part_no and qty <= 0:
-                # Phantom: tidak ada data nyata di posisi ini → buang
+            if qty <= 0:
+                # Phantom: qty nol → buang (termasuk kasus Gemini mengarang part_no tapi qty=0)
                 cut = i
                 i -= 1
                 continue
-            # Punya sebagian data (misal part_no ada tapi qty=0) → berhenti
+            # qty > 0 tapi part_no kosong → partial data → berhenti
             break
         prefix_keys = {
             pk for pk in (_index_item_key(x) for x in index_items[:i]) if pk is not None
@@ -9344,6 +9343,7 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
     triple_map = {}   # (po, item, qty) -> [pl_idx, ...]
     pair_map = {}     # (po, item)      -> [pl_idx, ...]
     po_map = {}       # po              -> [pl_idx, ...]
+    item_map = {}     # item            -> [pl_idx, ...]  (fallback: no-PO records)
 
     for i, pr in enumerate(pl_rows):
         po = _norm_po_for_map(pr.get("pl_customer_po_no"))
@@ -9354,6 +9354,8 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
         pair_map.setdefault((po, item), []).append(i)
         if po:
             po_map.setdefault(po, []).append(i)
+        if not po and item:
+            item_map.setdefault(item, []).append(i)
 
     used = set()
     matched = 0
@@ -9408,6 +9410,17 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
             if best_idx is not None and best_score > 0.25:
                 used.add(best_idx)
                 _merge_pl_into_inv_row(inv_row, pl_rows[best_idx])
+                matched += 1
+                continue
+
+        # --- Strategy 4: item-only fallback (PL record extracted dengan PO=null) ---
+        # Dipakai ketika PL extraction gagal membaca PO tapi item_no benar.
+        if inv_item:
+            candidates = [i for i in item_map.get(inv_item, []) if i not in used]
+            if candidates:
+                chosen = candidates[0]
+                used.add(chosen)
+                _merge_pl_into_inv_row(inv_row, pl_rows[chosen])
                 matched += 1
                 continue
 
@@ -13771,6 +13784,24 @@ def run_ocr(
             batch_size=detail_batch_size,
             vendor_id=vendor_id,
         )
+
+        # Post-detail ghost strip: buang trailing null-item rows yang lolos dari
+        # index-level ghost strip (mis. kasus Gemini menaruh real item di posisi
+        # terakhir index sehingga loop strip berhenti, tapi detail-nya null/0).
+        if _should_strip_trailing_ghost_run(vendor_id):
+            orig_detail_count = len(inv_rows)
+            while inv_rows:
+                last_r = inv_rows[-1]
+                last_item = str(last_r.get("inv_spart_item_no") or "").strip()
+                last_qty  = _to_float(last_r.get("inv_quantity")) or 0
+                if not last_item and last_qty <= 0:
+                    inv_rows.pop()
+                else:
+                    break
+            dropped = orig_detail_count - len(inv_rows)
+            if dropped > 0:
+                print(f"[INV_DETAIL_GHOST_TAIL_POST] stripped {dropped} trailing null detail rows → {len(inv_rows)}")
+                total_inv_row = len(inv_rows)
 
         # ==========================================
         # PL OCR — SEPARATE (BATCHED)
