@@ -9421,8 +9421,37 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
                 chosen = candidates[0]
                 used.add(chosen)
                 _merge_pl_into_inv_row(inv_row, pl_rows[chosen])
+                # Repair: jika setelah merge pl_quantity masih 0 (extraction failure),
+                # isi dari inv_quantity dan inv_customer_po_no karena item-match berarti
+                # baris yang sama.
+                pl_qty_after = _to_float(inv_row.get("pl_quantity")) or 0
+                inv_qty_val  = _to_float(inv_row.get("inv_quantity")) or 0
+                if pl_qty_after <= 0 and inv_qty_val > 0:
+                    inv_row["pl_quantity"] = inv_qty_val
+                if _is_null(inv_row.get("pl_customer_po_no")):
+                    inv_row["pl_customer_po_no"] = inv_row.get("inv_customer_po_no")
                 matched += 1
                 continue
+
+        # --- Strategy 5: item+qty match, PO mismatch (beda PO antara INV dan PL) ---
+        # Dipakai ketika INV dan PL punya item_no dan qty yang sama, tapi PO berbeda
+        # (misalnya dokumen vendor mencantumkan PO yang berbeda di INV vs PL).
+        if inv_item and inv_qty > 0:
+            for i, pr in enumerate(pl_rows):
+                if i in used:
+                    continue
+                pl_item = _norm_item_for_map(pr.get("pl_item_no"))
+                pl_qty  = _norm_qty_for_map(pr.get("pl_quantity"))
+                if pl_item == inv_item and pl_qty > 0:
+                    qty_ratio = min(inv_qty, pl_qty) / max(inv_qty, pl_qty)
+                    if qty_ratio >= 0.95:  # within 5% tolerance
+                        used.add(i)
+                        _merge_pl_into_inv_row(inv_row, pr)
+                        matched += 1
+                        break
+            else:
+                unmatched += 1
+            continue
 
         unmatched += 1
 

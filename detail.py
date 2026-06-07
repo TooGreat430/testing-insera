@@ -1085,6 +1085,7 @@ ATURAN POSISI (inv_seq):
 - inv_seq = urutan kemunculan item di seluruh Invoice, dibaca halaman demi halaman dari atas ke bawah.
 - Jika item pada posisi inv_seq BERBEDA dari anchor inv_spart_item_no, tetap ekstrak item yang BENAR ADA di posisi tersebut.
 - JANGAN mencari anchor inv_spart_item_no di halaman lain atau halaman sebelumnya jika tidak ditemukan di posisi yang diharapkan.
+- inv_customer_po_no: baca dari baris yang BENAR-BENAR ADA di posisi tersebut di dokumen, BUKAN dari anchor. Anchor PO bisa salah — jika dokumen menunjukkan PO berbeda dari anchor, gunakan PO dari dokumen.
 
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS DARI INVOICE. JANGAN MENGARANG.
