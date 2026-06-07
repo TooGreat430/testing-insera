@@ -3321,6 +3321,7 @@ FORCE_CT_VENDORS = {
     "haomeng",
     "suntour_vietnam",
     "suntour_shenzhen",
+    "liow_ko",
 }
 
 def _should_force_ct_pl_package_unit(vendor_id: str) -> bool:
