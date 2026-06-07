@@ -9490,15 +9490,21 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
                 )
                 continue
 
-        # --- Final fallback: PO matching sudah set pl_item_no == inv_item,
-        # tapi tidak ada PL row yang berhasil diekstrak untuk item ini.
-        # Fill pl_quantity dan pl_customer_po_no dari INV. ---
+        # --- Final fallback: semua strategy gagal, tidak ada PL row yang cocok.
+        # Berlaku untuk 2 kasus:
+        #   (1) PO matched dan pl_item_no sudah di-set (== inv_item), tapi PL row tidak ada.
+        #   (2) PO item tidak ditemukan (pl_item_no masih "null"), tapi inv_item diketahui.
+        # Isi pl_quantity, pl_customer_po_no, dan pl_item_no dari INV sebagai fallback.
         _pl_item_preloaded = _norm_item_for_map(inv_row.get("pl_item_no"))
-        if _pl_item_preloaded and _pl_item_preloaded == inv_item:
+        _pl_item_from_po   = bool(_pl_item_preloaded and _pl_item_preloaded == inv_item)
+        _pl_item_missing   = _is_null(inv_row.get("pl_item_no"))  # PO matching tidak set
+        if inv_item and (_pl_item_from_po or _pl_item_missing):
             if (_to_float(inv_row.get("pl_quantity")) or 0) <= 0 and inv_qty > 0:
                 inv_row["pl_quantity"] = inv_qty
             if _is_null(inv_row.get("pl_customer_po_no")):
                 inv_row["pl_customer_po_no"] = inv_row.get("inv_customer_po_no")
+            if _pl_item_missing:
+                inv_row["pl_item_no"] = inv_row.get("inv_spart_item_no")
 
         unmatched += 1
 
