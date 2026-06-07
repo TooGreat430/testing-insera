@@ -9434,8 +9434,8 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
                 continue
 
         # --- Strategy 5: item+qty match, PO mismatch (beda PO antara INV dan PL) ---
-        # Dipakai ketika INV dan PL punya item_no dan qty yang sama, tapi PO berbeda
-        # (misalnya dokumen vendor mencantumkan PO yang berbeda di INV vs PL).
+        # Dipakai ketika INV dan PL punya item_no dan qty yang sama, tapi PO berbeda.
+        _s5_matched = False
         if inv_item and inv_qty > 0:
             for i, pr in enumerate(pl_rows):
                 if i in used:
@@ -9444,14 +9444,61 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
                 pl_qty  = _norm_qty_for_map(pr.get("pl_quantity"))
                 if pl_item == inv_item and pl_qty > 0:
                     qty_ratio = min(inv_qty, pl_qty) / max(inv_qty, pl_qty)
-                    if qty_ratio >= 0.95:  # within 5% tolerance
+                    if qty_ratio >= 0.95:
                         used.add(i)
                         _merge_pl_into_inv_row(inv_row, pr)
                         matched += 1
+                        _s5_matched = True
                         break
-            else:
-                unmatched += 1
+        if _s5_matched:
             continue
+
+        # --- Strategy 6: qty-only last resort (PL item_no/PO salah diekstrak) ---
+        # Dipakai ketika Gemini salah baca item_no dan PO di PL, tapi qty-nya benar.
+        # Setelah match, item_no dan PO di-override dari INV (yg dianggap lebih akurat).
+        if inv_qty > 0:
+            _best_s6_score = -1.0
+            _best_s6_idx   = None
+            for i, pr in enumerate(pl_rows):
+                if i in used:
+                    continue
+                pl_qty = _norm_qty_for_map(pr.get("pl_quantity"))
+                if pl_qty <= 0:
+                    continue
+                qty_ratio = min(inv_qty, pl_qty) / max(inv_qty, pl_qty)
+                if qty_ratio >= 0.99:
+                    desc_score = _desc_token_overlap(
+                        inv_row.get("inv_description"), pr.get("pl_description")
+                    )
+                    score = qty_ratio + desc_score
+                    if score > _best_s6_score:
+                        _best_s6_score = score
+                        _best_s6_idx   = i
+            if _best_s6_idx is not None:
+                used.add(_best_s6_idx)
+                _merge_pl_into_inv_row(inv_row, pl_rows[_best_s6_idx])
+                # PL item_no dan PO mungkin salah ekstrak — override dari INV
+                if inv_item:
+                    inv_row["pl_item_no"] = inv_row.get("inv_spart_item_no")
+                inv_row["pl_customer_po_no"] = inv_row.get("inv_customer_po_no")
+                matched += 1
+                print(
+                    f"[PL_MAP] Strategy6: inv_item={inv_item} qty={inv_qty} "
+                    f"← pl_item={_norm_item_for_map(pl_rows[_best_s6_idx].get('pl_item_no'))} "
+                    f"pl_qty={_norm_qty_for_map(pl_rows[_best_s6_idx].get('pl_quantity'))} "
+                    f"score={_best_s6_score:.3f}"
+                )
+                continue
+
+        # --- Final fallback: PO matching sudah set pl_item_no == inv_item,
+        # tapi tidak ada PL row yang berhasil diekstrak untuk item ini.
+        # Fill pl_quantity dan pl_customer_po_no dari INV. ---
+        _pl_item_preloaded = _norm_item_for_map(inv_row.get("pl_item_no"))
+        if _pl_item_preloaded and _pl_item_preloaded == inv_item:
+            if (_to_float(inv_row.get("pl_quantity")) or 0) <= 0 and inv_qty > 0:
+                inv_row["pl_quantity"] = inv_qty
+            if _is_null(inv_row.get("pl_customer_po_no")):
+                inv_row["pl_customer_po_no"] = inv_row.get("inv_customer_po_no")
 
         unmatched += 1
 
