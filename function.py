@@ -4678,15 +4678,17 @@ def _index_item_key(item):
 
 
 def _strip_trailing_ghost_run(index_items: list, log_tag: str = "INDEX_GHOST_TAIL") -> list:
-    # Buang GHOST TAIL RUN: deretan duplikat di EKOR index yang key-nya sudah
-    # muncul lebih awal. Ini menangani kasus single-shot index yang mengulang
-    # blok tail (untuk memenuhi {total_row}) alih-alih menemukan item tunggal
-    # di halaman terakhir setelah page break.
+    # Buang GHOST TAIL RUN dari ekor index.
     #
-    # AMAN untuk genuine duplicate yang ter-interleave dengan item lain: hanya
-    # item paling belakang yang dibuang, dan hanya selama key-nya sudah ada di
-    # PREFIX (item-item sebelum titik potong). Begitu ketemu satu item ekor yang
-    # key-nya unik (atau key None / tidak kuat), proses berhenti.
+    # Phase 1 — duplicate-key ghost: row ekor yang key-nya sudah ada di prefix.
+    # Phase 2 — phantom null ghost: row ekor yang benar-benar kosong
+    #   (part_no kosong DAN qty <= 0). Row semacam ini adalah hasil Gemini
+    #   mengisi "slot wajib" dengan null/0 karena tidak ada item nyata di
+    #   dokumen untuk posisi tersebut.
+    #
+    # Berhenti begitu menemukan row yang:
+    #   - key-nya unik di prefix (Phase 1), atau
+    #   - key None tapi part_no ada atau qty > 0 (partial data — bukan phantom).
     if not isinstance(index_items, list) or len(index_items) < 2:
         return index_items
 
@@ -4694,8 +4696,18 @@ def _strip_trailing_ghost_run(index_items: list, log_tag: str = "INDEX_GHOST_TAI
     cut = n
     i = n - 1
     while i >= 1:
-        k = _index_item_key(index_items[i])
+        item = index_items[i]
+        k = _index_item_key(item)
         if k is None:
+            # Cek apakah ini phantom murni (part_no kosong DAN qty <= 0)
+            part_no = str(item.get("inv_spart_item_no") or "").strip()
+            qty = _to_float(item.get("inv_quantity")) or 0
+            if not part_no and qty <= 0:
+                # Phantom: tidak ada data nyata di posisi ini → buang
+                cut = i
+                i -= 1
+                continue
+            # Punya sebagian data (misal part_no ada tapi qty=0) → berhenti
             break
         prefix_keys = {
             pk for pk in (_index_item_key(x) for x in index_items[:i]) if pk is not None
@@ -4709,7 +4721,10 @@ def _strip_trailing_ghost_run(index_items: list, log_tag: str = "INDEX_GHOST_TAI
     if cut < n:
         for ghost in index_items[cut:]:
             gk = _index_item_key(ghost)
-            print(f"[{log_tag}] drop ghost tail anchor: {gk}")
+            part_no = str(ghost.get("inv_spart_item_no") or "").strip()
+            qty = _to_float(ghost.get("inv_quantity")) or 0
+            label = "phantom-null" if (not part_no and qty <= 0) else "dup-key"
+            print(f"[{log_tag}] drop ghost tail ({label}): {gk}")
         print(f"[{log_tag}] total dropped={n - cut} kept={cut}")
         return index_items[:cut]
 
