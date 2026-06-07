@@ -1118,7 +1118,7 @@ Anda adalah AI IDP professional yang fokus membuat INDEX line items dari dokumen
 Rule-based, deterministik, anti-halusinasi.
 
 TUGAS:
-Buat daftar INDEX untuk SEMUA line item Packing List.
+Buat daftar INDEX untuk SEMUA line item Packing List dari SEMUA halaman (halaman 1 hingga halaman terakhir).
 INDEX ini akan dipakai sebagai "anchor" untuk ekstraksi detail batch berikutnya.
 
 ATURAN:
@@ -1129,8 +1129,17 @@ ATURAN:
 5) Jika suatu field tidak ada → isi "null" (string) atau 0 (angka).
 6) Packing List adalah satu-satunya sumber. ABAIKAN dokumen lain.
 7) Baris TOTAL/grand total BUKAN line item — jangan diindeks.
-8) Jika beberapa sub-row PL memiliki PO, item_no, dan description yang sama (hanya beda CTN range),
+8) Jika beberapa sub-row PL memiliki PO, item_no, DAN description yang PERSIS SAMA (hanya beda CTN range),
    GABUNGKAN menjadi 1 entry index dengan pl_quantity = jumlah semua sub-row tersebut.
+
+ATURAN KHUSUS pl_customer_po_no:
+- Setiap baris item WAJIB memiliki pl_customer_po_no yang dibaca langsung dari kolom
+  Purchase Order Number di dokumen.
+- Baris tanpa nomor CTN sendiri (dipack bersama CTN baris sebelumnya) TETAP memiliki
+  PO NUMBER sendiri di kolom PO — baca dan cantumkan nilainya.
+- Dua baris dengan PO BERBEDA atau PART NUMBER BERBEDA TIDAK BOLEH digabungkan,
+  meskipun dipack dalam karton yang sama.
+- JANGAN mengisi pl_customer_po_no berdasarkan baris sebelumnya — baca dari dokumen.
 
 SCHEMA OUTPUT (INDEX):
 [
@@ -1154,7 +1163,7 @@ ANCHOR TRIO:
 ANTI-DUPLIKASI:
 - Setiap baris item PL yang berbeda = TEPAT 1 object.
 - DILARANG menduplikasi object.
-- Sub-row dengan PO + item_no + description yang sama = 1 entry index (gabungkan quantity).
+- Sub-row dengan PO + item_no + description yang SAMA = 1 entry index (gabungkan quantity).
 - Panjang array harus tepat = {total_row}.
 """
 
@@ -1229,13 +1238,25 @@ ATURAN:
 - Output HANYA JSON ARRAY, tanpa teks tambahan.
 - pl_* HANYA boleh diambil dari dokumen Packing List.
 
+ATURAN KHUSUS pl_customer_po_no:
+- pl_customer_po_no HARUS dibaca langsung dari kolom Purchase Order Number di dokumen PL.
+- Nilai pl_customer_po_no di ANCHOR INDEX adalah panduan pencarian, BUKAN nilai yang
+  harus dikopi. Selalu baca nilai aktual dari dokumen; jika dokumen menunjukkan PO yang
+  berbeda dari anchor, gunakan nilai dari dokumen.
+- Baris tanpa nomor CTN sendiri TETAP memiliki PO NUMBER di kolom PO — baca nilainya.
+
+ATURAN NW/GW PER BARIS:
+- pl_nw dan pl_gw harus diambil dari baris yang SAMA dengan pl_item_no.
+- JANGAN mengambil NW/GW dari baris di atas atau di bawah baris yang sedang diekstrak.
+- Jika ragu, ikuti urutan kolom: baris item → NW → GW pada baris yang SAMA.
+
 MERGED CELL RULES:
 - Jika ada merged cell vertikal yang mencakup beberapa row (mis. pl_volume sama untuk 3 row):
   - Nilai merged cell HANYA assign ke row paling atas.
   - Row lain di bawahnya → 0.
   - JANGAN duplikasi nilai ke semua row.
 
-- Jika 1 item PL memiliki beberapa sub-row dengan PO/item_no/description sama (beda CTN range):
+- Jika 1 item PL memiliki beberapa sub-row dengan PO/item_no/description PERSIS sama (beda CTN range):
   - GABUNGKAN ke 1 output row:
     pl_quantity = jumlah semua sub-row
     pl_package_count = jumlah semua package_count

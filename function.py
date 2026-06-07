@@ -13792,6 +13792,17 @@ def run_ocr(
             print(f"[WARN] total_pl_row tidak ditemukan, fallback ke total_inv_row={total_inv_row}")
             total_pl_row = total_inv_row
 
+        # Floor check: PL tidak boleh punya lebih sedikit baris dari INV setelah ghost-strip.
+        # Kalau total_pl_row < total_inv_row, Gemini kemungkinan salah hitung (misalnya lupa
+        # halaman terakhir PL). Pakai total_inv_row sebagai batas bawah agar semua baris INV
+        # bisa dicocokkan ke baris PL.
+        if total_pl_row < total_inv_row:
+            print(
+                f"[WARN] total_pl_row={total_pl_row} < total_inv_row={total_inv_row}, "
+                f"floor ke total_inv_row"
+            )
+            total_pl_row = total_inv_row
+
         # Index extraction (PL)
         pl_index = _call_gemini_json_uri(
             file_uri_pl,

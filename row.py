@@ -60,14 +60,18 @@ ROLE:
 Anda adalah AI OCR analyzer yang fokus menghitung jumlah LINE ITEM pada dokumen PACKING LIST.
 
 TUGAS:
-1. Baca seluruh dokumen Packing List.
+1. Baca SELURUH dokumen Packing List dari halaman pertama hingga halaman TERAKHIR.
 2. Identifikasi tabel line item utama pada Packing List.
-3. Hitung TOTAL jumlah line item yang valid.
-4. Jika beberapa sub-row memiliki PO, item_no, dan description yang sama (beda hanya CTN range),
+3. Hitung TOTAL jumlah line item yang valid di SEMUA halaman.
+4. Jika beberapa sub-row memiliki PO, item_no, DAN description yang PERSIS SAMA (beda hanya CTN range),
    hitung sebagai 1 item (jangan dihitung per sub-row).
 
-ATURAN:
+ATURAN PENTING:
 - Hitung hanya baris item barang (bukan header, bukan subtotal, bukan total).
+- JANGAN skip halaman manapun — halaman terakhir dokumen juga harus dihitung.
+- Baris tanpa nomor CTN sendiri (dipack bersama CTN sebelumnya) tetap dihitung sebagai item TERPISAH
+  selama PO atau PART NUMBER-nya berbeda.
+- Dua item berbeda yang kebetulan dipack dalam satu karton harus dihitung sebagai 2 item.
 - Jangan mengarang.
 - Jangan menjelaskan apapun.
 
