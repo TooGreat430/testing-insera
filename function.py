@@ -224,7 +224,7 @@ def _get_detail_batch_size_for_vendor(vendor_id: str = "default") -> int:
         return CHENGS_DETAIL_BATCH_SIZE
 
     if normalize_vendor_id(vendor_id) == "liow_ko":
-        return 50
+        return 20
 
     return BATCH_SIZE
 
