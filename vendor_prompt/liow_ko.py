@@ -434,7 +434,7 @@ Struktur umum BL LIOW KO:
      FRAME PART IS24PFP10 HS NUMBER : 8714.91
      FRAME PART IS24PFP07 HS NUMBER : 8714.91
      FRAME PART IS23PFK50 HS NUMBER : 8714.91
-     
+
      JANGAN BUAT DATA BARU SEPERTI = FRAME PART IS23PFK03, YANG TIDAK ADA PADA DOKUMEN BILL OF LADING SEBAGAI HASIL EKSTRAKSI DAN MAPPING.
    =========================
    ATURAN PENTING
@@ -458,7 +458,7 @@ Struktur umum BL LIOW KO:
    Case 1:
      inv_description = FRAME PART;LIOW KO;IS16PFP08;AL6061
      → MATCH STEP 1
-     → bl_description = FRAME PART IS16PFP08 
+     → bl_description = FRAME PART IS16PFP08
      → bl_hs_code = 8714.91
 
    Case 2:
@@ -494,7 +494,7 @@ Catatan penting COO vendor LIOW KO:
      - 2
      - 3
      - ...
-     
+
 2. coo_mark_number
    - Ambil dari marks and numbers on packages HANYA jika ada mark item-level yang spesifik.
    - Jika hanya berisi generic mark seperti:
@@ -587,4 +587,215 @@ Catatan penting COO vendor LIOW KO:
    - Jangan ambil PO dari invoice untuk mengisi field COO ini.
    - Karena itu, jika customer PO tidak tercantum jelas pada COO:
      coo_customer_po_no = "null"
+"""
+
+LIOW_KO_INV_PROMPT = """
+INVOICE (INV)
+
+Aturan umum ekstraksi vendor LIOW KO:
+- Vendor pada sampel adalah LIOW KO ELECTRONIC TECHNOLOGY (SHENZHEN) CO., LTD.
+- Jika field bertipe string dan tidak ada bukti yang jelas, isi "null".
+- Jika field bertipe number dan tidak ada bukti yang jelas, isi null.
+- Gabungkan teks yang terpotong baris / line wrap menjadi satu value yang utuh.
+- Jika satu row/item terpotong ke halaman berikutnya, tetap anggap sebagai item yang sama, bukan item baru.
+- Jangan menggabungkan dua row berbeda hanya karena part number atau description-nya sama.
+- Rapikan whitespace berlebih akibat OCR, tetapi jangan mengubah isi sebenarnya.
+
+Struktur umum invoice LIOW KO:
+- Header utama line item:
+  Purchase order Number | PART NUMBER | DESCRIPTION | UNIT | QUANTITY | UNIT PRICE(USD) | AMOUNT
+- Pada invoice LIOW KO, customer PO ada per row pada kolom pertama.
+- Tidak ada kolom nomor urut item / seq yang jelas pada sampel invoice.
+- Tidak ada gross weight per item pada sampel invoice.
+
+1. inv_customer_po_no
+   - Ambil dari kolom "Purchase order Number" pada row item YANG SAMA.
+   - Customer PO berbentuk angka dan berlaku PER ROW, BUKAN grouping block.
+   - DILARANG copy/fill-forward PO dari row sebelumnya.
+   - PO selalu numeric 8 digit yang dimulai dengan "453..." atau "452...".
+
+   ATURAN ANTI-DUPLIKASI ROW (HINDARI GHOST ROW):
+   - Tiap baris fisik di tabel invoice = TEPAT 1 row output.
+   - Total jumlah row output WAJIB sama persis dengan jumlah baris item di invoice (tidak termasuk baris TOTAL/grand total).
+   - JANGAN mengulang baris tail untuk "memenuhi" jumlah row yang diharapkan.
+
+2. inv_seq
+   - Pada sampel invoice LIOW KO, tidak ada kolom seq item-level yang jelas.
+   - inv_seq = null
+
+3. inv_spart_item_no
+   - Ambil dari kolom "PART NUMBER".
+   - Gabungkan jika part number terpotong ke dua baris.
+
+4. inv_description
+   - Ambil dari kolom "DESCRIPTION" pada row item yang sama.
+   - Gabungkan seluruh description yang ter-wrap.
+
+5. inv_gw & inv_gw_unit
+   - Tidak ada gross weight per item pada sampel invoice LIOW KO.
+   - inv_gw = "null", inv_gw_unit = "null"
+
+6. inv_quantity
+   - Ambil nilai quantity dari kolom "QUANTITY". Angka numeriknya saja.
+
+7. inv_quantity_unit
+   - Ambil dari kolom "UNIT".
+
+8. inv_unit_price
+   - Ambil dari kolom "UNIT PRICE(USD)". Nilai numeric saja.
+
+9. inv_amount
+   - Ambil dari kolom "AMOUNT". Nilai numeric saja. Hapus separator ribuan.
+"""
+
+LIOW_KO_PL_PROMPT = """
+PACKING LIST (PL)
+
+Struktur umum packing list LIOW KO:
+- Header item: Purchase order Number | PART NUMBER | DESCRIPTION | QUANTITY | [unit] | [carton no./range] | TOTAL CTN | NW | GW
+- Customer PO TERCETAK PER BARIS di kolom PALING KIRI, numeric 8 digit.
+- Setelah quantity ada carton mark / carton range seperti: LK-1, LK-2-8, LK-19-27.
+- Angka setelah carton mark/range adalah jumlah karton / total ctn item-level.
+- Tidak ada kolom volume item-level yang jelas.
+
+ATURAN NW/GW PER BARIS (PALING PENTING UNTUK LIOW KO):
+- Kolom NW dan GW DICETAK PER BARIS untuk hampir setiap baris item.
+- ATURAN UTAMA: AMBIL NW dan GW DARI ANGKA YANG TERCETAK PADA BARIS ITU SENDIRI.
+- pl_nw / pl_gw HANYA boleh 0 jika kolom NW / GW pada baris itu BENAR-BENAR KOSONG.
+- DILARANG men-nol-kan NW/GW hanya karena PART NUMBER mirip dengan baris lain atau baris berurutan.
+
+ATURAN IDENTITAS BARIS PL (PURCHASE ORDER NUMBER = ANCHOR UTAMA):
+- Dua baris dengan Purchase order Number BERBEDA adalah DUA BARIS FISIK BERBEDA.
+- Masing-masing WAJIB mempertahankan NW/GW-nya sendiri.
+- DILARANG men-nol-kan NW/GW sebuah baris hanya karena PART NUMBER + QUANTITY + NW + GW-nya KEBETULAN SAMA dengan baris sebelumnya.
+
+1. pl_customer_po_no
+   - WAJIB diisi untuk SETIAP baris dari kolom PALING KIRI "Purchase order Number".
+   - Nilainya numeric 8 digit.
+   - BACA nilai yang TERCETAK di PL. JANGAN copy PO dari invoice.
+
+2. pl_item_no
+   - Ambil dari kolom "PART NUMBER".
+
+3. pl_description
+   - Ambil dari kolom "DESCRIPTION".
+   - Jangan masukkan part number, quantity, carton mark/range, total ctn, NW, GW.
+
+4. pl_quantity
+   - Ambil angka quantity item-level dari kolom "QUANTITY". Angka numeriknya saja.
+   - Jangan memakai inv_quantity untuk mengisi pl_quantity.
+
+5. pl_package_unit
+   - Bukti package berasal dari kolom "TOTAL CTN".
+   - pl_package_unit = "CT" untuk row item yang memiliki jumlah karton.
+
+6. pl_package_count
+   - Ambil dari angka jumlah karton setelah carton mark/range (nilai di kolom "TOTAL CTN").
+   - Untuk baris yang berbagi carton dengan baris di atasnya (carton mark/TOTAL CTN kosong karena merge), pl_package_count = 0.
+   - Di halaman lanjutan tanpa header: TOTAL CTN adalah angka ketiga dari kanan. Baca posisional.
+
+7. pl_nw
+   - Ambil dari kolom "NW". Nilai numeric saja.
+   - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_nw.
+
+8. pl_gw
+   - Ambil dari kolom "GW". Nilai numeric saja.
+   - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_gw.
+
+9. pl_volume
+   - Pada sampel packing list LIOW KO, tidak ada kolom volume item-level yang jelas.
+   - pl_volume = null
+"""
+
+LIOW_KO_BL_PROMPT = """
+BILL OF LADING (BL)
+
+Struktur umum BL LIOW KO:
+- Area deskripsi goods berada di section "Number and Kind of packages / Description of Goods"
+- Pada sampel BL, line goods tercetak ringkas seperti:
+  - FRAME PART IS16PFP08 HS NUMBER : 8714.91
+  - FRAME PART IS16PFP07 HS NUMBER : 8714.91
+  - FRAME PART IS24PFP10 HS NUMBER : 8714.91
+  - FRAME PART IS24PFP07 HS NUMBER : 8714.91
+  - FRAME PART IS23PFK50 HS NUMBER : 8714.91
+- "BICYCLE PARTS" hanyalah grouping umum shipment, bukan item description final.
+- Hanya mengambil item yang benar-benar tercetak di area goods description BL.
+
+1. bl_description:
+   - Ekstrak deskripsi barang langsung dari dokumen BL.
+   - Ambil teks sebelum "HS NUMBER :".
+   - Hanya boleh mengambil dari dokumen Bill Of Lading (BL) saja, TIDAK BOLEH mengambil dari dokumen lain.
+   - Contoh:
+     FRAME PART IS16PFP08 HS NUMBER : 8714.91
+     maka bl_description = "FRAME PART IS16PFP08"
+   - Jika tidak ada item ditemukan, isi null.
+
+2. bl_hs_code:
+   - Ekstrak HS code yang menempel pada bl_description yang sama.
+   - Ambil value setelah "HS NUMBER :".
+   - Hanya boleh mengambil dari dokumen BL saja.
+   - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
+   - Tidak boleh membuat atau mengarang data di luar dari dokumen BL.
+"""
+
+LIOW_KO_COO_PROMPT = """
+CERTIFICATE OF ORIGIN (COO)
+
+Catatan penting COO vendor LIOW KO:
+- Struktur kolom COO:
+  item number | marks and numbers on packages | number and kind of packages; and description of goods | HS code | origin conferring criterion | RCEP country of origin | quantity | invoice number(s) and date of invoice(s)
+- marks item-level yang terlihat adalah "N/M" (generic)
+- criterion yang tercetak adalah "PE"
+- country of origin yang tercetak adalah "CHINA"
+- quantity tercetak bersama unit seperti 64SETS / 3500PIECES / 50PAIRS
+- Description item dapat terpotong ke line berikutnya atau halaman berikutnya.
+
+1. coo_seq
+   - Ambil dari kolom "Item number". Nilai numeric.
+
+2. coo_mark_number
+   - Ambil dari marks and numbers on packages HANYA jika ada mark item-level yang spesifik.
+   - Jika hanya berisi "N/M", "NO MARK", atau kosong: coo_mark_number = "null"
+
+3. coo_description
+   - Ambil description of goods item-level dari COO.
+   - Gabungkan semua line description yang memang milik row tersebut.
+   - Jika description wrap ke baris berikutnya atau halaman berikutnya, gabungkan utuh.
+   - Jangan masukkan: item number, marks, HS code, quantity, criterion, country, invoice number/date, total shipment remarks.
+
+4. coo_hs_code
+   - Ambil dari kolom HS code item-level pada COO.
+
+5. coo_quantity
+   - Ambil quantity item-level dari COO. Angka numeriknya saja.
+   - Contoh: "64SETS" -> 64, "3500PIECES" -> 3500
+
+6. coo_unit
+   - Ambil unit quantity yang menempel pada coo_quantity.
+   - Contoh: "64SETS" -> "SETS", "3500PIECES" -> "PIECES", "50PAIRS" -> "PAIRS"
+
+7. coo_package_count
+   - Pada sampel COO LIOW KO, tidak ada package count item-level yang jelas.
+   - coo_package_count = null
+
+8. coo_package_unit
+   - Pada sampel COO LIOW KO, tidak ada package unit item-level yang jelas.
+   - coo_package_unit = "null"
+
+9. coo_gw
+   - Pada sampel COO LIOW KO, kolom quantity berisi quantity + unit, bukan gross weight item-level.
+   - coo_gw = null
+
+10. coo_amount
+   - Pada sampel COO LIOW KO, tidak ada amount item-level yang jelas.
+   - coo_amount = null
+
+11. coo_criteria
+   - Ambil dari kolom "Origin Conferring Criterion".
+   - Contoh: "PE"
+
+12. coo_customer_po_no
+   - Kolom invoice number/date pada COO BUKAN customer PO.
+   - Jangan ambil PO dari invoice untuk mengisi field COO ini.
+   - Jika customer PO tidak tercantum jelas pada COO: coo_customer_po_no = "null"
 """

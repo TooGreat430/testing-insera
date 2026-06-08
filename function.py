@@ -8719,8 +8719,16 @@ COO_ITEM_LIST_COPY_FIELDS = [
 ]
 
 
-def _build_coo_item_list_prompt() -> str:
-    return """
+def _build_coo_item_list_prompt(vendor_prompt_text: str = "") -> str:
+    vendor_section = ""
+    if vendor_prompt_text and str(vendor_prompt_text).strip():
+        vendor_section = f"""
+
+VENDOR KHUSUS YANG TERDETEKSI:
+ATURAN KHUSUS VENDOR (hanya untuk ekstraksi COO):
+{vendor_prompt_text}
+"""
+    return f"""
 ROLE:
 Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Certificate of Origin (COO) saja.
 Rule-based, deterministik, anti-halusinasi.
@@ -8759,7 +8767,7 @@ ATURAN:
 
 SCHEMA OUTPUT:
 [
-  {
+  {{
     "coo_seq": number,
     "coo_mark_number": "string",
     "coo_description": "string",
@@ -8772,18 +8780,18 @@ SCHEMA OUTPUT:
     "coo_amount": "string",
     "coo_criteria": "string",
     "coo_origin_country": "string"
-  }
+  }}
 ]
-""".strip()
+{vendor_section}""".strip()
 
 
-def _extract_coo_item_list(file_uri: str, vendor_id: str = "default") -> list:
+def _extract_coo_item_list(file_uri: str, vendor_id: str = "default", vendor_prompt_text: str = "") -> list:
     if not file_uri:
         return []
 
     items = _call_gemini_json_uri(
         file_uri,
-        _build_coo_item_list_prompt(),
+        _build_coo_item_list_prompt(vendor_prompt_text=vendor_prompt_text),
         expect_array=True,
         retries=3,
         vendor_id=vendor_id,
@@ -9007,7 +9015,7 @@ def _postprocess_coo_aggregate_to_top_row(rows: list, vendor_id: str = "default"
 # bl_mark_number juga di-map per PO jika BL menyertakan mark blocks.
 # =========================================================
 
-def _build_bl_item_list_prompt(vendor_id: str = "default") -> str:
+def _build_bl_item_list_prompt(vendor_id: str = "default", vendor_prompt_text: str = "") -> str:
     shimano_mark_rule = ""
     if _is_shimano_inc_vendor(vendor_id):
         shimano_mark_rule = """
@@ -9068,19 +9076,30 @@ SCHEMA OUTPUT:
     "bl_po_no": "string"
   }}
 ]
-""".strip()
+{_build_vendor_section_for_bl(vendor_prompt_text)}""".strip()
+
+
+def _build_vendor_section_for_bl(vendor_prompt_text: str) -> str:
+    if not vendor_prompt_text or not str(vendor_prompt_text).strip():
+        return ""
+    return f"""
+
+VENDOR KHUSUS YANG TERDETEKSI:
+ATURAN KHUSUS VENDOR (hanya untuk ekstraksi BL):
+{vendor_prompt_text}
+"""
 
 
 BL_ITEM_LIST_COPY_FIELDS = ["bl_description", "bl_hs_code", "bl_mark_number"]
 
 
-def _extract_bl_item_list(file_uri: str, vendor_id: str = "default") -> list:
+def _extract_bl_item_list(file_uri: str, vendor_id: str = "default", vendor_prompt_text: str = "") -> list:
     if not file_uri:
         return []
 
     items = _call_gemini_json_uri(
         file_uri,
-        _build_bl_item_list_prompt(vendor_id=vendor_id),
+        _build_bl_item_list_prompt(vendor_id=vendor_id, vendor_prompt_text=vendor_prompt_text),
         expect_array=True,
         retries=3,
         vendor_id=vendor_id,
@@ -13789,7 +13808,11 @@ def run_ocr(
         if vendor_id == "default":
             raise Exception("Vendor wajib dipilih dari UI. forced_vendor_id kosong atau tidak valid.")
 
-        vendor_prompt_text = load_vendor_prompt_text(vendor_id)
+        vendor_prompt_inv  = load_vendor_prompt_text(vendor_id, doc_type="inv")
+        vendor_prompt_pl   = load_vendor_prompt_text(vendor_id, doc_type="pl")
+        vendor_prompt_bl   = load_vendor_prompt_text(vendor_id, doc_type="bl")
+        vendor_prompt_coo  = load_vendor_prompt_text(vendor_id, doc_type="coo")
+        vendor_prompt_text = vendor_prompt_inv  # backwards compat untuk recheck
         print(f"[VENDOR CONTEXT] vendor_id={vendor_id} forced_vendor_id={forced_vendor_id}")
 
         # ==========================================
@@ -13983,7 +14006,7 @@ def run_ocr(
             inv_index=inv_index,
             total_inv_row=total_inv_row,
             vendor_id=vendor_id,
-            vendor_prompt_text=vendor_prompt_text,
+            vendor_prompt_text=vendor_prompt_inv,
             local_inv_pdf=invoice_onepage_pdf,
             run_prefix=f"{run_prefix}/inv_detail",
             temp_local_paths=temp_local_paths,
@@ -14083,7 +14106,7 @@ def run_ocr(
                     pl_index=pl_index,
                     total_pl_row=total_pl_row,
                     vendor_id=vendor_id,
-                    vendor_prompt_text=vendor_prompt_text,
+                    vendor_prompt_text=vendor_prompt_pl,
                     local_pl_pdf=packing_onepage_pdf,
                     run_prefix=f"{run_prefix}/pl_detail",
                     temp_local_paths=temp_local_paths,
@@ -14108,7 +14131,7 @@ def run_ocr(
         coo_items = []
         if has_coo_doc and file_uri_coo:
             try:
-                coo_items = _extract_coo_item_list(file_uri=file_uri_coo, vendor_id=vendor_id)
+                coo_items = _extract_coo_item_list(file_uri=file_uri_coo, vendor_id=vendor_id, vendor_prompt_text=vendor_prompt_coo)
             except Exception as e:
                 print(f"[COO_ITEM_EXTRACT][WARN] skipped: {e}")
 
@@ -14119,7 +14142,7 @@ def run_ocr(
         bl_items = []
         if has_bl_doc and file_uri_bl:
             try:
-                bl_items = _extract_bl_item_list(file_uri=file_uri_bl, vendor_id=vendor_id)
+                bl_items = _extract_bl_item_list(file_uri=file_uri_bl, vendor_id=vendor_id, vendor_prompt_text=vendor_prompt_bl)
             except Exception as e:
                 print(f"[BL_ITEM_EXTRACT][WARN] skipped: {e}")
 
