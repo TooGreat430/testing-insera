@@ -91,14 +91,52 @@ def _is_recheck_label_only_vendor(vendor_id: str = "default") -> bool:
         "joy"
     }
 
-def _get_detail_csv_field_order(vendor_id: str = "default"):
-    if _is_shimano_inc_vendor(vendor_id):
-        return list(DETAIL_CSV_FIELD_ORDER_FINAL)
+def _suppressed_doc_prefixes(
+    has_pl_doc: bool = True,
+    has_bl_doc: bool = True,
+    has_coo_doc: bool = True,
+) -> tuple:
+    """
+    Prefix kolom yang harus DIHILANGKAN dari output detail kalau dokumen
+    sumbernya tidak diupload.
 
-    return [
-        k for k in DETAIL_CSV_FIELD_ORDER_FINAL
-        if k != "inv_hs_code"
-    ]
+    - has_pl_doc=False  -> drop semua kolom pl_*
+    - has_bl_doc=False  -> drop semua kolom bl_*
+    - has_coo_doc=False -> drop semua kolom coo_*
+
+    Kolom match_*, confidence_label, inv_*, dan po_* SELALU dipertahankan.
+    """
+    prefixes = []
+    if not has_pl_doc:
+        prefixes.append("pl_")
+    if not has_bl_doc:
+        prefixes.append("bl_")
+    if not has_coo_doc:
+        prefixes.append("coo_")
+    return tuple(prefixes)
+
+
+def _get_detail_csv_field_order(
+    vendor_id: str = "default",
+    has_pl_doc: bool = True,
+    has_bl_doc: bool = True,
+    has_coo_doc: bool = True,
+):
+    if _is_shimano_inc_vendor(vendor_id):
+        cols = list(DETAIL_CSV_FIELD_ORDER_FINAL)
+    else:
+        cols = [
+            k for k in DETAIL_CSV_FIELD_ORDER_FINAL
+            if k != "inv_hs_code"
+        ]
+
+    # Kolom mengikuti dokumen yang benar-benar diupload: kalau PL/BL/COO
+    # tidak ada, kolomnya tidak usah muncul sama sekali (bukan diisi null).
+    drop_prefixes = _suppressed_doc_prefixes(has_pl_doc, has_bl_doc, has_coo_doc)
+    if drop_prefixes:
+        cols = [k for k in cols if not str(k).startswith(drop_prefixes)]
+
+    return cols
 
 # Tambahkan vendor lain ke dalam set ini di masa depan jika butuh deduplikasi PL.
 #
@@ -2739,7 +2777,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str, vendor_
 
     return group_key, raw_invoice_no, header_obj
 
-def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vendor_id: str = "default"):
+def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vendor_id: str = "default", require_packing: bool = True):
     coo_paths = coo_paths or []
     groups = {}
     skipped_packing = []
@@ -2803,7 +2841,10 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vend
 
     valid_groups = {}
     for group_key, grp in groups.items():
-        if not grp["packing_paths"]:
+        # PL sekarang opsional. Hanya buang group tanpa packing kalau PL memang
+        # diupload (require_packing=True) — supaya mode invoice-only tidak
+        # kehilangan semua group-nya.
+        if require_packing and not grp["packing_paths"]:
             dropped_invoice_groups.append({"invoice_no": grp["invoice_no"], "invoice_files": [os.path.basename(x) for x in grp["invoice_paths"]]})
             continue
         valid_groups[group_key] = grp
@@ -8248,7 +8289,7 @@ def _rename_final_fields(rows: list):
 # ==============================
 # (NEW) CONVERT TO CSV -> CUSTOM FOLDER/PATH
 # ==============================
-def _convert_to_csv_path(blob_path, rows, field_order=None):
+def _convert_to_csv_path(blob_path, rows, field_order=None, drop_prefixes=()):
     if rows is None:
         raise Exception("Tidak ada data untuk CSV")
 
@@ -8289,6 +8330,13 @@ def _convert_to_csv_path(blob_path, rows, field_order=None):
         front = [k for k in priority if k in union_keys]
         rest = [k for k in union_keys if k not in set(front)]
         keys = front + rest
+
+    # Buang kolom dengan prefix yang ditekan (mis. pl_/bl_/coo_ saat dokumennya
+    # tidak diupload). Ini menangkap sisa key di rows yang ter-append lewat
+    # union_keys walaupun sudah tidak ada di field_order.
+    if drop_prefixes:
+        drop_prefixes = tuple(drop_prefixes)
+        keys = [k for k in keys if not str(k).startswith(drop_prefixes)]
 
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     with open(tmp_file.name, "w", newline="", encoding="utf-8") as f:
@@ -9707,8 +9755,13 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
     if not invoice_paths:
         raise Exception("invoice_paths kosong")
-    if not packing_paths:
-        raise Exception("packing_paths kosong")
+
+    # Mandatory hanya invoice. PL/BL/COO opsional.
+    # Flag global menentukan kolom mana yang muncul di output gabungan:
+    # pl_* hanya kalau ada PL, bl_* kalau ada BL, coo_* kalau ada COO.
+    has_pl_doc_global = bool(packing_paths)
+    has_bl_doc_global = bool(bl_path)
+    has_coo_doc_global = bool(coo_paths)
 
     create_running_markers(invoice_name, with_total_container)
 
@@ -9721,6 +9774,11 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             packing_paths=packing_paths,
             coo_paths=coo_paths,
             vendor_id=forced_vendor_id, # Masukkan vendor target pemetaan di sini
+            # Invoice adalah satu-satunya dokumen wajib. Jangan pernah membuang
+            # group invoice hanya karena tidak punya Packing List — termasuk pada
+            # upload campuran (sebagian invoice punya PL, sebagian tidak). Tiap
+            # group ditangani per-group lewat grp_has_pl di bawah.
+            require_packing=False,
         )
 
         total_groups = len(groups)
@@ -9744,20 +9802,23 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 merged_invoice_pdf = _merge_pdfs(grp["invoice_paths"])
                 temp_group_paths.append(merged_invoice_pdf)
 
-                merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
-                temp_group_paths.append(merged_packing_pdf)
+                # Urutan upload ke run_ocr: [INVOICE, PL?, BL?, COO?]
+                grouped_pdf_paths = [merged_invoice_pdf]
 
-                grouped_pdf_paths = [
-                    merged_invoice_pdf,
-                    merged_packing_pdf,
-                ]
+                # PL per invoice group (opsional)
+                grp_has_pl = bool(grp["packing_paths"])
+                if grp_has_pl:
+                    merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
+                    temp_group_paths.append(merged_packing_pdf)
+                    grouped_pdf_paths.append(merged_packing_pdf)
 
                 # BL global (1 file untuk semua OCR)
                 if bl_path:
                     grouped_pdf_paths.append(bl_path)
 
                 # COO per invoice group
-                if grp["coo_paths"]:
+                grp_has_coo = bool(grp["coo_paths"])
+                if grp_has_coo:
                     merged_coo_pdf = _merge_pdfs(grp["coo_paths"])
                     temp_group_paths.append(merged_coo_pdf)
                     grouped_pdf_paths.append(merged_coo_pdf)
@@ -9777,8 +9838,9 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     persist_output=False,
                     manage_markers=False,
                     forced_vendor_id=forced_vendor_id,
+                    has_pl_doc=grp_has_pl,
                     has_bl_doc=bool(bl_path),
-                    has_coo_doc=bool(grp["coo_paths"]),
+                    has_coo_doc=grp_has_coo,
                 )
 
                 merged_detail_rows.extend(result.get("detail_rows") or [])
@@ -9965,7 +10027,8 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             # Hitung ulang sum dan berikan error total yang benar-benar akurat
             for inv_no, group_rows in rows_by_inv.items():
                 _validate_invoice_rows(group_rows)
-                _validate_packing_rows(group_rows, vendor_id=forced_vendor_id)
+                if has_pl_doc_global:
+                    _validate_packing_rows(group_rows, vendor_id=forced_vendor_id)
             
             # Pastikan status final (TRUE/FALSE) sinkron dengan error terupdate
             _finalize_match_fields(merged_detail_rows)
@@ -10010,7 +10073,15 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             merged_detail_rows,
-            field_order=_get_detail_csv_field_order(forced_vendor_id)
+            field_order=_get_detail_csv_field_order(
+                forced_vendor_id,
+                has_pl_doc_global,
+                has_bl_doc_global,
+                has_coo_doc_global,
+            ),
+            drop_prefixes=_suppressed_doc_prefixes(
+                has_pl_doc_global, has_bl_doc_global, has_coo_doc_global
+            ),
         )
 
         total_csv_uri = None
@@ -12130,7 +12201,7 @@ def _run_shimano_hs_code_pass(file_uri: str, rows: list, vendor_id: str = "defau
 
     return rows
 
-def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "default"):
+def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "default", has_pl_doc: bool = True):
     _ensure_all_detail_keys(rows)
 
     _apply_header_to_rows(rows, header_obj if isinstance(header_obj, dict) else {}, vendor_id=vendor_id)
@@ -12161,14 +12232,17 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
 
     _postprocess_bl_coo_zero_to_null(rows)
 
-    if normalize_vendor_id(vendor_id) != "liow_ko":
+    if has_pl_doc and normalize_vendor_id(vendor_id) != "liow_ko":
         _postprocess_coo_numeric_fields_from_pl(rows)
+    elif not has_pl_doc:
+        print("[COO_NUMERIC_FROM_PL][PRECHECK] skipped: no packing list")
     else:
         print("[COO_NUMERIC_FROM_PL][PRECHECK] skipped for vendor liow_ko")
-        
+
     _validate_invoice_rows(rows)
-    _validate_packing_rows(rows, vendor_id=vendor_id)
-    _validate_invoice_vs_packing_extra(rows, vendor_id=vendor_id)
+    if has_pl_doc:
+        _validate_packing_rows(rows, vendor_id=vendor_id)
+        _validate_invoice_vs_packing_extra(rows, vendor_id=vendor_id)
     _validate_bl_rows(rows)
     _validate_coo_rows(rows)
 
@@ -13617,22 +13691,35 @@ def run_ocr(
     persist_output=True,
     manage_markers=True,
     forced_vendor_id=None,
+    has_pl_doc=None,
     has_bl_doc=None,
     has_coo_doc=None,
 ):
     uploaded_pdf_paths = uploaded_pdf_paths or []
 
-    # Urutan file: [INV, PL, BL?, COO?]
-    # BL selalu 1, INV/PL/COO bisa multiple.
+    # Urutan file: [INV, PL?, BL?, COO?]
+    # Hanya INVOICE yang wajib. PL/BL/COO opsional.
+    # Path di-resolve secara berurutan sesuai flag (lihat blok resolve di bawah),
+    # bukan posisi tetap, supaya dokumen yang hilang tidak menggeser slot.
+    #
+    # Default flag (legacy, dipakai kalau caller kirim list tanpa flag):
+    # asumsikan urutan klasik [INV, PL, BL?, COO?].
+    # CATATAN: jalur list-payload legacy ini HANYA mendukung urutan positional
+    # klasik tsb dan tidak bisa mengekspresikan kombinasi opsional sembarang
+    # (mis. invoice+BL tanpa PL). Semua kombinasi dokumen opsional dari UI
+    # melewati run_grouped_ocr (payload dict) yang mengirim flag eksplisit.
     # has_bl_doc TIDAK tergantung with_total_container —
     # BL juga dipakai untuk header extraction meski container tidak diminta.
+    if has_pl_doc is None:
+        has_pl_doc = bool(len(uploaded_pdf_paths) >= 2)
+
     if has_bl_doc is None:
         has_bl_doc = bool(len(uploaded_pdf_paths) >= 3)
 
     if has_coo_doc is None:
         has_coo_doc = bool(len(uploaded_pdf_paths) >= 4)
 
-    # COO tidak boleh tanpa BL (BL adalah file ke-3).
+    # COO tidak boleh tanpa BL.
     if has_coo_doc and not has_bl_doc:
         raise Exception("COO hanya bisa diproses jika Bill of Lading juga diupload.")
 
@@ -13662,8 +13749,37 @@ def run_ocr(
             if os.path.abspath(str(normalized)) != os.path.abspath(str(p)):
                 temp_local_paths.append(normalized)
 
-        if len(normalized_pdf_paths) < 2:
-            raise Exception("Minimal harus ada 2 file: invoice dan packing list.")
+        if len(normalized_pdf_paths) < 1:
+            raise Exception("Minimal harus ada 1 file: invoice.")
+
+        expected_min = 1 + (1 if has_pl_doc else 0) + (1 if has_bl_doc else 0) + (1 if has_coo_doc else 0)
+        if len(normalized_pdf_paths) < expected_min:
+            raise Exception(
+                f"Jumlah file ({len(normalized_pdf_paths)}) tidak sesuai dengan dokumen yang "
+                f"ditandai: has_pl_doc={has_pl_doc} has_bl_doc={has_bl_doc} has_coo_doc={has_coo_doc} "
+                f"(butuh minimal {expected_min})."
+            )
+
+        # Resolve path per dokumen secara berurutan sesuai flag.
+        # Urutan upload: [INVOICE, PL?, BL?, COO?]
+        _resolve_idx = 0
+        invoice_src_path = normalized_pdf_paths[_resolve_idx]
+        _resolve_idx += 1
+
+        packing_src_path = None
+        if has_pl_doc:
+            packing_src_path = normalized_pdf_paths[_resolve_idx]
+            _resolve_idx += 1
+
+        bl_pdf_path = None
+        if has_bl_doc:
+            bl_pdf_path = normalized_pdf_paths[_resolve_idx]
+            _resolve_idx += 1
+
+        coo_pdf_path = None
+        if has_coo_doc:
+            coo_pdf_path = normalized_pdf_paths[_resolve_idx]
+            _resolve_idx += 1
 
         # ==========================================
         # VENDOR CONTEXT
@@ -13688,39 +13804,39 @@ def run_ocr(
 
         if _skip_onepage_preprocess:
             print(f"[PREPROCESS] vendor_id={forced_vendor_id}: skip one-page merge.")
-            invoice_onepage_pdf = normalized_pdf_paths[0]
-            packing_onepage_pdf = normalized_pdf_paths[1]
+            invoice_onepage_pdf = invoice_src_path
+            packing_onepage_pdf = packing_src_path
         else:
             invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-                normalized_pdf_paths[0], "invoice"
+                invoice_src_path, "invoice"
             )
             temp_local_paths.append(invoice_onepage_pdf)
 
-            packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-                normalized_pdf_paths[1], "packing"
-            )
-            temp_local_paths.append(packing_onepage_pdf)
+            packing_onepage_pdf = None
+            if has_pl_doc and packing_src_path:
+                packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+                    packing_src_path, "packing"
+                )
+                temp_local_paths.append(packing_onepage_pdf)
 
-        # Resolve BL dan COO path dari urutan upload:
-        # [invoice, packing, BL?, COO?]
-        bl_pdf_path = None
-        coo_pdf_path = None
-        if has_bl_doc and len(normalized_pdf_paths) >= 3:
-            bl_pdf_path = normalized_pdf_paths[2]
-        if has_coo_doc and len(normalized_pdf_paths) >= 4:
-            coo_pdf_path = normalized_pdf_paths[3]
+        # BL/COO path sudah di-resolve di atas (bl_pdf_path, coo_pdf_path).
 
         # ==========================================
-        # HEADER EXTRACTION (3 CALLS TERPISAH)
-        # 1. INV+PL merged   → inv_* + pl_* (selalu)
-        # 2. BL PDF saja     → bl_*          (jika has_bl_doc)
-        # 3. COO PDF saja    → coo_* header  (jika has_coo_doc)
+        # HEADER EXTRACTION (s/d 3 CALLS TERPISAH)
+        # 1. INV (+PL kalau ada) → inv_* (+ pl_*) (selalu)
+        # 2. BL PDF saja         → bl_*           (jika has_bl_doc)
+        # 3. COO PDF saja        → coo_* header   (jika has_coo_doc)
         # Tiap dokumen dikirim ke Gemini sendiri → ekstraksi lebih akurat
         # ==========================================
 
-        # 1. INV+PL combined header
-        merged_inv_pl_for_header = _merge_pdfs([invoice_onepage_pdf, packing_onepage_pdf])
-        temp_local_paths.append(merged_inv_pl_for_header)
+        # 1. INV (+PL) combined header.
+        # Kalau PL tidak diupload, header diambil dari INVOICE saja; pl_* akan null
+        # dan kolomnya memang tidak dimunculkan di output.
+        if has_pl_doc and packing_onepage_pdf:
+            merged_inv_pl_for_header = _merge_pdfs([invoice_onepage_pdf, packing_onepage_pdf])
+            temp_local_paths.append(merged_inv_pl_for_header)
+        else:
+            merged_inv_pl_for_header = invoice_onepage_pdf
         merged_inv_pl_for_header = _compress_pdf_if_needed(merged_inv_pl_for_header)
         if merged_inv_pl_for_header not in temp_local_paths:
             temp_local_paths.append(merged_inv_pl_for_header)
@@ -13729,7 +13845,7 @@ def run_ocr(
             merged_inv_pl_for_header, run_prefix, name="header_inv_pl"
         )
 
-        print("OCR Header - INV+PL")
+        print("OCR Header - INV+PL" if (has_pl_doc and packing_onepage_pdf) else "OCR Header - INV")
         inv_pl_header = _call_gemini_json_uri(
             file_uri_inv_pl_header,
             build_header_prompt(vendor_id=vendor_id),
@@ -13812,7 +13928,7 @@ def run_ocr(
 
         # SHIMANO: override dengan deterministic count
         if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
-            det_count = _shimano_count_line_items_from_invoice_pdf(normalized_pdf_paths[0])
+            det_count = _shimano_count_line_items_from_invoice_pdf(invoice_src_path)
             if det_count > 0:
                 print(f"[SHIMANO_PART_COUNT] override total_inv_row: gemini={total_inv_row} -> pymupdf={det_count}")
                 total_inv_row = det_count
@@ -13905,78 +14021,86 @@ def run_ocr(
         # ==========================================
         # PL OCR — SEPARATE (BATCHED)
         # Row count → Index → Batched detail
+        # Hanya dijalankan kalau Packing List diupload.
         # ==========================================
-        pl_pdf_compressed = _compress_pdf_if_needed(packing_onepage_pdf)
-        if pl_pdf_compressed not in temp_local_paths and pl_pdf_compressed != packing_onepage_pdf:
-            temp_local_paths.append(pl_pdf_compressed)
-        file_uri_pl = _upload_temp_pdf_to_gcs(pl_pdf_compressed, run_prefix, name="pl")
-
-        # Row count (PL)
-        print("[ROW_COUNT_PL] Menghitung baris PL")
-        pl_row_data = _call_gemini_json_uri(
-            file_uri_pl, PL_ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id
-        )
-        if isinstance(pl_row_data, dict) and "total_row" in pl_row_data:
-            total_pl_row = int(pl_row_data["total_row"])
-        else:
-            print(f"[WARN] total_pl_row tidak ditemukan, fallback ke total_inv_row={total_inv_row}")
-            total_pl_row = total_inv_row
-
-        # Floor check: PL tidak boleh punya lebih sedikit baris dari INV setelah ghost-strip.
-        # Kalau total_pl_row < total_inv_row, Gemini kemungkinan salah hitung (misalnya lupa
-        # halaman terakhir PL). Pakai total_inv_row sebagai batas bawah agar semua baris INV
-        # bisa dicocokkan ke baris PL.
-        if total_pl_row < total_inv_row:
-            print(
-                f"[WARN] total_pl_row={total_pl_row} < total_inv_row={total_inv_row}, "
-                f"floor ke total_inv_row"
-            )
-            total_pl_row = total_inv_row
-
-        # Index extraction (PL)
-        pl_index = _call_gemini_json_uri(
-            file_uri_pl,
-            build_pl_index_prompt(total_pl_row),
-            expect_array=True,
-            retries=3,
-            vendor_id=vendor_id,
-        )
-
-        if not isinstance(pl_index, list) or not pl_index:
-            print("[WARN] PL INDEX kosong, PL OCR akan di-skip")
-            pl_index = []
-            total_pl_row = 0
-
-        if pl_index and len(pl_index) != total_pl_row:
-            print(f"[WARN] total_pl_row={total_pl_row} vs pl_index={len(pl_index)}, pakai len(pl_index)")
-            total_pl_row = len(pl_index)
-
-        if pl_index:
-            _fill_forward(pl_index, "pl_customer_po_no")
-
+        pl_index = []
         pl_rows = []
-        if pl_index and total_pl_row > 0:
-            pl_jobs = _build_pl_detail_jobs(
-                file_uri_pl=file_uri_pl,
-                pl_index=pl_index,
-                total_pl_row=total_pl_row,
+        total_pl_row = 0
+        file_uri_pl = None
+
+        if has_pl_doc and packing_onepage_pdf:
+            pl_pdf_compressed = _compress_pdf_if_needed(packing_onepage_pdf)
+            if pl_pdf_compressed not in temp_local_paths and pl_pdf_compressed != packing_onepage_pdf:
+                temp_local_paths.append(pl_pdf_compressed)
+            file_uri_pl = _upload_temp_pdf_to_gcs(pl_pdf_compressed, run_prefix, name="pl")
+
+            # Row count (PL)
+            print("[ROW_COUNT_PL] Menghitung baris PL")
+            pl_row_data = _call_gemini_json_uri(
+                file_uri_pl, PL_ROW_SYSTEM_INSTRUCTION, expect_array=False, retries=3, vendor_id=vendor_id
+            )
+            if isinstance(pl_row_data, dict) and "total_row" in pl_row_data:
+                total_pl_row = int(pl_row_data["total_row"])
+            else:
+                print(f"[WARN] total_pl_row tidak ditemukan, fallback ke total_inv_row={total_inv_row}")
+                total_pl_row = total_inv_row
+
+            # Floor check: PL tidak boleh punya lebih sedikit baris dari INV setelah ghost-strip.
+            # Kalau total_pl_row < total_inv_row, Gemini kemungkinan salah hitung (misalnya lupa
+            # halaman terakhir PL). Pakai total_inv_row sebagai batas bawah agar semua baris INV
+            # bisa dicocokkan ke baris PL.
+            if total_pl_row < total_inv_row:
+                print(
+                    f"[WARN] total_pl_row={total_pl_row} < total_inv_row={total_inv_row}, "
+                    f"floor ke total_inv_row"
+                )
+                total_pl_row = total_inv_row
+
+            # Index extraction (PL)
+            pl_index = _call_gemini_json_uri(
+                file_uri_pl,
+                build_pl_index_prompt(total_pl_row),
+                expect_array=True,
+                retries=3,
                 vendor_id=vendor_id,
-                vendor_prompt_text=vendor_prompt_text,
-                local_pl_pdf=packing_onepage_pdf,
-                run_prefix=f"{run_prefix}/pl_detail",
-                temp_local_paths=temp_local_paths,
-                batch_size=detail_batch_size,
             )
 
-            pl_rows = _run_detail_jobs(
-                input_uri=file_uri_pl,
-                run_prefix=f"{run_prefix}/pl_detail",
-                jobs=pl_jobs,
-                total_row=total_pl_row,
-                label="PL_ONLY",
-                batch_size=detail_batch_size,
-                vendor_id=vendor_id,
-            )
+            if not isinstance(pl_index, list) or not pl_index:
+                print("[WARN] PL INDEX kosong, PL OCR akan di-skip")
+                pl_index = []
+                total_pl_row = 0
+
+            if pl_index and len(pl_index) != total_pl_row:
+                print(f"[WARN] total_pl_row={total_pl_row} vs pl_index={len(pl_index)}, pakai len(pl_index)")
+                total_pl_row = len(pl_index)
+
+            if pl_index:
+                _fill_forward(pl_index, "pl_customer_po_no")
+
+            if pl_index and total_pl_row > 0:
+                pl_jobs = _build_pl_detail_jobs(
+                    file_uri_pl=file_uri_pl,
+                    pl_index=pl_index,
+                    total_pl_row=total_pl_row,
+                    vendor_id=vendor_id,
+                    vendor_prompt_text=vendor_prompt_text,
+                    local_pl_pdf=packing_onepage_pdf,
+                    run_prefix=f"{run_prefix}/pl_detail",
+                    temp_local_paths=temp_local_paths,
+                    batch_size=detail_batch_size,
+                )
+
+                pl_rows = _run_detail_jobs(
+                    input_uri=file_uri_pl,
+                    run_prefix=f"{run_prefix}/pl_detail",
+                    jobs=pl_jobs,
+                    total_row=total_pl_row,
+                    label="PL_ONLY",
+                    batch_size=detail_batch_size,
+                    vendor_id=vendor_id,
+                )
+        else:
+            print("[PL_OCR] skip: tidak ada Packing List (invoice-only).")
 
         # ==========================================
         # COO ITEM EXTRACTION (single pass, no batching)
@@ -14058,6 +14182,7 @@ def run_ocr(
             all_rows,
             header_obj,
             vendor_id=vendor_id,
+            has_pl_doc=has_pl_doc,
         )
         _assign_detail_row_numbers(all_rows)
 
@@ -14287,11 +14412,14 @@ def run_ocr(
             columns=["inv_total_quantity", "pl_total_package"],
         )
  
-        if _is_coo_aggregate_top_row_vendor(vendor_id):
+        if has_coo_doc and _is_coo_aggregate_top_row_vendor(vendor_id):
             # COO ter-agregat (mis. joy): tampilkan nilai agregat per produk di
             # SATU baris (baris pertama group) + 0 di baris lain, sesuai dokumen
             # COO. Jangan distribusi per-baris mengikuti PL.
             _postprocess_coo_aggregate_to_top_row(all_rows, vendor_id=vendor_id)
+        elif not has_pl_doc:
+            # Tanpa PL, COO numeric tidak bisa diturunkan dari PL.
+            print("[COO_NUMERIC_FROM_PL] skipped: no packing list")
         elif normalize_vendor_id(vendor_id) != "liow_ko":
             _postprocess_coo_numeric_fields_from_pl(all_rows)
         else:
@@ -14309,8 +14437,9 @@ def run_ocr(
         _kunshan_landon_realign_descriptions(all_rows, vendor_id)
 
         _validate_invoice_rows(all_rows)
-        _validate_packing_rows(all_rows, vendor_id=vendor_id)
-        _validate_invoice_vs_packing_extra(all_rows, vendor_id=vendor_id)
+        if has_pl_doc:
+            _validate_packing_rows(all_rows, vendor_id=vendor_id)
+            _validate_invoice_vs_packing_extra(all_rows, vendor_id=vendor_id)
 
         if has_bl_doc:
             _validate_bl_rows(all_rows)
@@ -14440,7 +14569,10 @@ def run_ocr(
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             result["detail_rows"],
-            field_order=_get_detail_csv_field_order(vendor_id)
+            field_order=_get_detail_csv_field_order(
+                vendor_id, has_pl_doc, has_bl_doc, has_coo_doc
+            ),
+            drop_prefixes=_suppressed_doc_prefixes(has_pl_doc, has_bl_doc, has_coo_doc),
         )
 
         total_csv_uri = None
