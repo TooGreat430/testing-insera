@@ -49,7 +49,7 @@ from vendor_detection import (
     normalize_vendor_id,
 )
 
-BATCH_SIZE = 30
+BATCH_SIZE = 20
 CHENGS_DETAIL_BATCH_SIZE = 3
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 test_number = 2
