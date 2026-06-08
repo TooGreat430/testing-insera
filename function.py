@@ -27,9 +27,7 @@ from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 from config import *
 from container import CONTAINER_SYSTEM_INSTRUCTION
 from detail import (
-    build_detail_prompt_from_index,
     build_header_prompt,
-    build_index_prompt,
     build_inv_index_prompt,
     build_inv_detail_prompt_from_index,
     build_pl_index_prompt,
@@ -4380,10 +4378,10 @@ def _get_index_chunk_size_for_total_row(total_row: int, vendor_id: str = "defaul
 
 def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int) -> str:
     """
-    Bungkus build_index_prompt dengan kontrak chunk eksplisit
+    Bungkus build_inv_index_prompt dengan kontrak chunk eksplisit
     supaya Gemini hanya mengembalikan idx {first_index}..{last_index}.
     """
-    base = build_index_prompt(total_row)
+    base = build_inv_index_prompt(total_row)
     expected_count = last_index - first_index + 1
     expected_indices = list(range(first_index, last_index + 1))
 
