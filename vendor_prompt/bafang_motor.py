@@ -61,8 +61,15 @@ PACKING LIST (PL)
 
 
 4. pl_quantity:
-   - Ekstrak dari kolom "Quantity".
-   - Contoh: "455", "700"
+   - Ekstrak dari kolom "Quantity" yang berada di antara kolom "CTNS" dan kolom "G.W(KGS)".
+   - KRITIKAL: Jangan tertukar dengan kolom "G.W(KGS)" (gross weight) yang nilainya jauh lebih besar!
+     - Kolom "Quantity" berisi angka ratusan bulat: 455, 700
+     - Kolom "G.W(KGS)" berisi angka berat desimal: 1132.95, 74.75, 11.80, 1423.72
+   - DILARANG mengambil nilai G.W seperti 1132.95, 74.75, 11.80, 1423.72 sebagai pl_quantity.
+   - Contoh nilai yang benar:
+     - Row 1 (BATTERY BT F291.B378.C): Quantity = 455 (BUKAN 1132.95)
+     - Row 4 (Hugelong battery BT F040.B360.C): Quantity = 700 (BUKAN 1423.72)
+   - DILARANG mengambil dari kolom "CTNS" karena itu milik pl_package_count.
 
 5. pl_package_unit:
    - Ekstrak jenis kemasan dari nama kolom package (misal "CTNS").
@@ -70,11 +77,11 @@ PACKING LIST (PL)
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package count adalah kolom 'CTNS' yang merupakan kolom ke-9 dari kiri.
-   Tepatnya, kolom ini berada di sebelah kanan kolom 'PLTS' dan/atau di sebelah kiri kolom 'G.W(KGS)'.
-   Pada beberapa beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PLTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PLTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
+   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package_count adalah kolom 'CTNS'.
+   Kolom ini berada di sebelah kanan kolom 'PTS' dan di sebelah kiri kolom 'Quantity'.
+   Pada beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
 
-   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'!
+   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PTS' dan 'Quantity'!
 
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
@@ -249,9 +256,15 @@ PACKING LIST (PL)
      "EEL-MINI battery casing, 36V CAN, 10.5Ah, 378Wh, 30 CELLS, EVE 3.5Ah cell, produced in China"
 
 4. pl_quantity:
-   - Ekstrak dari kolom "Quantity".
-   - Contoh: "455", "700"
-   - Dilarang keras mengambil dari kolom "CTNS" karena itu milik pl_package_count
+   - Ekstrak dari kolom "Quantity" yang berada di antara kolom "CTNS" dan kolom "G.W(KGS)".
+   - KRITIKAL: Jangan tertukar dengan kolom "G.W(KGS)" (gross weight) yang nilainya jauh lebih besar!
+     - Kolom "Quantity" berisi angka ratusan bulat: 455, 700
+     - Kolom "G.W(KGS)" berisi angka berat desimal: 1132.95, 74.75, 11.80, 1423.72
+   - DILARANG mengambil nilai G.W seperti 1132.95, 74.75, 11.80, 1423.72 sebagai pl_quantity.
+   - Contoh nilai yang benar:
+     - Row 1 (BATTERY BT F291.B378.C): Quantity = 455 (BUKAN 1132.95)
+     - Row 4 (Hugelong battery BT F040.B360.C): Quantity = 700 (BUKAN 1423.72)
+   - DILARANG mengambil dari kolom "CTNS" karena itu milik pl_package_count.
 
 5. pl_package_unit:
    - Ekstrak jenis kemasan dari nama kolom package (misal "CTNS").
@@ -259,11 +272,11 @@ PACKING LIST (PL)
    - Jangan ubah ke unit lain.
 
 6. pl_package_count:
-   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package count adalah kolom 'CTNS' yang merupakan kolom ke-9 dari kiri.
-   Tepatnya, kolom ini berada di sebelah kanan kolom 'PLTS' dan/atau di sebelah kiri kolom 'G.W(KGS)'.
-   Pada beberapa beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PLTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PLTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
+   VISUAL CLUE PENTING: Kolom yang akan merepresentasikan data pl_package_count adalah kolom 'CTNS'.
+   Kolom ini berada di sebelah kanan kolom 'PTS' dan di sebelah kiri kolom 'Quantity'.
+   Pada beberapa line pada kolom 'CTNS' akan terdapat value yang secara penulisan sejajar dengan value merged cell pada kolom 'PTS'. PERHATIKAN DENGAN SANGAT SEKSAMA, JANGAN sampai salah mengambil value dari kolom 'PTS' yang sejajar dengan merged cell tersebut. Pastikan benar-benar mengambil value dari kolom 'CTNS' yang berada tepat di bawah header 'CTNS' dan sejajar dengan line itemnya masing-masing.
 
-   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PLTS' dan 'Quantity'!
+   KRITIKAL: Ekstrak HANYA dari kolom "CTNS". DILARANG KERAS mengambil nilai dari kolom 'PTS' dan 'Quantity'!
 
 7. pl_nw:
    - Ekstrak dari kolom "N.W(KGS)".
