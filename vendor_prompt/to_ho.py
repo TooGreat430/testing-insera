@@ -125,18 +125,54 @@ Struktur umum packing list TOHO:
 - Ada grouping "Customer P/O No.C25-1544U/45323564" atau format serupa.
 - Header utama:
   Carton No. | Item No.(Cust_Item_No.)/Desc. | Quantity | N.W. | G.W. | Meas'mt
-- Satu item biasanya berbentuk:
-  "23~32 CWSSXTAC400001 @10 SET @13.20 @13.99 @1.90"
-  lalu line total item:
-  ""SAMOX" CHAINWHEEL MODEL: 100 SET 132 139.9 19"
-  lalu di bawahnya ada deskripsi lanjutan
-  lalu line "** CODE:XXXXXXXXXXXX"
-- Pada vendor TOHO, satu logical item bisa dipecah ke lebih dari satu Carton No.
-  Contoh:
-    - 63~78 ... 160 SET
-    - 79 ... 5 SET
-    Keduanya masih item yang sama.
-- Jadi untuk line item TOHO, fokus pada logical item, BUKAN hanya potongan visual per baris.
+- Satu LOGICAL ITEM bisa terdiri dari BEBERAPA baris cetak (sub-row) yang punya
+  CODE / Item No. yang SAMA di dalam Customer P/O group yang SAMA.
+  Bentuk sub-row yang mungkin muncul:
+    a) Baris RANGE carton + baris TOTAL range:
+       "23~32   CWSSXTAC400001            @10 SET  @13.20  @13.99  @1.90"  <- baris RATE per carton
+       "(10)    "SAMOX" CHAINWHEEL MODEL:  100 SET   132     139.9   19"   <- baris TOTAL range
+       (angka di dalam kurung seperti "(10)" = jumlah carton pada range tsb.)
+    b) Baris SINGLE carton (carton tunggal, masih item yang sama):
+       "79      ... (CYxxxxx)               5 SET   6.38    7.08    3.93"
+    c) Baris LEPAS (loose): HANYA punya quantity, TANPA Carton No. dan TANPA
+       N.W./G.W./Meas'mt. Sering muncul di HALAMAN BERIKUTNYA karena dipack
+       menyatu dengan carton item yang sama:
+       "CWSSXTAC400001  2 SET"   <- tanpa carton, tanpa NW/GW/Meas'mt
+- Jadi untuk line item TOHO, fokus pada LOGICAL ITEM (gabungan per CODE dalam satu
+  Customer P/O group), BUKAN hanya potongan visual per baris.
+
+=== ATURAN PALING PENTING: BARIS RATE "@" (WAJIB DIPATUHI) ===
+- Nilai yang diawali tanda "@" (mis. "@2 SET", "@3.92", "@5.64", "@3.93") adalah
+  RATE PER CARTON (nilai untuk 1 carton), BUKAN nilai total item.
+- DILARANG KERAS memasukkan / menjumlahkan nilai "@..." ke pl_quantity, pl_nw,
+  pl_gw, pl_volume, maupun pl_package_count. Baris "@" hanya referensi.
+- Nilai item yang benar selalu diambil dari angka TOTAL yang TIDAK diawali "@"
+  (mis. "100 SET 132 139.9 19"), bukan dari baris rate "@".
+- CONTOH SALAH (JANGAN DITIRU):
+    @2 SET @3.84 @5.52 @3.93   <- baris RATE (per carton)
+    40 SET  76.8  110.4 78.6   <- baris TOTAL
+    SALAH: pl_quantity = 40 + 2 = 42 ; pl_nw = 76.8 + 3.84 = 80.64
+           (ini SALAH karena menjumlahkan baris rate "@")
+  CONTOH BENAR:
+    pl_quantity = 40 ; pl_nw = 76.8 ; pl_gw = 110.4 ; pl_volume = 78.6
+    (baris "@" diabaikan total)
+
+=== ATURAN PENGGABUNGAN SUB-ROW (LOGICAL ITEM) ===
+- Gabungkan SEMUA sub-row (tipe a, b, c di atas) yang punya CODE / Item No. yang
+  SAMA di dalam Customer P/O group yang SAMA menjadi SATU output row.
+- CODE / Item No. yang SAMA tetapi berada di Customer P/O group yang BERBEDA adalah
+  LOGICAL ITEM yang BERBEDA — JANGAN digabung.
+  Contoh: CODE "FRUxxxx" di "C25-xxxx/45319869" BERBEDA dari "FRUxxxx" di "CDC CLAIM RT".
+- Saat menggabungkan, JUMLAHKAN HANYA nilai cetak (non-"@"):
+    pl_quantity      = Σ quantity SEMUA sub-row (termasuk baris loose tanpa carton)
+    pl_nw            = Σ N.W. dari sub-row yang punya N.W.
+    pl_gw            = Σ G.W. dari sub-row yang punya G.W.
+    pl_volume        = Σ Meas'mt dari sub-row yang punya Meas'mt
+    pl_package_count = Σ jumlah carton SEMUA sub-row
+- Baris LEPAS (tipe c, hanya quantity tanpa carton & tanpa NW/GW/Meas'mt) TETAP
+  ditambahkan quantity-nya ke logical item yang CODE-nya sama dalam P/O group yang
+  sama. Kontribusinya untuk pl_nw, pl_gw, pl_volume, dan pl_package_count = 0
+  (jangan dikarang, jangan pakai nilai baris lain, jangan pakai baris "@").
 
 1. pl_customer_po_no
    - Ambil dari "Customer P/O No." terdekat yang menaungi line item tersebut.
@@ -180,18 +216,22 @@ Struktur umum packing list TOHO:
 
 4. pl_quantity
    - Ambil total quantity barang untuk logical item packing list.
-   - Jangan salah ambil quantity per carton dari line "@10 SET".
+   - JANGAN ambil quantity dari baris rate "@10 SET" (lihat ATURAN BARIS "@" di atas).
    - Pada vendor TOHO:
-     - "@10 SET" adalah quantity per carton
-     - "100 SET" / "160 SET" / "5 SET" adalah quantity total per potongan row
-   - Jika satu logical item dipecah ke beberapa carton rows, maka pl_quantity harus dijumlahkan.
+     - "@10 SET" adalah quantity per carton (RATE) -> ABAIKAN
+     - "100 SET" / "160 SET" / "5 SET" adalah quantity total per sub-row -> PAKAI
+   - Jika satu logical item terdiri dari beberapa sub-row (range + single carton +
+     baris loose), maka pl_quantity = jumlah quantity SEMUA sub-row tersebut.
+   - Termasuk baris LEPAS tanpa carton & tanpa NW/GW (sering di halaman berikutnya):
+     quantity-nya TETAP ditambahkan ke logical item dengan CODE yang sama dalam
+     Customer P/O group yang sama.
    - Contoh:
      - 63~78 = 160 SET
        79 = 5 SET
        maka pl_quantity = 165
-     - 80~91 = 120 SET
-       92 = 9 SET
-       maka pl_quantity = 129
+     - A68 = 5 SET (punya carton & NW/GW)
+       baris loose CODE sama di P/O group sama = 1 SET (tanpa carton/NW/GW)
+       maka pl_quantity = 6
      - 93~144 = 520 SET
        145 = 5 SET
        maka pl_quantity = 525
@@ -215,8 +255,9 @@ Struktur umum packing list TOHO:
 6. pl_package_count
    - Hitung jumlah package fisik line item dari Carton No.
    - Untuk vendor TOHO, Carton No. bisa berupa:
-     - range dengan "~"
-     - single carton no
+     - range dengan "~" (jumlah carton = angka di dalam kurung "(NN)" jika ada,
+       atau dihitung dari range, mis. "23~32" -> 10)
+     - single carton no -> 1
    - Aturan:
      - "23~32" -> 10
      - "33~42" -> 10
@@ -226,40 +267,50 @@ Struktur umum packing list TOHO:
      - "92" -> 1
      - "93~144" -> 52
      - "145" -> 1
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan semua package_count-nya.
+   - Jika satu logical item terdiri dari beberapa sub-row (range + single carton),
+     jumlahkan semua package_count-nya.
    - Contoh:
      - 63~78 + 79 -> 16 + 1 = 17
-     - 80~91 + 92 -> 12 + 1 = 13
+     - range "(13)" 26 SET + single carton "A47" 1 SET -> 13 + 1 = 14
      - 93~144 + 145 -> 52 + 1 = 53
+   - Baris LEPAS tanpa Carton No. (hanya quantity) menyumbang 0 carton.
+   - JANGAN menghitung baris rate "@" sebagai carton.
    - Jangan ambil total dokumen "163CTNS" sebagai package_count item-level.
 
 7. pl_nw
-   - Ambil dari kolom N.W. (KGS) line item.
+   - Ambil dari kolom N.W. (KGS) line item, HANYA angka cetak (BUKAN baris rate "@").
    - Nilai numeric saja.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh N.W.-nya.
+   - Jika satu logical item terdiri dari beberapa sub-row, jumlahkan seluruh N.W.-nya.
+   - Sub-row TOTAL range + sub-row single carton dijumlahkan; baris rate "@" diabaikan;
+     baris LEPAS tanpa N.W. menyumbang 0.
    - Contoh:
      - 131.36 + 4.11 -> pl_nw = 135.47
-     - 98.4 + 7.38 -> pl_nw = 105.78
+     - 50.96 + 1.96 -> pl_nw = 52.92   (TOTAL range 50.96 + single carton 1.96; bukan + "@3.92")
      - 263.12 + 2.53 -> pl_nw = 265.65
 
 8. pl_gw
-   - Ambil dari kolom G.W. (KGS) line item.
+   - Ambil dari kolom G.W. (KGS) line item, HANYA angka cetak (BUKAN baris rate "@").
    - Nilai numeric saja.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh G.W.-nya.
+   - Jika satu logical item terdiri dari beberapa sub-row, jumlahkan seluruh G.W.-nya.
+   - Sub-row TOTAL range + sub-row single carton dijumlahkan; baris rate "@" diabaikan;
+     baris LEPAS tanpa G.W. menyumbang 0.
    - Contoh:
      - 137.12 + 4.46 -> pl_gw = 141.58
-     - 103.56 + 7.81 -> pl_gw = 111.37
+     - 73.32 + 3.35 -> pl_gw = 76.67   (TOTAL range 73.32 + single carton 3.35; bukan + "@5.64")
      - 285.48 + 2.96 -> pl_gw = 288.44
 
 9. pl_volume
-   - Ambil dari kolom Meas'mt (CU'FT) line item.
+   - Ambil dari kolom Meas'mt (CU'FT) line item, HANYA angka cetak (BUKAN baris rate "@").
    - Nilai numeric saja.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh volume-nya.
+   - Jika satu logical item terdiri dari beberapa sub-row, jumlahkan seluruh volume-nya.
+   - Sub-row TOTAL range + sub-row single carton dijumlahkan; baris rate "@" diabaikan;
+     baris LEPAS tanpa Meas'mt menyumbang 0.
    - Contoh:
      - 9.6 + 0.6 -> pl_volume = 10.2
-     - 9.12 + 0.76 -> pl_volume = 9.88
+     - 51.09 + 3.93 -> pl_volume = 55.02
      - 40.04 + 0.77 -> pl_volume = 40.81
-   - Jangan salah ambil volume per carton dari line "@... @... @... @0.60" jika total line item sudah tersedia.
+   - Jangan salah ambil volume per carton dari baris rate "@... @... @... @0.60";
+     selalu pakai angka total cetak (non-"@").
 
 
 BILL OF LADING (BL)
