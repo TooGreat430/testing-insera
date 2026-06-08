@@ -9530,122 +9530,6 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
     return inv_rows
 
 
-def _group_index_items_by_page(index_items: list):
-    """
-    Group index items by their `page_no` / `page` field. Return dict
-    {page_no: [(global_idx_1based, item), ...]} sorted ascending by index
-    within each page. Items tanpa page info DIABAIKAN (caller fallback ke
-    default batching kalau perlu).
-    """
-    by_page = {}
-    for i, item in enumerate(index_items or [], start=1):
-        if not isinstance(item, dict):
-            continue
-        try:
-            p = int(item.get("page_no") or item.get("page") or 0)
-        except Exception:
-            p = 0
-        if p <= 0:
-            continue
-        by_page.setdefault(p, []).append((i, item))
-    return by_page
-
-
-def _build_liow_ko_per_page_jobs(
-    file_uri: str,
-    index_items: list,
-    total_row: int,
-    vendor_id: str,
-    vendor_prompt_text: str,
-    local_pdf: str,
-    run_prefix: str,
-    temp_local_paths: list,
-    prompt_builder,
-    job_name_prefix: str,
-) -> list:
-    """
-    Build per-page batch jobs untuk liow_ko: 1 page PDF = 1 Gemini call.
-    Return list of jobs kalau berhasil, atau None kalau fallback diperlukan
-    (mis. ada item tanpa page info → caller pakai default batching).
-    """
-    items_by_page = _group_index_items_by_page(index_items)
-
-    # Validasi: semua item harus punya page assignment.
-    pages_covered_count = sum(len(v) for v in items_by_page.values())
-    if pages_covered_count != total_row or not items_by_page:
-        print(
-            f"[LIOW_KO_PAGE_BATCH][FALLBACK] page info incomplete: "
-            f"items_with_page={pages_covered_count} total_row={total_row}"
-        )
-        return None
-
-    total_pdf_pages = _count_pdf_pages(local_pdf)
-    jobs = []
-    batch_no = 1
-
-    for page_no in sorted(items_by_page.keys()):
-        page_items = items_by_page[page_no]
-        indices = [idx for idx, _ in page_items]
-        index_slice = [it for _, it in page_items]
-
-        first_index = min(indices)
-        last_index = max(indices)
-        expected_indices = sorted(indices)
-
-        if (last_index - first_index + 1) != len(indices):
-            print(
-                f"[LIOW_KO_PAGE_BATCH][NON_CONTIGUOUS] page={page_no} "
-                f"indices={indices} (not contiguous — Gemini extracted out of order)"
-            )
-
-        prompt = prompt_builder(
-            total_row=total_row,
-            index_slice=index_slice,
-            first_index=first_index,
-            last_index=last_index,
-            vendor_id=vendor_id,
-            vendor_prompt_text=vendor_prompt_text,
-        )
-
-        # Slice PDF: hanya 1 halaman ini.
-        page_idx_0based = max(0, min(page_no - 1, total_pdf_pages - 1))
-        sliced_local = _create_sliced_pdf_for_batch(local_pdf, page_idx_0based, page_idx_0based)
-        temp_local_paths.append(sliced_local)
-        batch_file_uri = _upload_temp_pdf_to_gcs(
-            sliced_local,
-            run_prefix,
-            name=f"{job_name_prefix}_page_{page_no}",
-        )
-
-        prompt += (
-            f"\n\nPERHATIAN PER-PAGE EXTRACTION (KHUSUS LIOW KO):\n"
-            f"Anda sedang membaca SATU HALAMAN PDF — halaman fisik ke-{page_no} dari dokumen sumber.\n"
-            f"Halaman ini berisi line item ke-{first_index} sampai ke-{last_index} "
-            f"(total {len(indices)} item dari grand total {total_row} item dokumen).\n"
-            f"Ekstrak HANYA item yang TERLIHAT SECARA VISUAL di halaman ini.\n"
-            f"DILARANG mengulang/duplikasi item dari halaman lain.\n"
-            f"DILARANG memprediksi atau menebak item dari halaman berikutnya.\n"
-            f"DILARANG mengekstrak baris TOTAL/SUMMARY sebagai line item — itu bukan item."
-        )
-
-        jobs.append({
-            "batch_no": batch_no,
-            "file_uri": batch_file_uri,
-            "prompt": prompt,
-            "first_index": first_index,
-            "last_index": last_index,
-            "expected_indices": expected_indices,
-            "batch_size": len(indices),
-        })
-        batch_no += 1
-
-    print(
-        f"[LIOW_KO_PAGE_BATCH] built {len(jobs)} jobs (1 per page) "
-        f"total_row={total_row} pages_covered={len(items_by_page)}"
-    )
-    return jobs
-
-
 def _build_inv_detail_jobs(
     file_uri_inv: str,
     inv_index: list,
@@ -9658,33 +9542,12 @@ def _build_inv_detail_jobs(
     batch_size: int,
 ) -> list:
     """Build batch job list untuk Invoice-only detail extraction."""
-    is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
-    is_liow_ko = normalize_vendor_id(vendor_id) == "liow_ko"
-
-    # LIOW KO: per-page extraction. 1 page = 1 Gemini call dengan PDF
-    # ter-slice ke halaman itu saja. Hilangkan ghost duplicate akibat
-    # Gemini me-revisit item dari halaman lain.
-    if is_liow_ko:
-        per_page_jobs = _build_liow_ko_per_page_jobs(
-            file_uri=file_uri_inv,
-            index_items=inv_index,
-            total_row=total_inv_row,
-            vendor_id=vendor_id,
-            vendor_prompt_text=vendor_prompt_text,
-            local_pdf=local_inv_pdf,
-            run_prefix=run_prefix,
-            temp_local_paths=temp_local_paths,
-            prompt_builder=build_inv_detail_prompt_from_index,
-            job_name_prefix="inv",
-        )
-        if per_page_jobs is not None:
-            return per_page_jobs
-        # else: fallback ke default batching loop di bawah.
-
     jobs = []
     first_index = 1
     batch_no = 1
     total_pages = _count_pdf_pages(local_inv_pdf)
+
+    is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
 
     while first_index <= total_inv_row:
         last_index = min(first_index + batch_size - 1, total_inv_row)
@@ -9751,30 +9614,12 @@ def _build_pl_detail_jobs(
     batch_size: int,
 ) -> list:
     """Build batch job list untuk PL-only detail extraction."""
-    is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
-    is_liow_ko = normalize_vendor_id(vendor_id) == "liow_ko"
-
-    # LIOW KO: per-page extraction (sama treatment dengan INV).
-    if is_liow_ko:
-        per_page_jobs = _build_liow_ko_per_page_jobs(
-            file_uri=file_uri_pl,
-            index_items=pl_index,
-            total_row=total_pl_row,
-            vendor_id=vendor_id,
-            vendor_prompt_text=vendor_prompt_text,
-            local_pdf=local_pl_pdf,
-            run_prefix=run_prefix,
-            temp_local_paths=temp_local_paths,
-            prompt_builder=build_pl_detail_prompt_from_index,
-            job_name_prefix="pl",
-        )
-        if per_page_jobs is not None:
-            return per_page_jobs
-
     jobs = []
     first_index = 1
     batch_no = 1
     total_pages = _count_pdf_pages(local_pl_pdf)
+
+    is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
 
     while first_index <= total_pl_row:
         last_index = min(first_index + batch_size - 1, total_pl_row)
