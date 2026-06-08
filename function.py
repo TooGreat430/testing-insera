@@ -14141,6 +14141,28 @@ def run_ocr(
             print(f"  [PL][{_ri}] " + " | ".join(
                 f"{k}={v}" for k, v in _pl_r.items()
             ))
+
+        print(f"\n{'='*70}")
+        print(f"[RAW_COO] Total COO items: {len(coo_items)}")
+        print(f"{'='*70}")
+        for _ri, _coo_r in enumerate(coo_items):
+            if isinstance(_coo_r, dict):
+                print(f"  [COO][{_ri}] " + " | ".join(
+                    f"{k}={v}" for k, v in _coo_r.items()
+                ))
+            else:
+                print(f"  [COO][{_ri}] {_coo_r}")
+
+        print(f"\n{'='*70}")
+        print(f"[RAW_BL] Total BL items: {len(bl_items)}")
+        print(f"{'='*70}")
+        for _ri, _bl_r in enumerate(bl_items):
+            if isinstance(_bl_r, dict):
+                print(f"  [BL][{_ri}] " + " | ".join(
+                    f"{k}={v}" for k, v in _bl_r.items()
+                ))
+            else:
+                print(f"  [BL][{_ri}] {_bl_r}")
         print(f"{'='*70}\n")
 
         # ==========================================
