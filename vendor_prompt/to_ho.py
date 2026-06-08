@@ -253,26 +253,30 @@ Struktur umum packing list TOHO:
    - Jangan ambil SET sebagai pl_package_unit.
 
 6. pl_package_count
-   - Hitung jumlah package fisik line item dari Carton No.
-   - Untuk vendor TOHO, Carton No. bisa berupa:
-     - range dengan "~" (jumlah carton = angka di dalam kurung "(NN)" jika ada,
-       atau dihitung dari range, mis. "23~32" -> 10)
-     - single carton no -> 1
+   - Hitung jumlah package fisik line item dari kolom Carton No. SAJA.
+   - !!! PALING SERING SALAH: pl_package_count BUKAN pl_quantity (SET). !!!
+     - Banyaknya SET DI DALAM satu carton TIDAK menambah jumlah carton.
+     - Satu Carton No. TUNGGAL = 1 carton, WALAUPUN isinya 5 SET / 6 SET / banyak SET.
+     - DILARANG menyalin nilai pl_quantity ke pl_package_count.
+   - Untuk vendor TOHO, Carton No. bisa berupa (boleh ada awalan huruf, mis. "A68"):
+     - range dengan "~" -> jumlah carton = angka di dalam kurung "(NN)" jika ada,
+       atau dihitung dari range (mis. "23~32" -> 10 ; "A34~A46" -> 13)
+     - single carton no (mis. "79", "145", "A47", "A68") -> 1 (selalu 1)
    - Aturan:
      - "23~32" -> 10
-     - "33~42" -> 10
-     - "63~78" -> 16
-     - "79" -> 1
-     - "80~91" -> 12
-     - "92" -> 1
+     - "A34~A46" -> 13
+     - "A47" -> 1
+     - "A68" (berisi 5 SET) -> 1   (BUKAN 5)
+     - "A70" (berisi 5 SET) -> 1   (BUKAN 5)
      - "93~144" -> 52
      - "145" -> 1
    - Jika satu logical item terdiri dari beberapa sub-row (range + single carton),
-     jumlahkan semua package_count-nya.
+     jumlahkan jumlah CARTON tiap sub-row (bukan jumlah SET).
    - Contoh:
      - 63~78 + 79 -> 16 + 1 = 17
      - range "(13)" 26 SET + single carton "A47" 1 SET -> 13 + 1 = 14
-     - 93~144 + 145 -> 52 + 1 = 53
+     - single carton "A68" 5 SET + baris LEPAS 1 SET (tanpa carton) -> 1 + 0 = 1
+       (pl_quantity tetap 6, tetapi pl_package_count = 1)
    - Baris LEPAS tanpa Carton No. (hanya quantity) menyumbang 0 carton.
    - JANGAN menghitung baris rate "@" sebagai carton.
    - Jangan ambil total dokumen "163CTNS" sebagai package_count item-level.
