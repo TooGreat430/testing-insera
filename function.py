@@ -14000,6 +14000,26 @@ def run_ocr(
                 print(f"[BL_ITEM_EXTRACT][WARN] skipped: {e}")
 
         # ==========================================
+        # LOG: RAW EXTRACTION RESULTS (sebelum mapping)
+        # ==========================================
+        print(f"\n{'='*70}")
+        print(f"[RAW_INV] Total INV rows: {len(inv_rows)}")
+        print(f"{'='*70}")
+        for _ri, _inv_r in enumerate(inv_rows):
+            print(f"  [INV][{_ri}] " + " | ".join(
+                f"{k}={v}" for k, v in _inv_r.items()
+            ))
+
+        print(f"\n{'='*70}")
+        print(f"[RAW_PL] Total PL rows: {len(pl_rows)}")
+        print(f"{'='*70}")
+        for _ri, _pl_r in enumerate(pl_rows):
+            print(f"  [PL][{_ri}] " + " | ".join(
+                f"{k}={v}" for k, v in _pl_r.items()
+            ))
+        print(f"{'='*70}\n")
+
+        # ==========================================
         # MAPPING: PL → INVOICE
         # ==========================================
         all_rows = _map_pl_rows_to_invoice_rows(inv_rows, pl_rows)
