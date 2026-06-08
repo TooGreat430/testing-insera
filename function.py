@@ -7258,7 +7258,7 @@ def _has_all_required_coo_seq_fields(row: dict) -> bool:
 
     return all(not _is_null(row.get(k)) for k in required_fields)
 
-def _postprocess_coo_no_and_seq(rows: list):
+def _postprocess_coo_no_and_seq(rows: list, vendor_id: str = "default"):
     coo_keys_presence = [
         "coo_form_type",
         "coo_invoice_no",
@@ -7305,7 +7305,12 @@ def _postprocess_coo_no_and_seq(rows: list):
         active_rows.append(r)
 
     if active_rows:
-        _recompute_seq_by_key(active_rows, "coo_no", "coo_seq")
+        # to_ho: coo_seq sudah di-set dari nomor item dokumen
+        # (_assign_coo_seq_from_document); JANGAN dinomori ulang.
+        if normalize_vendor_id(vendor_id) in VENDORS_COO_SEQ_FROM_DOCUMENT:
+            print("[COO_SEQ] preserve document item numbers (skip recompute)")
+        else:
+            _recompute_seq_by_key(active_rows, "coo_no", "coo_seq")
 
     return rows
 
@@ -8741,7 +8746,9 @@ STRUKTUR COO (form RCEP):
 FIELD PER ITEM:
 - "coo_seq": nomor item dari kolom 6 (numeric: 1, 2, 3, ...).
 - "coo_mark_number": dari "7. Marks and numbers on packages"; bila hanya marks umum/global atau "N/M", isi "null".
-- "coo_description": deskripsi barang dari kolom 8 SETELAH frasa paket. ABAIKAN frasa "<...> (<N>) CARTON(S) OF" dan kata generik "BICYCLE PARTS". Jangan masukkan HS code/criteria/country/quantity/GW.
+- "coo_description": deskripsi barang dari kolom 8 SETELAH frasa paket, untuk SATU item saja (item dengan nomor pada kolom 6 ini). ABAIKAN frasa "<...> (<N>) CARTON(S) OF" dan kata generik "BICYCLE PARTS". Jangan masukkan HS code/criteria/country/quantity/GW.
+  - Deskripsi tiap item biasanya DIAKHIRI penanda "** CODE:<kode>" (mis. "** CODE:CWSSXSAC38J00001"). PERTAHANKAN penanda "** CODE:" milik item INI di akhir deskripsi (dipakai sebagai batas item).
+  - JANGAN menggabungkan deskripsi item lain. Bila teks kolom 8 menyambung melintasi batas halaman (Continuation Sheet), potong TEPAT sebelum nomor item / "** CODE:" milik item BERIKUTNYA, dan JANGAN ikut menyertakan ekor deskripsi item SEBELUMNYA. Aturan tegas: satu objek = satu nomor item = satu "** CODE:".
 - "coo_hs_code": dari "9. HS Code of the goods" (mis. format 8714.93).
 - "coo_package_count": angka pada frasa paket di kolom 8 (mis. "TWENTY (20) CARTONS OF" -> 20). Prioritaskan angka di dalam kurung.
 - "coo_package_unit": jenis kemasan pada frasa paket di kolom 8 (mis. "CARTONS"/"CARTON"). JANGAN SETS/PIECES/PAIRS.
@@ -8998,6 +9005,225 @@ def _postprocess_coo_aggregate_to_top_row(rows: list, vendor_id: str = "default"
         f"groups={len(order)} zeroed_rows={zeroed}"
     )
     return rows
+
+
+# =========================================================
+# TO_HO: PENYESUAIAN COO KHUSUS VENDOR
+# =========================================================
+# Vendor yang coo_seq-nya WAJIB mengikuti nomor item tercetak pada dokumen COO
+# (kolom 6), BUKAN dinomori ulang 1..n mengikuti urutan baris invoice.
+VENDORS_COO_SEQ_FROM_DOCUMENT = {
+    "to_ho",
+}
+
+# Vendor yang COO-nya TIDAK punya package_count per item; hanya ada total carton
+# shipment (mis. "ONE HUNDRED AND SIXTY THREE (163) CARTONS OF" di item pertama).
+# Total itu ditampilkan di SATU baris (baris pertama group COO) + 0 di baris lain.
+# coo_quantity & coo_gw TETAP per-item (tidak disentuh fungsi ini).
+VENDORS_COO_PACKAGE_COUNT_TOTAL_TO_TOP_ROW = {
+    "to_ho",
+}
+
+
+def _coo_extract_codes_in_order(value):
+    """Semua kode pada token '** CODE:<kode>' dalam deskripsi, urut kemunculan."""
+    if _is_null(value):
+        return []
+    found = re.findall(r"CODE\s*:\s*([A-Za-z0-9\-/]+)", str(value), flags=re.IGNORECASE)
+    out = []
+    for c in found:
+        nc = _normalize_code_compare_value(c)
+        if nc:
+            out.append(nc)
+    return out
+
+
+def _assign_coo_seq_from_document(rows: list, coo_items: list, vendor_id: str = "default"):
+    """
+    Untuk vendor seperti to_ho: coo_seq harus mengikuti NOMOR ITEM yang tercetak
+    pada COO (kolom 6), bukan dinomori ulang mengikuti urutan invoice.
+
+    Tiap item COO memiliki kode produk pada penanda '** CODE:<kode>' di AKHIR
+    deskripsinya. Bangun peta kode -> coo_seq asli, lalu set coo_seq tiap baris
+    detail dari kode item-nya (inv_spart_item_no / pl_item_no). Robust terhadap
+    deskripsi yang sempat ter-bleed antar item karena memakai kode TERAKHIR
+    (kode milik item itu sendiri).
+    """
+    if normalize_vendor_id(vendor_id) not in VENDORS_COO_SEQ_FROM_DOCUMENT:
+        return
+    if not isinstance(rows, list) or not coo_items:
+        return
+
+    seq_by_code = {}
+    for it in coo_items:
+        if not isinstance(it, dict):
+            continue
+        seq = it.get("coo_seq")
+        if _is_null(seq):
+            continue
+        codes = _coo_extract_codes_in_order(it.get("coo_description"))
+        if not codes:
+            continue
+        own_code = codes[-1]  # kode milik item = penanda CODE terakhir di deskripsinya
+        if own_code not in seq_by_code:
+            seq_by_code[own_code] = seq
+
+    if not seq_by_code:
+        return
+
+    assigned = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = _normalize_code_compare_value(
+            row.get("inv_spart_item_no") or row.get("pl_item_no")
+        )
+        if code and code in seq_by_code:
+            row["coo_seq"] = seq_by_code[code]
+            assigned += 1
+
+    print(
+        f"[COO_SEQ_FROM_DOC] vendor={normalize_vendor_id(vendor_id)} "
+        f"codes={len(seq_by_code)} assigned={assigned}"
+    )
+
+
+def _coo_description_keep_own_code_segment(desc, code):
+    """
+    Jika coo_description memuat lebih dari satu '** CODE:...', simpan hanya segmen
+    yang berakhir pada CODE milik baris (code). Buang bleed segmen item lain yang
+    ikut tergabung karena deskripsi COO menyambung melintasi halaman.
+    """
+    if _is_null(desc):
+        return desc
+    norm_code = _normalize_code_compare_value(code)
+    if not norm_code:
+        return desc
+
+    text = str(desc)
+    markers = list(re.finditer(
+        r"\*?\*?\s*CODE\s*:\s*([A-Za-z0-9\-/]+)", text, flags=re.IGNORECASE
+    ))
+    if len(markers) <= 1:
+        return desc
+
+    own = None
+    for m in markers:
+        if _normalize_code_compare_value(m.group(1)) == norm_code:
+            own = m
+            break
+    if own is None:
+        return desc
+
+    # awal segmen = setelah penanda CODE terdekat SEBELUM milik baris (kalau ada)
+    start = 0
+    for m in markers:
+        if m.start() < own.start():
+            start = m.end()
+        else:
+            break
+
+    segment = text[start:own.end()].strip()
+    return segment if segment else desc
+
+
+def _postprocess_coo_description_trim_by_code(rows: list, vendor_id: str = "default"):
+    """to_ho: rapikan coo_description yang ter-bleed -> simpan segmen milik kode baris."""
+    if normalize_vendor_id(vendor_id) not in VENDORS_COO_SEQ_FROM_DOCUMENT:
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _is_null(row.get("coo_description")):
+            continue
+        code = row.get("inv_spart_item_no") or row.get("pl_item_no")
+        row["coo_description"] = _coo_description_keep_own_code_segment(
+            row.get("coo_description"), code
+        )
+
+
+def _postprocess_coo_package_count_total_to_top_row(rows: list, vendor_id: str = "default"):
+    """
+    to_ho: COO tidak punya package_count per item; hanya total carton shipment
+    (mis. "(163) CARTONS OF"). Tampilkan total itu di SATU baris (baris pertama
+    group COO) + 0 di baris lain. Sumber total = pl_total_package group (nilai
+    yang sama dengan total carton pada dokumen COO), fallback ke jumlah
+    pl_package_count seluruh baris group.
+
+    Jalankan SETELAH validasi PL-vs-COO agar tidak salah-flag (package_count COO
+    di sini sengaja agregat, bukan per-baris). coo_quantity & coo_gw tidak disentuh.
+    """
+    if normalize_vendor_id(vendor_id) not in VENDORS_COO_PACKAGE_COUNT_TOTAL_TO_TOP_ROW:
+        return rows
+    if not isinstance(rows, list):
+        return rows
+
+    groups = {}
+    order = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        if not _row_has_meaningful_coo_item(row):
+            continue
+        gkey = _get_detail_total_group_key(row, idx)
+        if gkey not in groups:
+            groups[gkey] = []
+            order.append(gkey)
+        groups[gkey].append(idx)
+
+    for gkey in order:
+        idxs = groups[gkey]
+
+        total = None
+        for i in idxs:
+            total = _to_float(rows[i].get("pl_total_package"))
+            if total is not None:
+                break
+        if total is None:
+            s = 0.0
+            seen = False
+            for i in idxs:
+                v = _to_float(rows[i].get("pl_package_count"))
+                if v is not None:
+                    s += v
+                    seen = True
+            total = s if seen else None
+
+        for pos, i in enumerate(idxs):
+            if pos == 0:
+                cleaned = _coo_clean_number(total)
+                if cleaned is not None and cleaned != 0:
+                    rows[i]["coo_package_count"] = cleaned
+                    rows[i]["coo_package_unit"] = "CT"
+                else:
+                    rows[i]["coo_package_count"] = "null"
+                    rows[i]["coo_package_unit"] = "null"
+            else:
+                rows[i]["coo_package_count"] = 0
+                rows[i]["coo_package_unit"] = "null"
+
+    print(
+        f"[COO_PKG_COUNT_TOP_ROW] vendor={normalize_vendor_id(vendor_id)} "
+        f"groups={len(order)}"
+    )
+    return rows
+
+
+def _postprocess_coo_consignee_tax_id_from_bl(rows: list, vendor_id: str = "default"):
+    """
+    to_ho (low priority): coo_consignee_tax_id sering ter-OCR salah (digit/spasi).
+    Consignee COO = consignee BL (PT INSERA SENA), jadi bila BL punya tax id yang
+    lebih andal, pakai nilai BL.
+    """
+    if normalize_vendor_id(vendor_id) != "to_ho":
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bl_tax = row.get("bl_consignee_tax_id")
+        if _is_null(bl_tax):
+            continue
+        row["coo_consignee_tax_id"] = str(bl_tax).strip()
 
 
 # =========================================================
@@ -12222,10 +12448,11 @@ def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "de
     _postprocess_item_no_fields(rows)
     _postprocess_unit_fields(rows)
     _postprocess_coo_description(rows)
+    _postprocess_coo_description_trim_by_code(rows, vendor_id=vendor_id)
 
     _postprocess_coo_item_mapping(rows)
     _postprocess_coo_po_only_rows_from_invoice(rows, vendor_id=vendor_id)
-    _postprocess_coo_no_and_seq(rows)
+    _postprocess_coo_no_and_seq(rows, vendor_id=vendor_id)
 
     _postprocess_bl_description(rows, vendor_id=vendor_id)
     _postprocess_bl_seller_name_similarity(rows)
@@ -14191,6 +14418,13 @@ def run_ocr(
             except Exception as e:
                 print(f"[COO_MAP][WARN] skipped: {e}")
 
+            # to_ho: set coo_seq dari nomor item dokumen COO (kolom 6), bukan
+            # dinomori ulang mengikuti urutan invoice.
+            try:
+                _assign_coo_seq_from_document(all_rows, coo_items, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[COO_SEQ_FROM_DOC][WARN] skipped: {e}")
+
         # MAPPING: BL items → invoice rows (bl_description, bl_hs_code, bl_mark_number per row)
         if has_bl_doc and bl_items:
             try:
@@ -14343,6 +14577,7 @@ def run_ocr(
         _postprocess_unit_fields(all_rows)
         if has_coo_doc:
             _postprocess_coo_description(all_rows)
+            _postprocess_coo_description_trim_by_code(all_rows, vendor_id=vendor_id)
 
             # NEW: null-kan COO item yang tidak match ke row detail
             _postprocess_coo_item_mapping(all_rows)
@@ -14453,7 +14688,20 @@ def run_ocr(
             target_vendor_ids="karet_deli",
             columns=["inv_total_quantity", "pl_total_package"],
         )
- 
+
+        # TO_HO: COO tidak punya nilai FOB/value per item -> coo_amount_unit "null"
+        # (jangan ikut mengisi "SETS" dari unit quantity).
+        _postprocess_null_fields_for_vendor(
+            rows=all_rows,
+            current_vendor_id=vendor_id,
+            target_vendor_ids="to_ho",
+            columns=["coo_amount_unit"],
+        )
+
+        # TO_HO (low priority): rapikan coo_consignee_tax_id dari BL (consignee sama).
+        if has_bl_doc:
+            _postprocess_coo_consignee_tax_id_from_bl(all_rows, vendor_id=vendor_id)
+
         if has_coo_doc and _is_coo_aggregate_top_row_vendor(vendor_id):
             # COO ter-agregat (mis. joy): tampilkan nilai agregat per produk di
             # SATU baris (baris pertama group) + 0 di baris lain, sesuai dokumen
@@ -14488,6 +14736,12 @@ def run_ocr(
 
         if has_coo_doc:
             _validate_coo_rows(all_rows)
+
+            # TO_HO: COO hanya punya total carton shipment (mis. "(163) CARTONS OF"),
+            # bukan package_count per item. Tampilkan total di baris pertama group
+            # COO + 0 di baris lain. Dijalankan SETELAH validasi PL-vs-COO agar tidak
+            # salah-flag. coo_quantity & coo_gw tetap per-item.
+            _postprocess_coo_package_count_total_to_top_row(all_rows, vendor_id=vendor_id)
 
         total_attribution = _apply_total_contribution_scoring(all_rows)
 
