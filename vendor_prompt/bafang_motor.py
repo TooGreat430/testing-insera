@@ -251,7 +251,7 @@ PACKING LIST (PL)
 4. pl_quantity:
    - Ekstrak dari kolom "Quantity".
    - Contoh: "455", "700"
-   - Dilarang keras mengambil dari kolom "CTNS" dan "PLTS" karena itu milik pl_package_count
+   - Dilarang keras mengambil dari kolom "CTNS" karena itu milik pl_package_count
 
 5. pl_package_unit:
    - Ekstrak jenis kemasan dari nama kolom package (misal "CTNS").
