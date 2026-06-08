@@ -88,7 +88,6 @@ def _is_recheck_label_only_vendor(vendor_id: str = "default") -> bool:
     return normalize_vendor_id(vendor_id) in {
         "jht_carbon",
         "bafang_motor",
-        "liow_ko",
         "joy"
     }
 
