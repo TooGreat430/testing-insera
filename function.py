@@ -9358,6 +9358,14 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
         if not po and item:
             item_map.setdefault(item, []).append(i)
 
+    # Precompute: set semua inv_item_no (normalized) yang ada di INV rows.
+    # Dipakai Strategy 6 untuk menghindari mencuri PL row milik INV row lain.
+    inv_item_set: set = set()
+    for _r in inv_rows:
+        _v = _norm_item_for_map(_r.get("inv_spart_item_no"))
+        if _v:
+            inv_item_set.add(_v)
+
     used = set()
     matched = 0
     unmatched = 0
@@ -9456,12 +9464,18 @@ def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
 
         # --- Strategy 6: qty-only last resort (PL item_no/PO salah diekstrak) ---
         # Dipakai ketika Gemini salah baca item_no dan PO di PL, tapi qty-nya benar.
+        # GUARD: skip PL rows yang item_no-nya ADA di inv_item_set — artinya baris
+        # tersebut milik INV row lain yang belum diproses (Strategy 1/2 akan ambil nanti).
         # Setelah match, item_no dan PO di-override dari INV (yg dianggap lebih akurat).
         if inv_qty > 0:
             _best_s6_score = -1.0
             _best_s6_idx   = None
             for i, pr in enumerate(pl_rows):
                 if i in used:
+                    continue
+                # Skip jika PL item_no dikenal di INV — biarkan Strategy 1/2 yg handle
+                _pl_item_norm_s6 = _norm_item_for_map(pr.get("pl_item_no"))
+                if _pl_item_norm_s6 and _pl_item_norm_s6 in inv_item_set:
                     continue
                 pl_qty = _norm_qty_for_map(pr.get("pl_quantity"))
                 if pl_qty <= 0:
