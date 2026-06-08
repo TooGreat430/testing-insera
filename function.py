@@ -9361,6 +9361,240 @@ def _merge_pl_into_inv_row(inv_row: dict, pl_row: dict):
             inv_row[f] = pl_row[f]
 
 
+# ============================================================
+# GEMINI REMAP PASS — Mapping decision only, NO value mutation
+# ============================================================
+# Pipeline yang misah-misah INV/PL/COO sering salah mapping karena
+# logic code-based (PO+item+qty match) tidak punya konteks visual.
+# Gemini bisa LIHAT PDF asli + extracted JSON dan decide pairing yang
+# lebih intuitif. PENTING: function ini HANYA mengembalikan mapping
+# (inv_idx → pl_idx), TIDAK mengubah nilai apapun. Values selalu dari
+# extraction asli — Gemini cuma decide pairing.
+
+_GEMINI_REMAP_PROMPT_PREFIX = """Anda mendapat 1 PDF berisi dokumen INVOICE dan PACKING LIST yang sudah ter-merge.
+
+TUGAS ANDA: HANYA menentukan PAIRING antara baris INVOICE dan baris PACKING LIST.
+
+ATURAN KETAT (WAJIB DITURUTI):
+1. JANGAN MENGUBAH NILAI apapun (qty, weight, description, dsb) — sistem akan PAKAI nilai dari extraction asli, BUKAN nilai dari Anda.
+2. Output Anda HANYA berupa daftar pairing (inv_seq → pl_index). Tidak ada field lain.
+3. Pakai PDF sebagai sumber kebenaran VISUAL untuk decide pairing — misalnya melihat barisan item INV dan PL yang berdampingan, kode item yang sama, qty yang cocok, dst.
+4. Untuk tiap INV row, pilih PL row yang PALING COCOK secara visual:
+   - Sama PO + item code + qty → match kuat
+   - Sama item code + qty mirip → match medium
+   - Description mirip + qty cocok → match medium
+   - Tidak ada yang cocok → kembalikan null
+5. Satu PL row hanya boleh dipakai 1 kali. Kalau ambigu (2 INV row mengklaim 1 PL row), prioritaskan yang lebih cocok secara qty + description.
+6. Kalau ada INV row yang BELUM ada di PL (mis. carbon REAR TRIANGLE sub-section), CARI di PDF apakah ada PL row tersembunyi yang cocok.
+
+KONTEKS EXTRACTED:
+"""
+
+_GEMINI_REMAP_OUTPUT_SCHEMA = """
+OUTPUT FORMAT (JSON array, satu entry per INV row):
+[
+  {"inv_seq": 1, "pl_index": 0},
+  {"inv_seq": 2, "pl_index": 1},
+  {"inv_seq": 3, "pl_index": null},
+  ...
+]
+
+- inv_seq: nilai inv_seq dari INV row (integer).
+- pl_index: integer 0-based index ke array pl_rows yang Anda paired-kan, ATAU null jika tidak ada match.
+- WAJIB output semua inv_seq. Kalau tidak ada match, set pl_index = null.
+- Tidak boleh ada inv_seq duplikat. Tidak boleh ada pl_index duplikat (kecuali null).
+"""
+
+
+def _build_slim_inv_rows_for_remap(inv_rows: list) -> list:
+    """Slim representation of inv_rows untuk dikirim ke Gemini — hanya field
+    yang berguna untuk decide pairing."""
+    slim = []
+    for r in inv_rows or []:
+        if not isinstance(r, dict):
+            continue
+        slim.append({
+            "inv_seq": r.get("inv_seq"),
+            "inv_customer_po_no": r.get("inv_customer_po_no"),
+            "inv_spart_item_no": r.get("inv_spart_item_no"),
+            "inv_description": (str(r.get("inv_description") or "")[:300]),
+            "inv_quantity": r.get("inv_quantity"),
+            "inv_quantity_unit": r.get("inv_quantity_unit"),
+        })
+    return slim
+
+
+def _build_slim_pl_rows_for_remap(pl_rows: list) -> list:
+    """Slim representation of pl_rows. pl_index = position di array (0-based)."""
+    slim = []
+    for i, r in enumerate(pl_rows or []):
+        if not isinstance(r, dict):
+            continue
+        slim.append({
+            "pl_index": i,
+            "pl_customer_po_no": r.get("pl_customer_po_no"),
+            "pl_item_no": r.get("pl_item_no"),
+            "pl_description": (str(r.get("pl_description") or "")[:300]),
+            "pl_quantity": r.get("pl_quantity"),
+            "pl_package_unit": r.get("pl_package_unit"),
+        })
+    return slim
+
+
+def _gemini_remap_pl_to_inv(
+    file_uri_inv_pl_pdf: str,
+    inv_rows: list,
+    pl_rows: list,
+    vendor_id: str = "default",
+) -> dict:
+    """Pakai Gemini (dengan visual access ke PDF merged INV+PL) untuk decide
+    mapping inv_seq → pl_index.
+
+    Return: dict {inv_seq (int): pl_index (int) or None}.
+    Return empty dict {} kalau gagal — caller akan fallback ke code-based mapping.
+
+    PENTING: function ini TIDAK MENGUBAH inv_rows / pl_rows. Hanya return mapping.
+    """
+    if not file_uri_inv_pl_pdf:
+        print("[GEMINI_REMAP][SKIP] no PDF URI")
+        return {}
+    if not inv_rows or not pl_rows:
+        print("[GEMINI_REMAP][SKIP] empty inv_rows or pl_rows")
+        return {}
+
+    try:
+        slim_inv = _build_slim_inv_rows_for_remap(inv_rows)
+        slim_pl = _build_slim_pl_rows_for_remap(pl_rows)
+        if not slim_inv or not slim_pl:
+            print("[GEMINI_REMAP][SKIP] slim arrays empty")
+            return {}
+
+        prompt = (
+            _GEMINI_REMAP_PROMPT_PREFIX
+            + "\nINV ROWS (sudah diekstrak, jangan diubah):\n"
+            + json.dumps(slim_inv, ensure_ascii=False, indent=2)
+            + "\n\nPL ROWS (sudah diekstrak, jangan diubah):\n"
+            + json.dumps(slim_pl, ensure_ascii=False, indent=2)
+            + "\n" + _GEMINI_REMAP_OUTPUT_SCHEMA
+        )
+
+        result = _call_gemini_json_uri(
+            file_uri_inv_pl_pdf,
+            prompt,
+            expect_array=True,
+            retries=2,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[GEMINI_REMAP][FAIL] exception during Gemini call: {e}")
+        return {}
+
+    if not isinstance(result, list) or not result:
+        print(f"[GEMINI_REMAP][FAIL] invalid Gemini output type={type(result).__name__}")
+        return {}
+
+    # Validate & build mapping
+    mapping: dict = {}
+    used_pl_indices: set = set()
+    pl_count = len(pl_rows)
+    invalid_count = 0
+    for entry in result:
+        if not isinstance(entry, dict):
+            invalid_count += 1
+            continue
+        try:
+            inv_seq = int(entry.get("inv_seq"))
+        except Exception:
+            invalid_count += 1
+            continue
+        pl_idx_raw = entry.get("pl_index")
+        if pl_idx_raw is None:
+            mapping[inv_seq] = None
+            continue
+        try:
+            pl_idx = int(pl_idx_raw)
+        except Exception:
+            mapping[inv_seq] = None
+            continue
+        if pl_idx < 0 or pl_idx >= pl_count:
+            print(f"[GEMINI_REMAP][WARN] inv_seq={inv_seq} pl_index={pl_idx} out of range — set null")
+            mapping[inv_seq] = None
+            continue
+        if pl_idx in used_pl_indices:
+            print(f"[GEMINI_REMAP][WARN] pl_index={pl_idx} duplicate for inv_seq={inv_seq} — set null")
+            mapping[inv_seq] = None
+            continue
+        used_pl_indices.add(pl_idx)
+        mapping[inv_seq] = pl_idx
+
+    paired = sum(1 for v in mapping.values() if v is not None)
+    print(
+        f"[GEMINI_REMAP] inv_rows={len(inv_rows)} pl_rows={pl_count} "
+        f"mapping_entries={len(mapping)} paired={paired} "
+        f"unpaired={len(mapping) - paired} invalid={invalid_count}"
+    )
+    return mapping
+
+
+def _apply_gemini_remap_to_inv_rows(
+    inv_rows: list,
+    pl_rows: list,
+    mapping: dict,
+) -> int:
+    """Apply mapping result ke inv_rows. Untuk tiap inv_row, kalau ada pairing
+    di mapping, COPY pl_* fields dari pl_rows[pl_index] ke inv_row.
+
+    PENTING:
+    - Hanya pl_* fields yang di-copy. inv_* fields TIDAK pernah disentuh.
+    - Values yang di-copy adalah values ASLI dari pl_rows (dari PL extraction),
+      BUKAN dari Gemini response.
+    - Inv_row yang sudah punya pl_* fields dari code-based mapping akan
+      DI-OVERRIDE oleh mapping baru ini.
+
+    Return: jumlah inv_row yang ke-remap.
+    """
+    if not mapping:
+        return 0
+
+    PL_LINE_FIELDS = [
+        "pl_customer_po_no", "pl_item_no", "pl_description",
+        "pl_quantity", "pl_package_unit", "pl_package_count",
+        "pl_nw", "pl_gw", "pl_volume",
+    ]
+    PL_NUM_FIELDS = {"pl_quantity", "pl_package_count", "pl_nw", "pl_gw", "pl_volume"}
+
+    applied = 0
+    for inv_row in inv_rows or []:
+        if not isinstance(inv_row, dict):
+            continue
+        try:
+            inv_seq = int(inv_row.get("inv_seq"))
+        except Exception:
+            continue
+        if inv_seq not in mapping:
+            continue
+        pl_idx = mapping[inv_seq]
+        if pl_idx is None:
+            # Gemini bilang no match → reset pl_* fields ke null/0
+            for f in PL_LINE_FIELDS:
+                inv_row[f] = 0 if f in PL_NUM_FIELDS else "null"
+            applied += 1
+            continue
+        if pl_idx < 0 or pl_idx >= len(pl_rows):
+            continue
+        pl_row = pl_rows[pl_idx]
+        if not isinstance(pl_row, dict):
+            continue
+        # COPY pl_* fields dari pl_rows[pl_idx] — values ASLI dari extraction
+        for f in PL_LINE_FIELDS:
+            if f in pl_row:
+                inv_row[f] = pl_row[f]
+        applied += 1
+
+    print(f"[GEMINI_REMAP_APPLY] applied={applied} rows out of mapping={len(mapping)} entries")
+    return applied
+
+
 def _map_pl_rows_to_invoice_rows(inv_rows: list, pl_rows: list) -> list:
     """
     Map pl_* fields dari pl_rows ke inv_rows yang bersesuaian.
@@ -14127,6 +14361,28 @@ def run_ocr(
         # MAPPING: PL → INVOICE
         # ==========================================
         all_rows = _map_pl_rows_to_invoice_rows(inv_rows, pl_rows)
+
+        # ==========================================
+        # GEMINI REMAP PASS (mapping-only, NO value mutation)
+        # ==========================================
+        # Setelah code-based mapping, panggil Gemini dengan akses VISUAL ke PDF
+        # merged INV+PL untuk override mapping yang salah. Gemini cuma kasih
+        # pairing (inv_seq → pl_index). Values pl_* di-COPY dari pl_rows asli.
+        # Aktif kalau ada PL doc + pl_rows non-empty.
+        if has_pl_doc and pl_rows:
+            try:
+                remap = _gemini_remap_pl_to_inv(
+                    file_uri_inv_pl_pdf=file_uri_inv_pl_header,
+                    inv_rows=all_rows,
+                    pl_rows=pl_rows,
+                    vendor_id=vendor_id,
+                )
+                if remap:
+                    _apply_gemini_remap_to_inv_rows(all_rows, pl_rows, remap)
+                else:
+                    print("[GEMINI_REMAP][FALLBACK] keep code-based mapping result")
+            except Exception as _e_remap:
+                print(f"[GEMINI_REMAP][FAIL] keep code-based mapping: {_e_remap}")
 
         # KARET DELI: refocus pl_total_quantity setelah mapping
         if normalize_vendor_id(vendor_id) == "karet_deli":
