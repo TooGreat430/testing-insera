@@ -8679,31 +8679,54 @@ Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Certificate of Origi
 Rule-based, deterministik, anti-halusinasi.
 
 SUMBER:
-- Baca HANYA dokumen Certificate of Origin / COO (mis. form RCEP, sering memakai Continuation Sheet beberapa halaman).
+- Baca HANYA dokumen Certificate of Origin / COO (format apapun: form RCEP, e-COO elektronik, dsb.).
 - ABAIKAN dokumen Invoice, Packing List, dan Bill of Lading.
 
 TUGAS:
-- Keluarkan SATU objek JSON untuk SETIAP item barang COO (sesuai nomor item pada "6. Item number": 1, 2, 3, ...).
+- Keluarkan SATU objek JSON untuk SETIAP item barang yang tercantum pada COO (sesuai nomor urut item).
 - Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+- Jika ada Continuation Sheet atau multiple pages, baca seluruh halaman.
 
-STRUKTUR COO (form RCEP):
-- Kolom "8. Number and kind of packages; and description of goods" untuk setiap item diawali frasa paket "<ANGKA-HURUF> (<N>) CARTON(S) OF" lalu diikuti deskripsi barang.
-  Deskripsi dapat ter-wrap ke beberapa baris dan menyambung melintasi batas halaman; gabungkan jadi satu deskripsi utuh.
-- Kolom "12." berisi DUA nilai bertumpuk: gross weight (mis. "<angka>KGS G.W.") dan quantity (mis. "<angka>SETS"/PIECES/PAIRS).
+IDENTIFIKASI FORMAT COO:
 
-FIELD PER ITEM:
-- "coo_seq": nomor item dari kolom 6 (numeric: 1, 2, 3, ...).
-- "coo_mark_number": dari "7. Marks and numbers on packages"; bila hanya marks umum/global atau "N/M", isi "null".
-- "coo_description": deskripsi barang dari kolom 8 SETELAH frasa paket. ABAIKAN frasa "<...> (<N>) CARTON(S) OF" dan kata generik "BICYCLE PARTS". Jangan masukkan HS code/criteria/country/quantity/GW.
-- "coo_hs_code": dari "9. HS Code of the goods" (mis. format 8714.93).
-- "coo_package_count": angka pada frasa paket di kolom 8 (mis. "TWENTY (20) CARTONS OF" -> 20). Prioritaskan angka di dalam kurung.
-- "coo_package_unit": jenis kemasan pada frasa paket di kolom 8 (mis. "CARTONS"/"CARTON"). JANGAN SETS/PIECES/PAIRS.
-- "coo_quantity": angka quantity dari kolom 12 yang berunit SETS/PIECES/PAIRS (mis. "1000SETS" -> 1000). BUKAN gross weight.
-- "coo_unit": unit yang menempel pada coo_quantity (mis. "SETS"/"PIECES"/"PAIRS"). BUKAN KGS.
-- "coo_gw": angka gross weight dari kolom 12 sebelum "KGS G.W."/"KG G.W." (mis. "255.6KGS G.W." -> 255.6).
-- "coo_amount": isi hanya jika kolom 12 mencantumkan nilai/FOB eksplisit; jika tidak ada, "null". Jangan ambil dari invoice.
-- "coo_criteria": dari "10. Origin Conferring Criterion" (mis. "PE").
-- "coo_origin_country": dari "11. RCEP Country of Origin" / negara asal item (mis. "CHINA").
+Format A — Form RCEP/ASEAN (field berlabel 6, 7, 8, 9, 10, 11, 12):
+  - Nomor item dari field "6. Item number" (1, 2, 3, ...)
+  - Deskripsi dari field "8. Number and kind of packages; and description of goods"
+    → Abaikan frasa awal kemasan seperti "<N> (<N>) CARTON(S) OF", kata generik "BICYCLE PARTS"
+    → Ambil deskripsi barang setelah frasa kemasan; gabungkan wrap/lanjutan antar baris/halaman
+  - HS Code dari field "9. HS Code of the goods"
+  - Origin Criterion dari field "10. Origin Conferring Criterion"
+  - Country dari field "11. RCEP Country of Origin" / negara asal
+  - Quantity + GW dari field "12. Quantity (Gross weight or other measurement)"
+    → Kolom 12 bisa berisi DUA nilai bertumpuk: GW (mis. "255.6KGS G.W.") dan quantity (mis. "1000SETS")
+  - Package count: angka pada frasa kemasan di field 8 (mis. "TWENTY (20) CARTONS OF" → 20)
+  - Package unit: jenis kemasan pada frasa kemasan (mis. "CARTONS"). BUKAN unit barang (SETS/PCS).
+
+Format B — e-COO tabel elektronik (kolom: Item No. | Marks and Numbers | Description | Quantity Code | Quantity | HS Number | Origin Criterion | Gross weight or Other Quantity | FOB):
+  - Nomor item dari kolom "Item No."
+  - Deskripsi dari kolom "Description" (langsung, tanpa frasa kemasan)
+  - HS Code dari kolom "HS Number"
+  - Setiap item memiliki DUA baris di kolom "Quantity Code" dan "Quantity":
+    → Baris 1: unit utama (mis. "SET") dan quantity utama (mis. "500.0000")
+    → Baris 2: unit kemasan (mis. "CT") dan package count (mis. "50")
+  - GW dari kolom "Gross weight or Other Quantity"
+  - Amount (FOB) dari sub-kolom "Value" pada kolom FOB
+  - Origin Criterion dari kolom "Origin Criterion"
+    → Jika berupa "RVC X%" abaikan angka persentase, ambil hanya "RVC"
+
+FIELD PER ITEM (output selalu menggunakan field ini):
+- "coo_seq": nomor item (numeric)
+- "coo_mark_number": marks & numbers; "null" jika generik ("no", "N/M") atau tidak ada
+- "coo_description": deskripsi barang murni tanpa frasa kemasan, HS code, quantity, GW
+- "coo_hs_code": HS code persis seperti tertulis di COO
+- "coo_package_count": jumlah kemasan (numeric)
+- "coo_package_unit": unit kemasan (mis. "CARTONS", "CT"); BUKAN unit barang
+- "coo_quantity": quantity utama barang (numeric)
+- "coo_unit": unit quantity utama (mis. "SETS", "SET", "PCS"); BUKAN KGS
+- "coo_gw": gross weight (numeric)
+- "coo_amount": nilai FOB/amount jika ada eksplisit; "null" jika tidak ada
+- "coo_criteria": origin criterion (mis. "PE", "RVC")
+- "coo_origin_country": negara asal (mis. "CHINA", "VIETNAM")
 
 ATURAN:
 - EKSTRAK HANYA YANG TERTULIS. Jika field tidak ada -> "null" (string) atau 0 (angka numerik).
@@ -8799,6 +8822,41 @@ def _coo_item_row_match_score(coo_item: dict, row: dict):
     return (coverage, jaccard)
 
 
+def _coo_row_primary_codes(row: dict) -> list:
+    """
+    Kumpulkan kode-kode identifikasi paling spesifik dari satu baris invoice
+    untuk dicocokkan ke coo_description (reverse match).
+
+    Prioritas:
+    1. inv_spart_item_no / pl_item_no — kode item eksak (pasti unik)
+    2. Kode terpanjang dari inv_description (minimal 5 karakter)
+
+    Kode dikembalikan sudah dinormalisasi via _normalize_code_compare_value.
+    """
+    codes = []
+    seen = set()
+
+    for field_val in [row.get("inv_spart_item_no"), row.get("pl_item_no")]:
+        c = _normalize_code_compare_value(field_val)
+        if c and len(c) >= 4 and re.search(r"\d", c) and c not in seen:
+            seen.add(c)
+            codes.append(c)
+
+    # Kode terpanjang (≥5 karakter) dari inv_description
+    desc_codes = sorted(
+        [c for c in _extract_bl_description_codes(row.get("inv_description")) if len(c) >= 5],
+        key=len,
+        reverse=True,
+    )
+    if desc_codes:
+        c = desc_codes[0]
+        if c not in seen:
+            seen.add(c)
+            codes.append(c)
+
+    return codes
+
+
 def _map_coo_items_to_rows(
     rows: list,
     coo_items: list,
@@ -8806,10 +8864,16 @@ def _map_coo_items_to_rows(
     min_coverage: float = 0.6,
 ) -> list:
     """
-    Petakan tiap base row ke item COO yang paling cocok (deskripsi + gate
-    kode/model), lalu salin field coo_* item-level. Satu item COO boleh
-    dipetakan ke banyak base row (fan-out). Row tanpa item COO yang cocok
-    -> field coo_* item-level di-null-kan.
+    Petakan tiap base row ke item COO yang paling cocok, lalu salin field
+    coo_* item-level.  Satu item COO boleh dipetakan ke banyak baris (fan-out).
+    Row tanpa item COO yang cocok → field coo_* item-level di-null-kan.
+
+    Strategi matching (berurutan, keduanya bisa aktif bersamaan):
+    1. Reverse code match — kode dari inv_spart/pl_item/inv_description dicari
+       di dalam coo_description (score pasti 1.0; mengatasi kasus deskripsi COO
+       yang lebih pendek dari inv_description seperti e-COO Vietnam / RCEP Haomeng).
+    2. Coverage match — fallback: porsi token inv_description yang tercakup
+       oleh deskripsi COO; dipakai untuk COO ter-agregat (mis. vendor joy).
     """
     if not isinstance(rows, list) or not coo_items:
         return rows
@@ -8822,20 +8886,34 @@ def _map_coo_items_to_rows(
             continue
 
         inv_model = _leading_model_token(row.get("inv_description"))
+        inv_primary_codes = _coo_row_primary_codes(row)
 
         best_item = None
         best_score = (0.0, 0.0)
 
         for coo_item in coo_items:
-            coo_tokens = _coo_desc_tokens(coo_item.get("coo_description"))
-
-            # Gate kode/model: token model di depan inv_description WAJIB ada
-            # di deskripsi item COO. Mencegah lompat ke produk lain yang hanya
-            # berbagi token dimensi generik.
-            if inv_model and inv_model not in coo_tokens:
+            coo_desc = coo_item.get("coo_description")
+            if _is_null(coo_desc):
                 continue
 
-            score = _coo_item_row_match_score(coo_item, row)
+            # Strategy 1: Reverse code match
+            code_matched = False
+            if inv_primary_codes:
+                norm_coo_desc = _normalize_code_compare_value(coo_desc)
+                for code in inv_primary_codes:
+                    if code in norm_coo_desc:
+                        code_matched = True
+                        break
+
+            if code_matched:
+                score = (1.0, 1.0)
+            else:
+                # Strategy 2: Coverage match (fallback untuk COO ter-agregat)
+                coo_tokens = _coo_desc_tokens(coo_desc)
+                if inv_model and inv_model not in coo_tokens:
+                    continue
+                score = _coo_item_row_match_score(coo_item, row)
+
             if score > best_score:
                 best_score = score
                 best_item = coo_item
@@ -13255,6 +13333,22 @@ def run_ocr(
             name="detail"
         )
 
+        # SUNTOUR VIETNAM: invoice-only PDF untuk index extraction.
+        # file_uri_detail (merged INV+PL multi-page) membuat Gemini hanya baca
+        # halaman pertama invoice → index hanya 6 item dari 14. Dengan mengirim
+        # invoice saja (2-3 halaman), Gemini fokus dan membaca semua halaman.
+        file_uri_inv_index = file_uri_detail  # default: semua vendor pakai merged
+        if normalize_vendor_id(forced_vendor_id) == "suntour_vietnam":
+            inv_index_compressed = _compress_pdf_if_needed(invoice_onepage_pdf)
+            if inv_index_compressed not in temp_local_paths and inv_index_compressed != invoice_onepage_pdf:
+                temp_local_paths.append(inv_index_compressed)
+            file_uri_inv_index = _upload_temp_pdf_to_gcs(
+                inv_index_compressed,
+                run_prefix,
+                name="inv_index"
+            )
+            print("[SUNTOUR_INV_INDEX] Menggunakan invoice-only PDF untuk index extraction")
+
         file_uri_full = None
         file_uri_container_bl = None
 
@@ -13467,14 +13561,14 @@ def run_ocr(
                 f"threshold={INDEX_CHUNK_TOTAL_ROW_THRESHOLD}"
             )
             index_items = _call_gemini_index_chunked(
-                file_uri=file_uri_detail,
+                file_uri=file_uri_inv_index,
                 total_row=total_row,
                 vendor_id=vendor_id,
                 chunk_size=index_chunk_size,
             )
         else:
             index_items = _call_gemini_json_uri(
-                file_uri_detail,
+                file_uri_inv_index,
                 build_index_prompt(total_row),
                 expect_array=True,
                 retries=3,
@@ -13518,8 +13612,20 @@ def run_ocr(
 
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
         if len(index_items) != total_row:
-            print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
-            total_row = len(index_items)
+            if (
+                normalize_vendor_id(vendor_id) == "suntour_vietnam"
+                and len(index_items) < total_row
+            ):
+                # total_row dari deterministic PyMuPDF count lebih reliable daripada
+                # index Gemini yang bisa undercount (hanya baca halaman pertama invoice).
+                # Jangan shrink — biarkan detail extraction loop pakai total_row yang benar.
+                print(
+                    f"[WARN][SUNTOUR_INDEX] index_items={len(index_items)} < "
+                    f"total_row={total_row} (deterministic). Keeping deterministic total_row."
+                )
+            else:
+                print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
+                total_row = len(index_items)
 
         _fill_forward(index_items, "inv_customer_po_no")
         _fill_forward(index_items, "pl_customer_po_no")
