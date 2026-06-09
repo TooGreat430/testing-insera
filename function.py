@@ -4608,6 +4608,35 @@ def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
         return 0
 
 
+def _suntour_vietnam_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
+    # Hitung jumlah line item Suntour Vietnam secara deterministik via pymupdf.
+    # Format invoice: setiap baris item diawali nomor urut (1, 2, ..., N)
+    # diikuti kode item yang selalu dimulai dengan "GSF".
+    # Cari angka 1-99 yang diikuti kode GSF, ambil nilai maksimum = total_row.
+    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+    try:
+        doc = fitz.open(invoice_pdf_path)
+        try:
+            full_text = "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+
+        matches = re.findall(r'\b(\d{1,2})\s+GSF[A-Z0-9]', full_text)
+        if not matches:
+            return 0
+
+        row_nums = [int(m) for m in matches]
+        max_row = max(row_nums)
+        print(
+            f"[SUNTOUR_PART_COUNT] found row numbers: {sorted(set(row_nums))}, "
+            f"max={max_row}"
+        )
+        return max_row
+    except Exception as e:
+        print(f"[SUNTOUR_PART_COUNT] error: {e}")
+        return 0
+
+
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
     # Drop duplicate anchor rows. Dua sumber duplikat yang ditangani:
     #   1) chunk boundary overlap (shimano): block sama diulang di akhir chunk N
@@ -13303,6 +13332,26 @@ def run_ocr(
             else:
                 print(
                     f"[SHIMANO_PART_COUNT] pymupdf count returned 0, "
+                    f"fallback ke gemini total_row={total_row}"
+                )
+
+        # SUNTOUR VIETNAM: override total_row dengan deterministic count via pymupdf.
+        # Gemini sering hanya baca halaman pertama invoice (6 item) dan return 6,
+        # padahal invoice bisa memiliki 10+ halaman. PyMuPDF membaca semua halaman.
+        if normalize_vendor_id(vendor_id) == "suntour_vietnam":
+            invoice_pdf_for_count = normalized_pdf_paths[0]
+            deterministic_total_row = _suntour_vietnam_count_line_items_from_invoice_pdf(
+                invoice_pdf_for_count
+            )
+            if deterministic_total_row > 0:
+                print(
+                    f"[SUNTOUR_PART_COUNT] override total_row: "
+                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
+                )
+                total_row = deterministic_total_row
+            else:
+                print(
+                    f"[SUNTOUR_PART_COUNT] pymupdf count returned 0, "
                     f"fallback ke gemini total_row={total_row}"
                 )
 
