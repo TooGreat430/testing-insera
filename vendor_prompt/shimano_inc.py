@@ -7,7 +7,28 @@ INVOICE (INV):
 4. `inv_gw` & `inv_gw_unit`:
     - Ekstrak nilai angka total dari kolom "Gross Weight" pada baris atas untuk line item tersebut (misalnya dari "14.40Kg", ekstrak 14.40 untuk gw dan "Kg" untuk unit).
     - Apabila pada 1 line item terdapat beberapa baris dengan kolom "Gross Weight" yang terisi, maka jumlahkan semua nilai angka tersebut untuk mendapatkan `inv_gw`.
-5. `inv_quantity`: Ekstrak angka dari kolom "Quantity" yang ditandai dengan clue "TOTAL". Apabila terdapat beberapa baris dengan clue "TOTAL", maka jumlahkan semua nilai angka pada line item tersebut untuk mendapatkan `inv_quantity`.
+5. `inv_quantity`: Ekstrak angka dari kolom "Quantity" yang ditandai dengan clue "TOTAL" MILIK LINE ITEM INI SENDIRI.
+
+   ATURAN BINDING KETAT (WAJIB DITURUTI):
+   - Setiap line item Shimano memiliki SATU baris "TOTAL" yang terletak di bawah daftar carton/pallet milik item itu, SEBELUM dimulainya line item berikutnya.
+   - Penanda awal line item baru adalah blok baru "[2006772] ... P/O No. ..." ATAU munculnya header CODE/PART# baru (misal "PART# KFCR8100CX04").
+   - Baris TOTAL milik item ini WAJIB dibaca DARI list carton item ini saja. JANGAN ambil baris TOTAL milik item LAIN walaupun visually berdekatan.
+   - DILARANG KERAS menyamakan TOTAL antar item dengan kode item yang mirip. Contoh KESALAHAN BERAT:
+     * KFCR**7**100CX04 (FC-R7100, PO 43018042) → TOTAL 386 SETS
+     * KFCR**8**100CX04 (FC-R8100, PO 43018056) → TOTAL 42 SETS
+     Walaupun keduanya "FRONT CHAINWHEEL" dan kode-nya mirip, qty-nya BERBEDA. Bind TOTAL ke kode item exact match-nya.
+
+   SANITY CHECK (WAJIB diverifikasi):
+   - inv_quantity HARUS = jumlah semua qty per carton/pallet pada line item ini.
+   - Contoh A: CTN NO. 13 (715 PCS) → TOTAL 715 PCS → inv_quantity = 715 (sanity: 715=715 ✓).
+   - Contoh B: CTN NO. 14-15 (400 PCS) + CTN NO. 16 (130 PCS) → TOTAL 530 PCS → inv_quantity = 530 (sanity: 400+130=530 ✓).
+   - Contoh C: PLT NO. 15-16 (320 SETS) + CTN NO. 17-22 (60 SETS) + CTN NO. 23 (6 SETS) → TOTAL 386 SETS → inv_quantity = 386 (sanity: 320+60+6=386 ✓).
+   - Jika sanity check GAGAL, kemungkinan besar Anda mengambil TOTAL dari item LAIN — perbaiki dengan bind ke list carton item ini.
+
+   DILARANG KERAS:
+   - Mengambil nilai dari baris "@..." (per-carton rate) — itu BUKAN TOTAL.
+   - Menjumlahkan TOTAL lintas line item (mis. 386 + 42 untuk dua FRONT CHAINWHEEL berbeda).
+   - Membiarkan inv_quantity di-set sama dengan po_quantity tanpa verifikasi visual ke dokumen.
 6. `inv_quantity_unit`: Ekstrak unit dari kolom "Quantity Unit" (misalnya "PCS").
 7. `inv_unit_price`: Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris bawah yang diawali dengan simbol "@" (misalnya dari "@JPY75", ekstrak 75).
 8. `inv_amount`: 
@@ -17,7 +38,15 @@ PACKING LIST (PL):
 1. `pl_customer_po_no`: Ekstrak dari teks "P/O No." yang berada di dalam blok "MARKS NOS".
 2. `pl_item_no`: Ekstrak nilai teks setelah kata "PART#" atau "S.PART#".
 3. `pl_description`: Ekstrak teks deskripsi barang utama.
-4. `pl_quantity`: Ekstrak angka dari kolom "Quantity" yang ditandai dengan clue "TOTAL". Apabila terdapat beberapa baris dengan clue "TOTAL", maka jumlahkan semua nilai angka pada line item tersebut untuk mendapatkan `inv_quantity`.
+4. `pl_quantity`: Ekstrak angka dari kolom "Quantity" yang ditandai dengan clue "TOTAL" MILIK LINE ITEM INI SENDIRI.
+
+   ATURAN BINDING KETAT (sama seperti inv_quantity):
+   - Setiap line item PL memiliki SATU baris "TOTAL" di bawah daftar carton/pallet item itu, SEBELUM line item berikutnya dimulai.
+   - Bind TOTAL ke kode item exact match (PART#/S.PART#) — JANGAN ambil TOTAL milik item lain.
+   - DILARANG menyamakan TOTAL antar item dengan kode mirip (mis. KFCR7100CX04 ≠ KFCR8100CX04).
+   - SANITY CHECK: pl_quantity HARUS = jumlah qty per carton/pallet pada line item ini.
+     Contoh: PLT 15-16 (320 SETS) + CTN 17-22 (60 SETS) + CTN 23 (6 SETS) → TOTAL 386 SETS → pl_quantity = 386.
+   - DILARANG ambil nilai dari baris "@..." (per-carton rate).
 5. pl_package_unit:
     - pl_package_unit HANYA boleh diambil dari BUKTI PACKAGE, bukan dari quantity unit.
     - Sumber bukti yang VALID untuk pl_package_unit hanya:
