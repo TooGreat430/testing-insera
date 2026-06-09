@@ -8225,6 +8225,24 @@ def _rename_final_fields(rows: list):
 # ==============================
 # (NEW) CONVERT TO CSV -> CUSTOM FOLDER/PATH
 # ==============================
+def _detail_drop_prefixes(has_pl_doc=True, has_bl_doc=True, has_coo_doc=True):
+    """
+    Tentukan prefix kolom yang HARUS di-drop dari detail CSV.
+
+    Dokumen yang TIDAK diupload -> kolomnya tidak ditampilkan sama sekali
+    (header & data). Invoice + PO selalu tampil (field wajib), jadi prefix
+    inv_/po_/match_* tidak pernah di-drop.
+    """
+    prefixes = []
+    if not has_pl_doc:
+        prefixes.append("pl_")
+    if not has_bl_doc:
+        prefixes.append("bl_")
+    if not has_coo_doc:
+        prefixes.append("coo_")
+    return tuple(prefixes)
+
+
 def _convert_to_csv_path(blob_path, rows, field_order=None, drop_prefixes=None):
     if rows is None:
         raise Exception("Tidak ada data untuk CSV")
@@ -9376,7 +9394,11 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             f"output/detail/{invoice_name}_detail.csv",
             merged_detail_rows,
             field_order=_get_detail_csv_field_order(forced_vendor_id),
-            drop_prefixes=() if has_pl_doc_global else ("pl_",),
+            drop_prefixes=_detail_drop_prefixes(
+                has_pl_doc=has_pl_doc_global,
+                has_bl_doc=bool(bl_path),
+                has_coo_doc=bool(coo_paths),
+            ),
         )
 
         total_csv_uri = None
@@ -13965,7 +13987,11 @@ def run_ocr(
             f"output/detail/{invoice_name}_detail.csv",
             result["detail_rows"],
             field_order=_get_detail_csv_field_order(vendor_id),
-            drop_prefixes=() if has_pl_doc else ("pl_",),
+            drop_prefixes=_detail_drop_prefixes(
+                has_pl_doc=has_pl_doc,
+                has_bl_doc=has_bl_doc,
+                has_coo_doc=has_coo_doc,
+            ),
         )
 
         total_csv_uri = None
