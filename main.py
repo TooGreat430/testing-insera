@@ -297,7 +297,7 @@ if menu == "Upload":
     st.subheader("Upload Documents")
     
     invoice = st.file_uploader("Invoice*", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
-    packing = st.file_uploader("Packing List", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
+    packing = st.file_uploader("Packing List*", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
     bl = st.file_uploader("Bill of Lading", type=["pdf", "xlsx", "xls", "csv"])
     coo = st.file_uploader("COO", type=["pdf", "xlsx", "xls", "csv"], accept_multiple_files=True)
 
@@ -330,11 +330,10 @@ if menu == "Upload":
             st.warning("Vendor wajib dipilih sebelum Extract.")
             st.stop()
 
-        if not invoice_files:
-            st.warning("Invoice wajib diupload")
+        if not invoice_files or not packing_files:
+            st.warning("Invoice dan Packing List wajib diupload")
 
         else:
-            has_pl = bool(packing_files)
             has_bl = bool(bl)
             has_coo = bool(coo_files)
             with_total_container = has_bl
@@ -343,24 +342,12 @@ if menu == "Upload":
                 st.error("COO hanya bisa diproses jika Bill of Lading juga diupload.")
                 st.stop()
 
-            # Info ringkas: kolom output mengikuti dokumen yang diupload.
-            extra_docs = []
-            if has_pl:
-                extra_docs.append("Packing List")
-            if has_bl:
-                extra_docs.append("Bill of Lading")
-            if has_coo:
-                extra_docs.append("COO")
-
-            if not extra_docs:
-                st.info("Hanya Invoice yang diupload. Output DETAIL berisi kolom inv_* dan data PO saja.")
-            else:
-                st.info(
-                    "Dokumen terdeteksi: Invoice + "
-                    + ", ".join(extra_docs)
-                    + ". Kolom output menyesuaikan dokumen yang diupload."
-                    + (" Sistem juga menghasilkan TOTAL dan CONTAINER." if has_bl else "")
-                )
+            if not has_bl and not has_coo:
+                st.info("Hanya Invoice dan Packing List yang diupload. Sistem akan menghasilkan DETAIL saja.")
+            elif has_bl and not has_coo:
+                st.info("Bill of Lading terdeteksi tanpa COO. Sistem akan tetap menghasilkan DETAIL, TOTAL, dan CONTAINER.")
+            elif has_bl and has_coo:
+                st.info("Dokumen lengkap terdeteksi. Sistem akan menghasilkan DETAIL, TOTAL, dan CONTAINER.")
 
             pdf_paths = []
             temp_cleanup_paths = []

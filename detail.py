@@ -12,10 +12,6 @@ def _is_karet_deli_vendor_id(vendor_id: str = "default") -> bool:
 def _is_fox_vendor_id(vendor_id: str = "default") -> bool:
     return str(vendor_id or "default").strip().lower() == "fox"
 
-def _is_tangshan_jinhengtong_vendor_id(vendor_id: str = "default") -> bool:
-    # jht_carbon & tangsan_jinhengtong = dokumen TANGSHAN JINHENGTONG yang sama.
-    return str(vendor_id or "default").strip().lower() in {"jht_carbon", "tangsan_jinhengtong"}
-
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -368,19 +364,6 @@ ATURAN KHUSUS VENDOR shimano_inc:
 - bl_mark_number TIDAK diekstrak pada header pass.
 - Isi bl_mark_number dengan "null" pada output header.
 - bl_mark_number untuk shimano_inc akan diekstrak pada content/detail pass dari dokumen Bill of Lading.
-
-ATURAN inv_total_quantity DAN pl_total_quantity (WAJIB DITURUTI):
-- Pada Shimano, baris GRAND TOTAL di akhir dokumen Invoice dan Packing List sering menampilkan kuantitas dalam DUA UNIT YANG TERPISAH (PCS dan SETS), dalam dua baris berbeda.
-  Contoh layout grand total:
-     3679 PCS    754.70Kg  963.35Kg  7.167M3
-     2 P/T & 83  531 SETS
-     < 32 C/T>              JPY14,594,853
-- inv_total_quantity = JUMLAH SEMUA baris quantity grand total (PCS + SETS).
-  Pada contoh di atas: inv_total_quantity = 3679 + 531 = 4210.
-- pl_total_quantity = JUMLAH SEMUA baris quantity grand total (PCS + SETS), sama logika dengan inv_total_quantity.
-- DILARANG KERAS hanya mengambil satu baris (3679 saja atau 531 saja).
-- DILARANG menyamakan inv_total_quantity dengan inv_total_package (yang berisi format "2 P/T & 83 C/T").
-- Jika dokumen hanya menampilkan satu unit (mis. semua item PCS), maka inv_total_quantity = nilai tunggal tersebut.
 """
 
     kunshan_landon_header_rule = ""
@@ -484,23 +467,6 @@ Untuk dokumen Packing List ambil dari "Delivery:" (Contoh: Delivery: 91609521).
 maka inv_invoice_no = 91609521 dan pl_invoice_no = 91609521.
         """
 
-    tangshan_jinhengtong_header_rule = ""
-    if _is_tangshan_jinhengtong_vendor_id(vendor_id):
-        tangshan_jinhengtong_header_rule = """
-
-ATURAN KHUSUS VENDOR TANGSHAN JINHENGTONG (jht_carbon / tangsan_jinhengtong):
-
-1. inv_total_amount (SANGAT PENTING — JANGAN SALAH SUMBER):
-   - Ambil dari kolom "Amount" pada BARIS "Total" DI DALAM tabel line item,
-     yaitu baris yang SEJAJAR dengan total quantity.
-       Contoh baris tabel: "Total   1217   $158,210.01"
-       maka inv_total_amount = 158210.01 (dan inv_total_quantity = 1217).
-   - DILARANG KERAS mengambil dari teks "SAY TOTAL U.S. DOLLARS ONLY ..." yang
-     berada DI LUAR / DI BAWAH tabel. Teks tersebut bisa keliru / tidak sinkron
-     dengan total tabel.
-   - inv_total_amount HARUS sama dengan penjumlahan kolom "Amount" seluruh line item.
-"""
-
     template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
@@ -590,7 +556,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
-{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}{tangshan_jinhengtong_header_rule}
+{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -839,7 +805,6 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
         .replace("{shimano_header_rule}", shimano_header_rule)
         .replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
         .replace("{karet_deli_header_rule}", karet_deli_header_rule)
-        .replace("{tangshan_jinhengtong_header_rule}", tangshan_jinhengtong_header_rule)
     )
 
 def build_detail_prompt_from_index(
