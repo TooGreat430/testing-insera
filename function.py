@@ -13110,6 +13110,7 @@ def run_ocr(
             "shimano_inc",
             "shimano_singapore",
             "karet_deli",
+            "suntour_vietnam",
         }
 
         packing_onepage_pdf = None

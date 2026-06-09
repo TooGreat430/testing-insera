@@ -93,79 +93,13 @@ PACKING LIST (PL)
 BILL OF LADING (BL)
 
 1. bl_description dan bl_hs_code:
-   - Field bl_description dan bl_hs_code merupakan SATU PAKET dan WAJIB selalu terisi (TIDAK BOLEH NULL).
    - Sumber data HANYA boleh dari dokumen Bill Of Lading (BL) saja, TIDAK BOLEH mengambil dari dokumen lain.
-
-   =========================
-   LOGIC MAPPING (BERURUTAN)
-   =========================
-   STEP 1 — Mapping berdasarkan inv_description:
-   - Cari apakah inv_description MATCH dengan deskripsi item pada BL.
-   - Jika ditemukan:
-     - bl_description = description item pada BL yang sesuai
-     - bl_hs_code = HS CODE yang terkait dengan bl_description tersebut
-
-   STEP 2 — Jika TIDAK ditemukan di STEP 1, mapping berdasarkan inv_spart_item_no:
-   - Pada deskripsi BL, identifikasi nomor spart item (biasanya berupa kode unik di akhir deskripsi).
-     Contoh:
-       FORK SUSPENSION GSFM3010APV00034 → spart item = GSFM3010APV00034
-   - Jika inv_spart_item_no MATCH dengan spart item pada BL:
-     - bl_description = description item pada BL yang mengandung spart item tersebut
-     - bl_hs_code = HS CODE yang terkait
-
-   STEP 3 — Jika STEP 1 dan STEP 2 TIDAK ditemukan:
-   - Karena bl_description dan bl_hs_code TIDAK BOLEH NULL,
-   - Maka PILIH SECARA ACAK (RANDOM) satu pasangan data dari item BL:
-     - bl_description = salah satu description item dari BL
-     - bl_hs_code = HS CODE yang sesuai dengan item tersebut
-   - JANGAN MEMBUAT BL DESCRIPTION DAN BL HS CODE BARU YANG TIDAK ADA DI DOKUMEN BILL OF LADING (BL). GUNAKAN RANDOM ITEM YANG ADA SAJA DI DOKUMEN BILL OF LADING (BL).
-     Contoh:
-     DATA DI BL SEPERTI INI:
-     FORK SUSPENSION GSFM3010APV00034  HS CODE: 8714.91
-     FORK SUSPENSION GSFNEXDSV0000261  HS CODE: 8714.91
-     FORK SUSPENSION GSFNEXE25DSV0830  HS CODE: 8714.91
-     FORK SUSPENSION GSFNEXE25PDV0021  HS CODE: 8714.91
-     FORK SUSPENSION GSFNVX30DSV00484  HS CODE: 8714.91
-     
-     JANGAN BUAT DATA BARU SEPERTI = FORK SUSPENSION GSFXCM32DSV00012, YANG TIDAK ADA PADA DOKUMEN BILL OF LADING SEBAGAI HASIL EKSTRAKSI DAN MAPPING.
-   =========================
-   ATURAN PENTING
-   =========================
-   - Tidak boleh mengosongkan field (NO NULL VALUE).
+   - Ekstrak bl_description dan bl_hs_code langsung dari dokumen BL sesuai item yang tercantum.
    - bl_description dan bl_hs_code harus selalu berpasangan dari item BL yang sama.
-   - Sumber data hanya boleh dari dokumen Bill of Lading (BL) saja.
-   - Tidak boleh membuat atau mengarang data di luar dari dokumen Bill of Lading (BL).
+   - Tidak boleh membuat atau mengarang data yang tidak ada di dokumen Bill of Lading (BL).
    - Tidak boleh mengambil HS CODE dari item yang berbeda dengan bl_description.
-   - Prioritas mapping:
-       1. inv_description (utama)
-       2. inv_spart_item_no (fallback)
-       3. random BL item (last resort, WAJIB jika tidak match)
+   - Jika item tidak ditemukan pada BL, isi null.
 
-   =========================
-   CONTOH
-   =========================
-   BL:
-     - FRAME PART A-HG009 HS CODE: 8714.91
-     - FORK SUSPENSION GSFM3010APV00034 HS CODE: 8714.91
-
-   Case 1:
-     inv_description = FRAME PART A-HG009
-     → MATCH STEP 1
-     → bl_description = FRAME PART A-HG009
-     → bl_hs_code = 8714.91
-
-   Case 2:
-     inv_spart_item_no = GSFM3010APV00034
-     → MATCH STEP 2
-     → bl_description = FORK SUSPENSION GSFM3010APV00034
-     → bl_hs_code = 8714.91
-
-   Case 3:
-     inv_description & inv_spart_item_no tidak ada di BL
-     → STEP 3 (RANDOM)
-     → bl_description = FRAME PART A-HG009 (contoh random)
-     → bl_hs_code = 8714.91
-   
 CERTIFICATE OF ORIGIN (COO)
 
 1. coo_seq
