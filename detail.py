@@ -12,6 +12,10 @@ def _is_karet_deli_vendor_id(vendor_id: str = "default") -> bool:
 def _is_fox_vendor_id(vendor_id: str = "default") -> bool:
     return str(vendor_id or "default").strip().lower() == "fox"
 
+def _is_tangshan_jinhengtong_vendor_id(vendor_id: str = "default") -> bool:
+    # jht_carbon & tangsan_jinhengtong = dokumen TANGSHAN JINHENGTONG yang sama.
+    return str(vendor_id or "default").strip().lower() in {"jht_carbon", "tangsan_jinhengtong"}
+
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -480,6 +484,23 @@ Untuk dokumen Packing List ambil dari "Delivery:" (Contoh: Delivery: 91609521).
 maka inv_invoice_no = 91609521 dan pl_invoice_no = 91609521.
         """
 
+    tangshan_jinhengtong_header_rule = ""
+    if _is_tangshan_jinhengtong_vendor_id(vendor_id):
+        tangshan_jinhengtong_header_rule = """
+
+ATURAN KHUSUS VENDOR TANGSHAN JINHENGTONG (jht_carbon / tangsan_jinhengtong):
+
+1. inv_total_amount (SANGAT PENTING — JANGAN SALAH SUMBER):
+   - Ambil dari kolom "Amount" pada BARIS "Total" DI DALAM tabel line item,
+     yaitu baris yang SEJAJAR dengan total quantity.
+       Contoh baris tabel: "Total   1217   $158,210.01"
+       maka inv_total_amount = 158210.01 (dan inv_total_quantity = 1217).
+   - DILARANG KERAS mengambil dari teks "SAY TOTAL U.S. DOLLARS ONLY ..." yang
+     berada DI LUAR / DI BAWAH tabel. Teks tersebut bisa keliru / tidak sinkron
+     dengan total tabel.
+   - inv_total_amount HARUS sama dengan penjumlahan kolom "Amount" seluruh line item.
+"""
+
     template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
@@ -569,7 +590,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
-{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}
+{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}{tangshan_jinhengtong_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -818,6 +839,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
         .replace("{shimano_header_rule}", shimano_header_rule)
         .replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
         .replace("{karet_deli_header_rule}", karet_deli_header_rule)
+        .replace("{tangshan_jinhengtong_header_rule}", tangshan_jinhengtong_header_rule)
     )
 
 def build_detail_prompt_from_index(
