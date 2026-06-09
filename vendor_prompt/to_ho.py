@@ -125,54 +125,18 @@ Struktur umum packing list TOHO:
 - Ada grouping "Customer P/O No.C25-1544U/45323564" atau format serupa.
 - Header utama:
   Carton No. | Item No.(Cust_Item_No.)/Desc. | Quantity | N.W. | G.W. | Meas'mt
-- Satu LOGICAL ITEM bisa terdiri dari BEBERAPA baris cetak (sub-row) yang punya
-  CODE / Item No. yang SAMA di dalam Customer P/O group yang SAMA.
-  Bentuk sub-row yang mungkin muncul:
-    a) Baris RANGE carton + baris TOTAL range:
-       "23~32   CWSSXTAC400001            @10 SET  @13.20  @13.99  @1.90"  <- baris RATE per carton
-       "(10)    "SAMOX" CHAINWHEEL MODEL:  100 SET   132     139.9   19"   <- baris TOTAL range
-       (angka di dalam kurung seperti "(10)" = jumlah carton pada range tsb.)
-    b) Baris SINGLE carton (carton tunggal, masih item yang sama):
-       "79      ... (CYxxxxx)               5 SET   6.38    7.08    3.93"
-    c) Baris LEPAS (loose): HANYA punya quantity, TANPA Carton No. dan TANPA
-       N.W./G.W./Meas'mt. Sering muncul di HALAMAN BERIKUTNYA karena dipack
-       menyatu dengan carton item yang sama:
-       "CWSSXTAC400001  2 SET"   <- tanpa carton, tanpa NW/GW/Meas'mt
-- Jadi untuk line item TOHO, fokus pada LOGICAL ITEM (gabungan per CODE dalam satu
-  Customer P/O group), BUKAN hanya potongan visual per baris.
-
-=== ATURAN PALING PENTING: BARIS RATE "@" (WAJIB DIPATUHI) ===
-- Nilai yang diawali tanda "@" (mis. "@2 SET", "@3.92", "@5.64", "@3.93") adalah
-  RATE PER CARTON (nilai untuk 1 carton), BUKAN nilai total item.
-- DILARANG KERAS memasukkan / menjumlahkan nilai "@..." ke pl_quantity, pl_nw,
-  pl_gw, pl_volume, maupun pl_package_count. Baris "@" hanya referensi.
-- Nilai item yang benar selalu diambil dari angka TOTAL yang TIDAK diawali "@"
-  (mis. "100 SET 132 139.9 19"), bukan dari baris rate "@".
-- CONTOH SALAH (JANGAN DITIRU):
-    @2 SET @3.84 @5.52 @3.93   <- baris RATE (per carton)
-    40 SET  76.8  110.4 78.6   <- baris TOTAL
-    SALAH: pl_quantity = 40 + 2 = 42 ; pl_nw = 76.8 + 3.84 = 80.64
-           (ini SALAH karena menjumlahkan baris rate "@")
-  CONTOH BENAR:
-    pl_quantity = 40 ; pl_nw = 76.8 ; pl_gw = 110.4 ; pl_volume = 78.6
-    (baris "@" diabaikan total)
-
-=== ATURAN PENGGABUNGAN SUB-ROW (LOGICAL ITEM) ===
-- Gabungkan SEMUA sub-row (tipe a, b, c di atas) yang punya CODE / Item No. yang
-  SAMA di dalam Customer P/O group yang SAMA menjadi SATU output row.
-- CODE / Item No. yang SAMA tetapi berada di Customer P/O group yang BERBEDA adalah
-  LOGICAL ITEM yang BERBEDA — JANGAN digabung.
-  Contoh: CODE "FRUxxxx" di "C25-xxxx/45319869" BERBEDA dari "FRUxxxx" di "CDC CLAIM RT".
-- Saat menggabungkan, JUMLAHKAN HANYA nilai cetak (non-"@"):
-    pl_quantity      = Σ quantity SEMUA sub-row (termasuk baris loose tanpa carton)
-    pl_nw            = Σ N.W. dari sub-row yang punya N.W.
-    pl_gw            = Σ G.W. dari sub-row yang punya G.W.
-    pl_volume        = Σ Meas'mt dari sub-row yang punya Meas'mt
-    pl_package_count = Σ jumlah carton SEMUA sub-row
-- Baris LEPAS (tipe c, hanya quantity tanpa carton & tanpa NW/GW/Meas'mt) TETAP
-  ditambahkan quantity-nya ke logical item yang CODE-nya sama dalam P/O group yang
-  sama. Kontribusinya untuk pl_nw, pl_gw, pl_volume, dan pl_package_count = 0
-  (jangan dikarang, jangan pakai nilai baris lain, jangan pakai baris "@").
+- Satu item biasanya berbentuk:
+  "23~32 CWSSXTAC400001 @10 SET @13.20 @13.99 @1.90"
+  lalu line total item:
+  ""SAMOX" CHAINWHEEL MODEL: 100 SET 132 139.9 19"
+  lalu di bawahnya ada deskripsi lanjutan
+  lalu line "** CODE:XXXXXXXXXXXX"
+- Pada vendor TOHO, satu logical item bisa dipecah ke lebih dari satu Carton No.
+  Contoh:
+    - 63~78 ... 160 SET
+    - 79 ... 5 SET
+    Keduanya masih item yang sama.
+- Jadi untuk line item TOHO, fokus pada logical item, BUKAN hanya potongan visual per baris.
 
 1. pl_customer_po_no
    - Ambil dari "Customer P/O No." terdekat yang menaungi line item tersebut.
@@ -216,22 +180,18 @@ Struktur umum packing list TOHO:
 
 4. pl_quantity
    - Ambil total quantity barang untuk logical item packing list.
-   - JANGAN ambil quantity dari baris rate "@10 SET" (lihat ATURAN BARIS "@" di atas).
+   - Jangan salah ambil quantity per carton dari line "@10 SET".
    - Pada vendor TOHO:
-     - "@10 SET" adalah quantity per carton (RATE) -> ABAIKAN
-     - "100 SET" / "160 SET" / "5 SET" adalah quantity total per sub-row -> PAKAI
-   - Jika satu logical item terdiri dari beberapa sub-row (range + single carton +
-     baris loose), maka pl_quantity = jumlah quantity SEMUA sub-row tersebut.
-   - Termasuk baris LEPAS tanpa carton & tanpa NW/GW (sering di halaman berikutnya):
-     quantity-nya TETAP ditambahkan ke logical item dengan CODE yang sama dalam
-     Customer P/O group yang sama.
+     - "@10 SET" adalah quantity per carton
+     - "100 SET" / "160 SET" / "5 SET" adalah quantity total per potongan row
+   - Jika satu logical item dipecah ke beberapa carton rows, maka pl_quantity harus dijumlahkan.
    - Contoh:
      - 63~78 = 160 SET
        79 = 5 SET
        maka pl_quantity = 165
-     - A68 = 5 SET (punya carton & NW/GW)
-       baris loose CODE sama di P/O group sama = 1 SET (tanpa carton/NW/GW)
-       maka pl_quantity = 6
+     - 80~91 = 120 SET
+       92 = 9 SET
+       maka pl_quantity = 129
      - 93~144 = 520 SET
        145 = 5 SET
        maka pl_quantity = 525
@@ -253,68 +213,53 @@ Struktur umum packing list TOHO:
    - Jangan ambil SET sebagai pl_package_unit.
 
 6. pl_package_count
-   - Hitung jumlah package fisik line item dari kolom Carton No. SAJA.
-   - !!! PALING SERING SALAH: pl_package_count BUKAN pl_quantity (SET). !!!
-     - Banyaknya SET DI DALAM satu carton TIDAK menambah jumlah carton.
-     - Satu Carton No. TUNGGAL = 1 carton, WALAUPUN isinya 5 SET / 6 SET / banyak SET.
-     - DILARANG menyalin nilai pl_quantity ke pl_package_count.
-   - Untuk vendor TOHO, Carton No. bisa berupa (boleh ada awalan huruf, mis. "A68"):
-     - range dengan "~" -> jumlah carton = angka di dalam kurung "(NN)" jika ada,
-       atau dihitung dari range (mis. "23~32" -> 10 ; "A34~A46" -> 13)
-     - single carton no (mis. "79", "145", "A47", "A68") -> 1 (selalu 1)
+   - Hitung jumlah package fisik line item dari Carton No.
+   - Untuk vendor TOHO, Carton No. bisa berupa:
+     - range dengan "~"
+     - single carton no
    - Aturan:
      - "23~32" -> 10
-     - "A34~A46" -> 13
-     - "A47" -> 1
-     - "A68" (berisi 5 SET) -> 1   (BUKAN 5)
-     - "A70" (berisi 5 SET) -> 1   (BUKAN 5)
+     - "33~42" -> 10
+     - "63~78" -> 16
+     - "79" -> 1
+     - "80~91" -> 12
+     - "92" -> 1
      - "93~144" -> 52
      - "145" -> 1
-   - Jika satu logical item terdiri dari beberapa sub-row (range + single carton),
-     jumlahkan jumlah CARTON tiap sub-row (bukan jumlah SET).
+   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan semua package_count-nya.
    - Contoh:
      - 63~78 + 79 -> 16 + 1 = 17
-     - range "(13)" 26 SET + single carton "A47" 1 SET -> 13 + 1 = 14
-     - single carton "A68" 5 SET + baris LEPAS 1 SET (tanpa carton) -> 1 + 0 = 1
-       (pl_quantity tetap 6, tetapi pl_package_count = 1)
-   - Baris LEPAS tanpa Carton No. (hanya quantity) menyumbang 0 carton.
-   - JANGAN menghitung baris rate "@" sebagai carton.
+     - 80~91 + 92 -> 12 + 1 = 13
+     - 93~144 + 145 -> 52 + 1 = 53
    - Jangan ambil total dokumen "163CTNS" sebagai package_count item-level.
 
 7. pl_nw
-   - Ambil dari kolom N.W. (KGS) line item, HANYA angka cetak (BUKAN baris rate "@").
+   - Ambil dari kolom N.W. (KGS) line item.
    - Nilai numeric saja.
-   - Jika satu logical item terdiri dari beberapa sub-row, jumlahkan seluruh N.W.-nya.
-   - Sub-row TOTAL range + sub-row single carton dijumlahkan; baris rate "@" diabaikan;
-     baris LEPAS tanpa N.W. menyumbang 0.
+   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh N.W.-nya.
    - Contoh:
      - 131.36 + 4.11 -> pl_nw = 135.47
-     - 50.96 + 1.96 -> pl_nw = 52.92   (TOTAL range 50.96 + single carton 1.96; bukan + "@3.92")
+     - 98.4 + 7.38 -> pl_nw = 105.78
      - 263.12 + 2.53 -> pl_nw = 265.65
 
 8. pl_gw
-   - Ambil dari kolom G.W. (KGS) line item, HANYA angka cetak (BUKAN baris rate "@").
+   - Ambil dari kolom G.W. (KGS) line item.
    - Nilai numeric saja.
-   - Jika satu logical item terdiri dari beberapa sub-row, jumlahkan seluruh G.W.-nya.
-   - Sub-row TOTAL range + sub-row single carton dijumlahkan; baris rate "@" diabaikan;
-     baris LEPAS tanpa G.W. menyumbang 0.
+   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh G.W.-nya.
    - Contoh:
      - 137.12 + 4.46 -> pl_gw = 141.58
-     - 73.32 + 3.35 -> pl_gw = 76.67   (TOTAL range 73.32 + single carton 3.35; bukan + "@5.64")
+     - 103.56 + 7.81 -> pl_gw = 111.37
      - 285.48 + 2.96 -> pl_gw = 288.44
 
 9. pl_volume
-   - Ambil dari kolom Meas'mt (CU'FT) line item, HANYA angka cetak (BUKAN baris rate "@").
+   - Ambil dari kolom Meas'mt (CU'FT) line item.
    - Nilai numeric saja.
-   - Jika satu logical item terdiri dari beberapa sub-row, jumlahkan seluruh volume-nya.
-   - Sub-row TOTAL range + sub-row single carton dijumlahkan; baris rate "@" diabaikan;
-     baris LEPAS tanpa Meas'mt menyumbang 0.
+   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh volume-nya.
    - Contoh:
      - 9.6 + 0.6 -> pl_volume = 10.2
-     - 51.09 + 3.93 -> pl_volume = 55.02
+     - 9.12 + 0.76 -> pl_volume = 9.88
      - 40.04 + 0.77 -> pl_volume = 40.81
-   - Jangan salah ambil volume per carton dari baris rate "@... @... @... @0.60";
-     selalu pakai angka total cetak (non-"@").
+   - Jangan salah ambil volume per carton dari line "@... @... @... @0.60" jika total line item sudah tersedia.
 
 
 BILL OF LADING (BL)
@@ -486,261 +431,4 @@ Struktur umum COO TOHO:
    - Jangan ambil invoice number seperti "C25-1544U" sebagai coo_customer_po_no.
    - Karena tidak ada customer PO number yang jelas pada COO vendor TOHO:
      coo_customer_po_no = "null"
-"""
-
-TOHO_INV_PROMPT = """
-INVOICE (INV)
-
-Struktur umum invoice TOHO:
-- Ada grouping "P/O No.C25-1544U/45323564" atau format serupa.
-- Setelah itu muncul beberapa line item.
-- Header utama line item:
-  Seq. | Item No. | Description | Quantity | Unit Price | Amount
-- Satu line item biasanya berbentuk:
-  "1 CWSSXSAC400001 "SAMOX" CHAINWHEEL MODEL: 129 SET 9.05 1167.45"
-  lalu di bawahnya ada lanjutan deskripsi model
-  lalu line "** CODE:XXXXXXXXXXXX"
-- Pada vendor TOHO, satu item juga bisa terpotong ke halaman berikutnya.
-  Contoh: item seq 6 berlanjut ke page berikutnya dan BUKAN item baru.
-
-1. inv_customer_po_no
-   - Ambil dari "P/O No." terdekat yang menaungi line item tersebut.
-   - Format P/O vendor TOHO biasanya seperti:
-     - C25-1544U/45323564
-     - C25-1619U/45324707
-   - inv_customer_po_no yang diambil adalah angka customer PO setelah slash "/".
-   - Contoh:
-     - "P/O No.C25-1544U/45323564" -> inv_customer_po_no = "45323564"
-     - "P/O No.C25-1619U/45324707" -> inv_customer_po_no = "45324707"
-   - Jangan ambil prefix seperti "C25-1544U" atau "C25-1619U" sebagai customer PO number.
-   - Jangan ambil invoice number, BL number, atau nomor lain.
-
-2. inv_seq
-   - Gunakan nilai pada kolom "Seq.".
-   - Untuk vendor TOHO, seq sudah tercetak jelas pada dokumen, jadi pakai angka tersebut apa adanya.
-   - Jika satu item terpotong ke halaman berikutnya tetapi seq-nya sama, tetap anggap itu item yang sama dan JANGAN dihitung ulang.
-
-3. inv_spart_item_no
-   - Ambil item code / part code untuk item invoice.
-   - Prioritas pencarian:
-     1) nilai setelah label "** CODE:" atau "**CODE:"
-     2) jika tidak ada, gunakan Item No.
-   - Untuk vendor TOHO, CODE pada deskripsi memiliki prioritas lebih tinggi daripada Item No.
-   - Contoh:
-     - Item No: CWSSXAF38D0002-165
-       Description berisi: ** CODE: CWSSXAF38D0002
-       maka inv_spart_item_no = "CWSSXAF38D0002"
-
-4. inv_description
-   - Ambil deskripsi barang dari line item invoice.
-   - Gabungkan seluruh baris deskripsi item sampai sebelum item berikutnya atau sebelum P/O berikutnya.
-   - Jangan masukkan:
-     - seq
-     - Item No.
-     - quantity
-     - unit
-     - unit price
-     - amount
-     - line "** CODE:..."
-   - Jika description terpotong ke halaman berikutnya, gabungkan ke item yang sama.
-   - Contoh hasil:
-     - "SAMOX CHAINWHEEL MODEL: SAC40-018BNS42, BLACK, 170 MM 10/11SP, ALLOY BK 170MM, STEEL: BED 42T, OT, W/O CG W/O SPIDER, SQUARE, E/CAPLESS BOLT, W/O LOGO ** BB :68 MM CL : NORMAL NON BOOST"
-
-5. inv_gw & inv_gw_unit
-   - HANYA boleh diambil dari invoice.
-   - Jika invoice tidak menyediakan gross weight per line item, isi "null".
-   - Untuk vendor TOHO: inv_gw = "null", inv_gw_unit = "null"
-
-6. inv_quantity
-   - Ambil nilai quantity line item pada invoice.
-   - Contoh:
-     - "129 SET" -> inv_quantity = 129
-
-7. inv_quantity_unit
-   - Ambil unit quantity yang menempel pada Quantity di invoice.
-   - Contoh: "SET"
-
-8. inv_unit_price
-   - Ambil dari kolom Unit Price line item invoice.
-   - Nilai harus numeric saja.
-
-9. inv_amount
-   - Ambil dari kolom Amount line item invoice.
-   - Nilai harus numeric saja.
-"""
-
-TOHO_PL_PROMPT = """
-PACKING LIST (PL)
-
-Struktur umum packing list TOHO:
-- Ada grouping "Customer P/O No.C25-1544U/45323564" atau format serupa.
-- Header utama:
-  Carton No. | Item No.(Cust_Item_No.)/Desc. | Quantity | N.W. | G.W. | Meas'mt
-- Satu item biasanya berbentuk:
-  "23~32 CWSSXTAC400001 @10 SET @13.20 @13.99 @1.90"
-  lalu line total item:
-  ""SAMOX" CHAINWHEEL MODEL: 100 SET 132 139.9 19"
-  lalu di bawahnya ada deskripsi lanjutan
-  lalu line "** CODE:XXXXXXXXXXXX"
-- Pada vendor TOHO, satu logical item bisa dipecah ke lebih dari satu Carton No.
-
-1. pl_customer_po_no
-   - Ambil dari "Customer P/O No." terdekat yang menaungi line item tersebut.
-   - pl_customer_po_no yang diambil adalah angka customer PO setelah slash "/".
-   - Contoh:
-     - "Customer P/O No.C25-1544U/45323564" -> pl_customer_po_no = "45323564"
-
-2. pl_item_no
-   - Ambil part code / item code line item packing list.
-   - Prioritas:
-     1) nilai setelah "** CODE:" atau "**CODE:"
-     2) jika tidak ada, gunakan Item No.(Cust_Item_No.)
-
-3. pl_description
-   - Ambil deskripsi barang dari packing list.
-   - Jangan masukkan:
-     - Carton No.
-     - Item No.
-     - line rasio per carton seperti "@10 SET @13.20 @13.99 @1.90"
-     - angka total quantity/NW/GW/Meas'mt
-     - line "** CODE:..."
-
-4. pl_quantity
-   - Ambil total quantity barang untuk logical item packing list.
-   - Jika satu logical item dipecah ke beberapa carton rows, maka pl_quantity harus dijumlahkan.
-
-5. pl_package_unit
-   - Canonical value yang diperbolehkan hanya: ["CT", "PX", "BL", "PXCT", "null"]
-   - Pada vendor TOHO: pl_package_unit = "CT"
-
-6. pl_package_count
-   - Hitung jumlah package fisik line item dari Carton No.
-   - Carton No. bisa berupa range dengan "~" atau single.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan semua package_count-nya.
-
-7. pl_nw
-   - Ambil dari kolom N.W. (KGS) line item.
-   - Nilai numeric saja.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh N.W.-nya.
-
-8. pl_gw
-   - Ambil dari kolom G.W. (KGS) line item.
-   - Nilai numeric saja.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh G.W.-nya.
-
-9. pl_volume
-   - Ambil dari kolom Meas'mt (CU'FT) line item.
-   - Nilai numeric saja.
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan seluruh volume-nya.
-"""
-
-TOHO_BL_PROMPT = """
-BILL OF LADING (BL)
-
-Struktur umum BL TOHO:
-- Pada deskripsi goods terdapat grouping umum:
-  - BICYCLE PARTS
-  - CHAINWHEEL AND CRANK
-  - MODEL/TYPE, HS CODE: 8714.96
-- Contoh:
-  - CHAINWHEEL AND CRANK / SAC40-018BNS42, HS CODE: 8714.96
-  - CHAINWHEEL AND CRANK / SAC40-018B38NS, HS CODE: 8714.96
-  - CHAINWHEEL AND CRANK / TAC40-018T38NS, HS CODE: 8714.96
-  - CHAINWHEEL AND CRANK / AF38-D28NS-BG31, HS CODE: 8714.96
-  - CHAINWHEEL AND CRANK / SAC38J-166S-P37P, HS CODE: 8714.96
-- Pada vendor TOHO, BL menuliskan model family, BUKAN item code lengkap seperti CWSSXSAC400001.
-
-1. bl_description
-   - Ambil hanya deskripsi barang pada BL.
-   - Jika deskripsi terpecah menjadi dua line:
-     - "CHAINWHEEL AND CRANK"
-     - "SAC40-018BNS42, HS CODE: 8714.96"
-     maka gabungkan menjadi:
-       "CHAINWHEEL AND CRANK SAC40-018BNS42"
-   - Ambil teks sebelum "HS CODE:".
-   - Contoh:
-     - "CHAINWHEEL AND CRANK SAC40-018BNS42"
-     - "CHAINWHEEL AND CRANK TAC40-018T38NS"
-   - Jangan ambil:
-     - BICYCLE PARTS
-     - container info
-     - gross weight
-     - package total
-     - vessel
-     - freight terms
-     - marks seperti N/M
-   - Hanya boleh mengambil dari dokumen BL.
-
-2. bl_hs_code
-   - Ambil HS code yang menempel pada bl_description yang sama.
-   - Ambil value setelah "HS CODE:".
-   - Contoh: "8714.96"
-   - Hanya boleh mengambil dari dokumen BL.
-"""
-
-TOHO_COO_PROMPT = """
-CERTIFICATE OF ORIGIN (COO)
-
-Struktur umum COO TOHO:
-- Dokumen berbentuk Form RCEP.
-- Exporter / producer pada COO adalah CHUAN WEI METAL PRODUCTS (KUN SHAN) CO., LTD.
-- Third-party invoicing dicentang, dengan remark third-party operator TO HO (HK) ENTERPRISES LIMITED.
-- Kolom penting:
-  6. Item number
-  7. Marks and numbers on packages
-  8. Number and kind of packages; and description of goods
-  9. HS Code of the goods
-  10. Origin Conferring Criterion
-  11. RCEP Country of Origin
-  12. Quantity / Gross weight / value and FOB where RVC is applied
-  13. Invoice number(s) and date of invoice(s)
-
-1. coo_seq
-   - Ambil dari kolom "Item number".
-   - Nilai numeric.
-
-2. coo_mark_number
-   - Ambil dari kolom "Marks and numbers on packages" jika ada value item-level yang jelas.
-   - Pada COO TOHO, mark yang muncul adalah "N/M" atau kosong.
-   - Jika value = "N/M" atau kosong -> coo_mark_number = "null"
-
-3. coo_description
-   - Ambil deskripsi barang dari kolom 8.
-   - Jangan masukkan: item number, marks, HS code, criteria, country, quantity, GW, invoice no/date, "** CODE:..."
-   - Jika ada frasa package shipment-level di awal, jangan jadikan bagian utama coo_description item.
-
-4. coo_hs_code
-   - Ambil dari kolom 9 "HS Code of the goods".
-
-5. coo_quantity
-   - Ambil quantity barang dari kolom 12.
-   - Contoh: "100SETS" -> 100
-
-6. coo_unit
-   - Ambil unit quantity yang menempel pada coo_quantity.
-   - Contoh: "100SETS" -> "SETS"
-
-7. coo_package_count
-   - Tidak ada package_count item-level yang konsisten per row untuk vendor TOHO.
-   - coo_package_count = null
-
-8. coo_package_unit
-   - Tidak ada package_unit item-level yang jelas per row untuk vendor TOHO.
-   - coo_package_unit = "null"
-
-9. coo_gw
-   - Ambil gross weight dari kolom 12.
-   - Contoh: "139.9KGS G.W." -> 139.9
-
-10. coo_amount
-   - Pada COO TOHO, kolom 12 hanya berisi quantity dan G.W., tidak ada FOB/value per item.
-   - coo_amount = null
-
-11. coo_criteria
-   - Ambil dari kolom 10 "Origin Conferring Criterion".
-   - Untuk vendor TOHO: "PE"
-
-12. coo_customer_po_no
-   - Pada COO TOHO, tidak ada customer PO number yang jelas.
-   - coo_customer_po_no = "null"
 """

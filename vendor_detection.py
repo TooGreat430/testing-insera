@@ -198,7 +198,7 @@ def _load_module_from_path(py_path: str):
     return module
 
 
-def load_vendor_prompt_text(vendor_id: str, doc_type: str = "inv") -> str:
+def load_vendor_prompt_text(vendor_id: str) -> str:
     vendor_id = normalize_vendor_id(vendor_id)
 
     if vendor_id == "default":
@@ -211,28 +211,11 @@ def load_vendor_prompt_text(vendor_id: str, doc_type: str = "inv") -> str:
 
     module = _load_module_from_path(str(py_path))
 
-    # Cari constant spesifik per doc_type dulu: {VENDOR}_{DOC_TYPE}_PROMPT
-    target_suffix = f"_{doc_type.upper()}_PROMPT"
-    for attr_name in dir(module):
-        if attr_name.endswith(target_suffix):
-            value = getattr(module, attr_name)
-            if isinstance(value, str) and value.strip():
-                print(f"[VENDOR PROMPT] loaded constant={attr_name} vendor_id={vendor_id} doc_type={doc_type}")
-                return value.strip()
-
-    # Fallback 1: exact {VENDOR_ID}_PROMPT (combined prompt lama)
-    exact_name = vendor_id.upper() + "_PROMPT"
-    val = getattr(module, exact_name, None)
-    if isinstance(val, str) and val.strip():
-        print(f"[VENDOR PROMPT] fallback constant={exact_name} vendor_id={vendor_id}")
-        return val.strip()
-
-    # Fallback 2: any *_PROMPT (backwards compat)
     for attr_name in dir(module):
         if attr_name.endswith("_PROMPT"):
             value = getattr(module, attr_name)
             if isinstance(value, str) and value.strip():
-                print(f"[VENDOR PROMPT] fallback constant={attr_name} vendor_id={vendor_id}")
+                print(f"[VENDOR PROMPT] loaded constant={attr_name} vendor_id={vendor_id}")
                 return value.strip()
 
     print(f"[VENDOR PROMPT] tidak ada *_PROMPT yang valid untuk vendor_id={vendor_id}")
