@@ -4606,6 +4606,32 @@ def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
         return 0
 
 
+def _suntour_vietnam_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
+    # Hitung jumlah line item SUNTOUR VIETNAM secara deterministik via pymupdf.
+    # Invoice Suntour memakai format "N  GSF[A-Z0-9]..." di tiap row item.
+    # Ambil angka urut tertinggi yang muncul berpasangan dengan prefix GSF.
+    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+    try:
+        doc = fitz.open(invoice_pdf_path)
+        try:
+            full_text = "\n".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+        matches = re.findall(r'\b(\d{1,2})\s+GSF[A-Z0-9]', full_text)
+        if not matches:
+            return 0
+        row_nums = [int(m) for m in matches]
+        max_row = max(row_nums)
+        print(
+            f"[SUNTOUR_PART_COUNT] found row numbers: {sorted(set(row_nums))}, "
+            f"max={max_row}"
+        )
+        return max_row
+    except Exception as e:
+        print(f"[SUNTOUR_PART_COUNT] error: {e}")
+        return 0
+
+
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
     # Drop duplicate anchor rows. Dua sumber duplikat yang ditangani:
     #   1) chunk boundary overlap (shimano): block sama diulang di akhir chunk N
@@ -8831,6 +8857,145 @@ def _map_coo_items_to_rows(
     return rows
 
 
+def _build_bl_item_list_prompt() -> str:
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Bill of Lading (BL) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Bill of Lading (BL).
+- ABAIKAN dokumen Invoice, Packing List, dan Certificate of Origin.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP entri item/barang yang tercantum di kolom "Description of Goods" pada BL.
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+
+FIELD PER ITEM:
+- "bl_description": deskripsi barang persis seperti tertulis di BL. Jangan tambahkan informasi dari dokumen lain.
+- "bl_hs_code": HS code item tersebut dari kolom HS Code / Harmonized Code. Ambil persis seperti tertulis.
+- "bl_mark_number": marks & numbers / nomor container atau seal jika tercantum pada item ini. Isi "null" jika tidak ada.
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. Tidak boleh mengarang atau menyimpulkan dari dokumen lain.
+- Jika HS code tidak ada pada item tersebut, isi "null".
+- Tidak boleh JSON literal null -> gunakan "null" (string).
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  {
+    "bl_description": "string",
+    "bl_hs_code": "string",
+    "bl_mark_number": "string"
+  }
+]
+""".strip()
+
+
+def _extract_bl_item_list(file_uri: str, vendor_id: str = "default") -> list:
+    if not file_uri:
+        return []
+
+    items = _call_gemini_json_uri(
+        file_uri,
+        _build_bl_item_list_prompt(),
+        expect_array=True,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if not isinstance(items, list):
+        return []
+
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        desc = it.get("bl_description")
+        if _is_null(desc):
+            continue
+        cleaned.append(it)
+
+    print(
+        f"[BL_ITEM_LIST] vendor={normalize_vendor_id(vendor_id)} "
+        f"raw={len(items)} usable={len(cleaned)}"
+    )
+    return cleaned
+
+
+def _map_bl_items_to_rows(
+    rows: list,
+    bl_items: list,
+    vendor_id: str = "default",
+) -> list:
+    """
+    Petakan tiap base row ke item BL yang paling cocok berdasarkan kode/deskripsi.
+    Satu item BL boleh dipetakan ke banyak baris (fan-out untuk item BL yang agregat).
+    Row tanpa item BL yang cocok -> bl_description dan bl_hs_code di-null-kan.
+    bl_mark_number dikopi dari item BL yang cocok jika ada.
+    """
+    if not isinstance(rows, list) or not bl_items:
+        return rows
+
+    mapped = 0
+    nulled = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        inv_desc = row.get("inv_description")
+        inv_spart = row.get("inv_spart_item_no")
+        pl_item = row.get("pl_item_no")
+
+        best_item = None
+
+        for bl_item in bl_items:
+            bl_desc = bl_item.get("bl_description")
+            if _is_null(bl_desc):
+                continue
+
+            matched = False
+            extracted_codes = _extract_bl_description_codes(bl_desc)
+
+            if extracted_codes:
+                for code in extracted_codes:
+                    if _code_exists_in_value(code, inv_desc):
+                        matched = True
+                        break
+                    if _code_exists_in_value(code, inv_spart):
+                        matched = True
+                        break
+                    if _code_exists_in_value(code, pl_item):
+                        matched = True
+                        break
+            else:
+                matched = _text_exists_in_description(bl_desc, inv_desc)
+
+            if matched:
+                best_item = bl_item
+                break
+
+        if best_item is not None:
+            row["bl_description"] = best_item.get("bl_description")
+            row["bl_hs_code"] = best_item.get("bl_hs_code")
+            if not _is_null(best_item.get("bl_mark_number")):
+                row["bl_mark_number"] = best_item.get("bl_mark_number")
+            mapped += 1
+        else:
+            row["bl_description"] = "null"
+            row["bl_hs_code"] = "null"
+            nulled += 1
+
+    print(
+        f"[BL_DETERMINISTIC_MAP] vendor={normalize_vendor_id(vendor_id)} "
+        f"bl_items={len(bl_items)} rows={len(rows)} "
+        f"mapped={mapped} nulled={nulled}"
+    )
+    return rows
+
+
 # Field numerik COO yang di-agregat per item pada dokumen COO.
 COO_AGGREGATE_NUMERIC_FIELDS = ["coo_quantity", "coo_package_count", "coo_gw"]
 
@@ -13048,6 +13213,7 @@ def run_ocr(
             "shimano_inc",
             "shimano_singapore",
             "karet_deli",
+            "suntour_vietnam",
         }
 
         if _skip_onepage_preprocess:
@@ -13117,6 +13283,30 @@ def run_ocr(
                 merged_pdf_full,
                 run_prefix,
                 name="full"
+            )
+
+        # BL-only dan COO-only URI untuk pass ekstraksi terpisah.
+        file_uri_bl = None
+        file_uri_coo = None
+
+        if has_bl_doc and len(normalized_pdf_paths) > 2:
+            bl_only_pdf = _compress_pdf_if_needed(normalized_pdf_paths[2])
+            if bl_only_pdf not in temp_local_paths and bl_only_pdf != normalized_pdf_paths[2]:
+                temp_local_paths.append(bl_only_pdf)
+            file_uri_bl = _upload_temp_pdf_to_gcs(
+                bl_only_pdf,
+                run_prefix,
+                name="bl_only"
+            )
+
+        if has_coo_doc and len(normalized_pdf_paths) > 3:
+            coo_only_pdf = _compress_pdf_if_needed(normalized_pdf_paths[3])
+            if coo_only_pdf not in temp_local_paths and coo_only_pdf != normalized_pdf_paths[3]:
+                temp_local_paths.append(coo_only_pdf)
+            file_uri_coo = _upload_temp_pdf_to_gcs(
+                coo_only_pdf,
+                run_prefix,
+                name="coo_only"
             )
 
         # CONTAINER:
@@ -13238,6 +13428,26 @@ def run_ocr(
             else:
                 print(
                     f"[SHIMANO_PART_COUNT] pymupdf count returned 0, "
+                    f"fallback ke gemini total_row={total_row}"
+                )
+
+        # SUNTOUR VIETNAM: override total_row dengan deterministic count via pymupdf.
+        # Gemini sering hanya baca halaman pertama invoice (6 item) dan return 6,
+        # padahal invoice bisa memiliki 10+ halaman. PyMuPDF membaca semua halaman.
+        if normalize_vendor_id(vendor_id) == "suntour_vietnam":
+            invoice_pdf_for_count = normalized_pdf_paths[0]
+            deterministic_total_row = _suntour_vietnam_count_line_items_from_invoice_pdf(
+                invoice_pdf_for_count
+            )
+            if deterministic_total_row > 0:
+                print(
+                    f"[SUNTOUR_PART_COUNT] override total_row: "
+                    f"gemini={total_row} -> pymupdf={deterministic_total_row}"
+                )
+                total_row = deterministic_total_row
+            else:
+                print(
+                    f"[SUNTOUR_PART_COUNT] pymupdf count returned 0, "
                     f"fallback ke gemini total_row={total_row}"
                 )
 
@@ -13515,61 +13725,38 @@ def run_ocr(
         )
         
         # =========================================
-        # PASS 2: OPTIONAL FULL DOC OCR
-        # Input full docs jika ada BL/COO.
-        # Prompt vendor tetap sama, tapi ditambah base_rows sebagai anchor.
-        # Hasil optional TIDAK BOLEH overwrite inv_* / pl_*.
+        # PASS 2: BL-ONLY EXTRACTION
+        # Ekstrak raw item list dari BL saja, lalu petakan ke baris INV via Python.
+        # Tidak ada Gemini cross-doc mapping — murni ekstrak lalu match kode/deskripsi.
         # =========================================
-        if optional_detail_input_uri:
+        if has_bl_doc and file_uri_bl:
             try:
-                print("[OPTIONAL_PASS] Start full-doc OCR for BL/COO enrichment")
-
-                optional_jobs = _build_optional_jobs_from_base_rows(
-                    jobs=jobs,
-                    base_rows=all_rows,
+                print("[BL_PASS] Start BL-only item extraction")
+                bl_items = _extract_bl_item_list(
+                    file_uri=file_uri_bl,
+                    vendor_id=vendor_id,
                 )
-
-                optional_rows = _run_detail_jobs(
-                    input_uri=optional_detail_input_uri,
-                    run_prefix=f"{run_prefix}/detail_optional",
-                    jobs=optional_jobs,
-                    total_row=total_row,
-                    label="OPTIONAL_FULL_DOCS",
-                    batch_size=detail_batch_size,
-                    vendor_id=vendor_id
-                )
-
-                all_rows = _merge_optional_rows_into_base_rows(
-                    base_rows=all_rows,
-                    optional_rows=optional_rows,
-                )
-
-                print("[OPTIONAL_PASS] Done")
-
+                _map_bl_items_to_rows(all_rows, bl_items, vendor_id=vendor_id)
+                print("[BL_PASS] Done")
             except Exception as e:
-                # Optional docs tidak boleh menghancurkan hasil INV/PL.
-                print(f"[OPTIONAL_PASS][WARN] optional BL/COO enrichment skipped: {e}")
+                print(f"[BL_PASS][WARN] BL extraction/mapping skipped: {e}")
 
-        # =========================================================
-        # DETERMINISTIC COO MAPPING (vendor COO ter-agregat, mis. joy)
-        # PASS 2 di-anchor ke base row invoice sehingga sulit mem-fan-out
-        # 1 item COO ke banyak baris dalam panggilan yang juga urus BL.
-        # Ekstrak daftar item COO apa adanya lalu petakan di Python.
-        # Gated per-vendor -> nol dampak ke vendor lain & ke mapping BL.
-        # =========================================================
-        if (
-            has_coo_doc
-            and optional_detail_input_uri
-            and _is_aggregated_coo_vendor(vendor_id)
-        ):
+        # =========================================
+        # PASS 3: COO-ONLY EXTRACTION
+        # Ekstrak raw item list dari COO saja, lalu petakan ke baris INV via Python.
+        # Berlaku untuk semua vendor yang punya COO.
+        # =========================================
+        if has_coo_doc and file_uri_coo:
             try:
+                print("[COO_PASS] Start COO-only item extraction")
                 coo_items = _extract_coo_item_list(
-                    file_uri=optional_detail_input_uri,
+                    file_uri=file_uri_coo,
                     vendor_id=vendor_id,
                 )
                 _map_coo_items_to_rows(all_rows, coo_items, vendor_id=vendor_id)
+                print("[COO_PASS] Done")
             except Exception as e:
-                print(f"[COO_DETERMINISTIC_MAP][WARN] skipped: {e}")
+                print(f"[COO_PASS][WARN] COO extraction/mapping skipped: {e}")
 
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
