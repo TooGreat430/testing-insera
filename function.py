@@ -6323,8 +6323,17 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                 exists_in_po = True
             elif pl_art_norm and (inv_po_norm, pl_art_norm) in po_article_index:
                 exists_in_po = True
-                
-            if not exists_in_po:
+
+            # KONSENSUS DOKUMEN: kalau invoice & PL SAMA-SAMA menyebut PO yang
+            # sama, itu sinyal kuat PO memang benar dari dokumen (bukan PO
+            # nyasar akibat fill_forward yang hanya mengisi inv_customer_po_no).
+            # Dalam kasus ini JANGAN timpa inv/pl_customer_po_no dengan tebakan
+            # PO lain via artikel; biarkan baris ter-flag jujur "PO item tidak
+            # ditemukan" bila kombinasi PO+artikel tak ada di master PO.
+            pl_po_norm = _norm_po_number(row.get("pl_customer_po_no"))
+            has_doc_po_consensus = bool(inv_po_norm) and inv_po_norm == pl_po_norm
+
+            if not exists_in_po and not has_doc_po_consensus:
                 _fallback_po_no_by_item_no(row, po_lines)
 
         mapped_rows, success = _map_single_detail_row_to_po(
@@ -8657,6 +8666,39 @@ def _is_coo_aggregate_top_row_vendor(vendor_id: str) -> bool:
     return normalize_vendor_id(vendor_id) in VENDORS_COO_AGGREGATE_TO_TOP_ROW
 
 
+# Vendor dengan COO per-line 1:1 (BUKAN agregat) yang COO-nya DIPETAKAN
+# DETERMINISTIK lewat KODE item (spart item no), bukan lewat token deskripsi.
+# Alasan: pass gabungan INV+PL+BL+COO (di-anchor ke base row invoice) tidak
+# andal mengekstrak baris COO untuk vendor ini -> coo_* line item null semua /
+# coo_description jatuh ke nilai generik (mis. "FORK SUSPENSION") yang lalu
+# di-null-kan _postprocess_coo_item_mapping. Format COO vendor ini = e-COO INSW
+# (tabel bersih: Item No., Description "FORK SUSPENSION <KODE>", HS Number,
+# Quantity, Gross weight, FOB Value, Origin Criterion) sehingga kode item COO
+# = inv_spart_item_no/pl_item_no -> mapping by-code 1:1 sangat andal.
+VENDORS_WITH_PERLINE_CODE_COO = {
+    "suntour_vietnam",
+}
+
+
+def _is_perline_code_coo_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_WITH_PERLINE_CODE_COO
+
+
+# Vendor yang bl_description/bl_hs_code-nya dipetakan DETERMINISTIK lewat KODE
+# item (sama alasannya dgn COO by-code di atas: pass gabungan BL+COO jatuh ke
+# bl_description generik "FORK SUSPENSION" tanpa kode). Untuk vendor ini,
+# _postprocess_bl_description (yang null-kan baris non-match) DILEWATI karena
+# baris yang artikelnya tidak ada di BL sengaja di-fallback ke item BL nyata
+# (sesuai aturan STEP 3 prompt: bl_description tidak boleh null).
+VENDORS_WITH_DETERMINISTIC_BL = {
+    "suntour_vietnam",
+}
+
+
+def _is_deterministic_bl_vendor(vendor_id: str) -> bool:
+    return normalize_vendor_id(vendor_id) in VENDORS_WITH_DETERMINISTIC_BL
+
+
 COO_ITEM_LIST_COPY_FIELDS = [
     "coo_seq",
     "coo_mark_number",
@@ -8731,13 +8773,82 @@ SCHEMA OUTPUT:
 """.strip()
 
 
+def _build_coo_item_list_prompt_insw_ecoo() -> str:
+    """Prompt ekstraksi DAFTAR item COO untuk format e-COO INSW (mis. ATIGA,
+    suntour_vietnam). Format ini berupa TABEL bersih per item, BUKAN form RCEP
+    Continuation Sheet, jadi prompt RCEP (_build_coo_item_list_prompt) tidak
+    cocok di sini."""
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Certificate of Origin (COO) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Certificate of Origin / COO (e-COO INSW, FTA ATIGA; bisa beberapa halaman).
+- ABAIKAN dokumen Invoice, Packing List, dan Bill of Lading.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP baris item barang COO (sesuai kolom "Item No.": 1, 2, 3, ...).
+- Item yang ber-lanjut ke halaman berikutnya tetap SATU objek per "Item No.".
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+
+STRUKTUR COO (tabel e-COO INSW, kolom kiri ke kanan):
+  Item No. | Marks and Numbers | Description | Quantity Code | Quantity | HS Number | Origin Criterion | Gross weight or Other Quantity | Weight Code | FOB (Currency Code, Value) | Invoice (Number, Date)
+- Kolom "Quantity Code" berisi DUA nilai bertumpuk: baris-1 = unit barang (mis. "SET"), baris-2 = unit kemasan (mis. "CT").
+- Kolom "Quantity" berisi DUA nilai bertumpuk SEJAJAR: baris-1 = quantity barang (mis. "500.0000"), baris-2 = jumlah kemasan (mis. "50").
+
+FIELD PER ITEM:
+- "coo_seq": angka pada kolom "Item No." (numeric: 1, 2, 3, ...).
+- "coo_mark_number": isi kolom "Marks and Numbers" PERSIS (pada vendor ini sering "no"). Bila kosong -> "null".
+- "coo_description": teks kolom "Description"; gabungkan potongan/wrapped jadi SATU string utuh dan rapatkan kode yang terpecah (mis. "FORK SUSPENS ION GSFM3010 APV00034" -> "FORK SUSPENSION GSFM3010APV00034"). WAJIB sertakan kode item yang menempel di deskripsi. JANGAN sertakan quantity, HS code, gross weight, FOB, invoice number, atau date.
+- "coo_hs_code": kolom "HS Number" PERSIS seperti tertulis (vendor ini 8 digit, mis. "87149199"). JANGAN ubah ke format bertitik "8714.91".
+- "coo_quantity": baris PERTAMA kolom "Quantity" (quantity barang ber-unit SET, mis. 500.0000). BUKAN gross weight, BUKAN jumlah kemasan.
+- "coo_unit": baris PERTAMA kolom "Quantity Code" (unit barang, mis. "SET").
+- "coo_package_count": baris KEDUA kolom "Quantity" (jumlah kemasan/carton, mis. 50).
+- "coo_package_unit": baris KEDUA kolom "Quantity Code" (mis. "CT").
+- "coo_gw": angka kolom "Gross weight or Other Quantity" (mis. 1290.0000).
+- "coo_amount": angka kolom "Value" di bawah header "FOB" (mis. 6600.00000). Jangan ambil dari invoice/PL.
+- "coo_criteria": kode pada kolom "Origin Criterion"; ABAIKAN nilai persentase. Mis. "RVC 49.92%" -> "RVC".
+- "coo_origin_country": negara asal barang. Bila per-item tidak ada, gunakan field header COO "Origin Country" (mis. "VN - VIETNAM" -> "VIETNAM") dan pakai nilai yang sama untuk SEMUA item.
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. Jika field tidak ada -> "null" (string) atau 0 (angka numerik).
+- Tidak boleh JSON literal null -> gunakan "null".
+- Tidak boleh markdown/penjelasan.
+- Jumlah objek output HARUS = jumlah baris "Item No." pada COO.
+
+SCHEMA OUTPUT:
+[
+  {
+    "coo_seq": number,
+    "coo_mark_number": "string",
+    "coo_description": "string",
+    "coo_hs_code": "string",
+    "coo_package_count": number,
+    "coo_package_unit": "string",
+    "coo_quantity": number,
+    "coo_unit": "string",
+    "coo_gw": number,
+    "coo_amount": "string",
+    "coo_criteria": "string",
+    "coo_origin_country": "string"
+  }
+]
+""".strip()
+
+
 def _extract_coo_item_list(file_uri: str, vendor_id: str = "default") -> list:
     if not file_uri:
         return []
 
+    if _is_perline_code_coo_vendor(vendor_id):
+        coo_item_list_prompt = _build_coo_item_list_prompt_insw_ecoo()
+    else:
+        coo_item_list_prompt = _build_coo_item_list_prompt()
+
     items = _call_gemini_json_uri(
         file_uri,
-        _build_coo_item_list_prompt(),
+        coo_item_list_prompt,
         expect_array=True,
         retries=3,
         vendor_id=vendor_id,
@@ -8854,6 +8965,222 @@ def _map_coo_items_to_rows(
         f"[COO_DETERMINISTIC_MAP] vendor={normalize_vendor_id(vendor_id)} "
         f"coo_items={len(coo_items)} rows={len(rows)} "
         f"mapped={mapped} nulled={nulled}"
+    )
+    return rows
+
+
+def _map_coo_items_to_rows_by_code(
+    rows: list,
+    coo_items: list,
+    vendor_id: str = "default",
+    eps: float = 0.01,
+) -> list:
+    """
+    Petakan tiap base row ke item COO lewat KODE item (spart item no), bukan
+    token deskripsi. Dipakai untuk vendor e-COO INSW (mis. suntour_vietnam) yang
+    coo_description-nya = "FORK SUSPENSION <KODE>" sehingga kode item COO ==
+    inv_spart_item_no / pl_item_no (mapping 1:1 sangat andal).
+
+    - Kandidat = item COO yang KODE row-nya muncul di coo_description item itu.
+    - Bila ada >1 kandidat (kode sama dipakai beberapa baris invoice, mis.
+      GSFXCM32DSV00012), pilih yang coo_quantity == inv_quantity; selain itu
+      ambil kandidat pertama (nilai item COO ber-kode & ber-qty sama identik).
+    - Row tanpa item COO yang cocok -> field coo_* item-level di-null-kan.
+
+    Catatan: nilai numerik (coo_quantity/coo_package_count/coo_gw) tetap akan
+    dinormalisasi per-baris ke Packing List oleh
+    _postprocess_coo_numeric_fields_from_pl (vendor non-agregat).
+    """
+    if not isinstance(rows, list) or not coo_items:
+        return rows
+
+    indexed = []
+    for it in coo_items:
+        if not isinstance(it, dict):
+            continue
+        indexed.append({
+            "item": it,
+            "qty": _to_float(it.get("coo_quantity")),
+        })
+
+    used = set()  # index item COO yang sudah diklaim (agar seq 1:1 selaras)
+    mapped = 0
+    nulled = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_code = (
+            _normalize_code_compare_value(row.get("inv_spart_item_no"))
+            or _normalize_code_compare_value(row.get("pl_item_no"))
+        )
+        if not row_code:
+            _nullify_coo_item_fields(row)
+            nulled += 1
+            continue
+
+        candidates = [
+            i for i, entry in enumerate(indexed)
+            if _code_exists_in_value(row_code, entry["item"].get("coo_description"))
+        ]
+        if not candidates:
+            _nullify_coo_item_fields(row)
+            nulled += 1
+            continue
+
+        inv_qty = _to_float(row.get("inv_quantity"))
+
+        def _qty_match(i):
+            q = indexed[i]["qty"]
+            return inv_qty is not None and q is not None and abs(q - inv_qty) <= eps
+
+        # Prioritas: (1) belum-dipakai & qty cocok, (2) belum-dipakai apa pun,
+        # (3) sudah-dipakai & qty cocok (kode dobel ber-data identik),
+        # (4) kandidat pertama. Konsumsi sekali supaya coo_seq 1:1 selaras.
+        best_idx = next((i for i in candidates if i not in used and _qty_match(i)), None)
+        if best_idx is None:
+            best_idx = next((i for i in candidates if i not in used), None)
+        if best_idx is None:
+            best_idx = next((i for i in candidates if _qty_match(i)), None)
+        if best_idx is None:
+            best_idx = candidates[0]
+
+        used.add(best_idx)
+        best = indexed[best_idx]["item"]
+
+        for field in COO_ITEM_LIST_COPY_FIELDS:
+            if field in best:
+                row[field] = best.get(field)
+        mapped += 1
+
+    print(
+        f"[COO_BY_CODE_MAP] vendor={normalize_vendor_id(vendor_id)} "
+        f"coo_items={len(coo_items)} rows={len(rows)} "
+        f"mapped={mapped} nulled={nulled}"
+    )
+    return rows
+
+
+def _build_bl_item_list_prompt_suntour_vietnam() -> str:
+    """Prompt ekstraksi DAFTAR item barang dari Bill of Lading (BL) untuk
+    suntour_vietnam. BL ini menuliskan tiap item sebagai
+    'FORK SUSPENSION <KODE> HS CODE: 8714.91' di kolom Description of Goods."""
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM barang dari dokumen Bill of Lading (BL) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Bill of Lading (BL).
+- ABAIKAN dokumen Invoice, Packing List, dan Certificate of Origin.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP item barang pada kolom "Description of Goods" BL.
+- Pada vendor ini tiap item ditulis: "FORK SUSPENSION <KODE> HS CODE: 8714.91".
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+
+FIELD PER ITEM:
+- "bl_description": teks deskripsi barang SEBELUM "HS CODE:" (mis. "FORK SUSPENSION GSFM3010APV00034"). WAJIB sertakan kode item; rapatkan kode yang terpecah/wrapped. JANGAN sertakan "HS CODE:" atau nilainya.
+- "bl_hs_code": nilai SETELAH "HS CODE:" pada item yang sama (mis. "8714.91"). Pertahankan format persis (bertitik) seperti di BL.
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS di BL. Jangan mengarang item/kode yang tidak ada di BL.
+- bl_description dan bl_hs_code WAJIB berpasangan dari item BL yang sama.
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  { "bl_description": "string", "bl_hs_code": "string" }
+]
+""".strip()
+
+
+def _extract_bl_item_list(file_uri: str, vendor_id: str = "default") -> list:
+    if not file_uri:
+        return []
+
+    items = _call_gemini_json_uri(
+        file_uri,
+        _build_bl_item_list_prompt_suntour_vietnam(),
+        expect_array=True,
+        retries=3,
+        vendor_id=vendor_id,
+    )
+
+    if not isinstance(items, list):
+        return []
+
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        desc = it.get("bl_description")
+        if _is_null(desc):
+            continue
+        cleaned.append({
+            "bl_description": str(desc).strip(),
+            "bl_hs_code": it.get("bl_hs_code"),
+        })
+
+    print(
+        f"[BL_ITEM_LIST] vendor={normalize_vendor_id(vendor_id)} "
+        f"raw={len(items)} usable={len(cleaned)}"
+    )
+    return cleaned
+
+
+def _map_bl_items_to_rows_by_code(rows: list, bl_items: list, vendor_id: str = "default") -> list:
+    """
+    Petakan bl_description/bl_hs_code per baris lewat KODE item (spart item no).
+    - Baris yang kodenya muncul di salah satu item BL -> pakai item BL itu.
+    - Baris yang kodenya TIDAK ada di BL -> fallback ke item BL pertama (item BL
+      nyata, deterministik) sesuai aturan STEP 3 prompt (bl_description tidak
+      boleh null). BL kontainer ini hanya menyebut sebagian artikel + "S.T.C".
+    Tidak dipanggil bila daftar item BL kosong (biarkan hasil pass apa adanya).
+    """
+    if not isinstance(rows, list) or not bl_items:
+        return rows
+
+    indexed = [
+        {"item": it, "codes": _extract_bl_description_codes(it.get("bl_description"))}
+        for it in bl_items
+    ]
+    fallback_item = bl_items[0]
+
+    code_matched = 0
+    fallback_used = 0
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_code = (
+            _normalize_code_compare_value(row.get("inv_spart_item_no"))
+            or _normalize_code_compare_value(row.get("pl_item_no"))
+        )
+
+        best = None
+        if row_code:
+            for entry in indexed:
+                if _code_exists_in_value(row_code, entry["item"].get("bl_description")):
+                    best = entry["item"]
+                    break
+
+        if best is None:
+            best = fallback_item
+            fallback_used += 1
+        else:
+            code_matched += 1
+
+        row["bl_description"] = best.get("bl_description")
+        if not _is_null(best.get("bl_hs_code")):
+            row["bl_hs_code"] = best.get("bl_hs_code")
+
+    print(
+        f"[BL_BY_CODE_MAP] vendor={normalize_vendor_id(vendor_id)} "
+        f"bl_items={len(bl_items)} rows={len(rows)} "
+        f"code_matched={code_matched} fallback={fallback_used}"
     )
     return rows
 
@@ -8998,6 +9325,13 @@ def _postprocess_bl_description(rows: list, threshold: float = 0.4, vendor_id: s
     # matcher generik (lihat _postprocess_bl_description_novatec).
     if normalize_vendor_id(vendor_id) == "novatec":
         _postprocess_bl_description_novatec(rows)
+        return
+
+    # Vendor dgn BL deterministik by-code (mis. suntour_vietnam): bl_description
+    # sudah dipetakan (sebagian via fallback ke item BL nyata yang kodenya beda
+    # dgn artikel baris). Null-on-no-match di sini justru membuang baris fallback
+    # yang valid -> lewati.
+    if _is_deterministic_bl_vendor(vendor_id):
         return
 
     for row in rows:
@@ -13635,6 +13969,49 @@ def run_ocr(
                 _map_coo_items_to_rows(all_rows, coo_items, vendor_id=vendor_id)
             except Exception as e:
                 print(f"[COO_DETERMINISTIC_MAP][WARN] skipped: {e}")
+
+        # =========================================================
+        # DETERMINISTIC COO MAPPING (vendor COO per-line by-CODE, mis.
+        # suntour_vietnam). Sama alasannya dgn blok agregat di atas: pass
+        # gabungan BL+COO tidak andal mengisi baris COO untuk vendor ini.
+        # Ekstrak daftar item COO (format e-COO INSW) lalu petakan per-baris
+        # lewat KODE item (spart item no) -> coo_description "FORK SUSPENSION
+        # <KODE>" 1:1 dgn inv_spart_item_no. Gated per-vendor.
+        # =========================================================
+        elif (
+            has_coo_doc
+            and optional_detail_input_uri
+            and _is_perline_code_coo_vendor(vendor_id)
+        ):
+            try:
+                coo_items = _extract_coo_item_list(
+                    file_uri=optional_detail_input_uri,
+                    vendor_id=vendor_id,
+                )
+                _map_coo_items_to_rows_by_code(all_rows, coo_items, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[COO_BY_CODE_MAP][WARN] skipped: {e}")
+
+        # =========================================================
+        # DETERMINISTIC BL MAPPING (vendor BL by-CODE, mis. suntour_vietnam).
+        # Pass gabungan BL+COO mengisi bl_description generik "FORK SUSPENSION"
+        # (tanpa kode). Ekstrak daftar item BL terfokus lalu petakan per-baris
+        # lewat KODE item; baris yang artikelnya tidak ada di BL di-fallback ke
+        # item BL nyata (aturan STEP 3). Gated per-vendor.
+        # =========================================================
+        if (
+            has_bl_doc
+            and optional_detail_input_uri
+            and _is_deterministic_bl_vendor(vendor_id)
+        ):
+            try:
+                bl_items = _extract_bl_item_list(
+                    file_uri=optional_detail_input_uri,
+                    vendor_id=vendor_id,
+                )
+                _map_bl_items_to_rows_by_code(all_rows, bl_items, vendor_id=vendor_id)
+            except Exception as e:
+                print(f"[BL_BY_CODE_MAP][WARN] skipped: {e}")
 
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
