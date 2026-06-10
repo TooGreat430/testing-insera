@@ -44,7 +44,6 @@ from vendor_detection import (
 BATCH_SIZE = 30
 CHENGS_DETAIL_BATCH_SIZE = 3
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
-test_number = 2
 
 DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES = int(
     os.getenv("DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES", "4")
@@ -394,18 +393,6 @@ TOTAL_DETAIL_AGG_FIELDS = [
     "pl_total_package",
 ]
 
-# FUNCTION MATCH DESCRIPTION ROW CONTINUATION
-
-ZERO_CONTINUATION_MATCH_DESCRIPTION_FIELDS = [
-    "inv_quantity",
-    "inv_unit_price",
-    "inv_amount",
-    "pl_quantity",
-    "pl_nw",
-    "pl_gw",
-    "pl_volume",
-]
-
 def _create_sliced_pdf_for_batch(input_pdf: str, start_page_idx: int, end_page_idx: int) -> str:
     """Memotong PDF dari halaman start_page_idx hingga end_page_idx (0-based)"""
     reader = PdfReader(input_pdf)
@@ -426,91 +413,6 @@ def _create_sliced_pdf_for_batch(input_pdf: str, start_page_idx: int, end_page_i
         
     return out.name
 
-def _is_zero_continuation_row(row: dict) -> bool:
-    """
-    True hanya jika SEMUA field numeric utama bernilai 0.
-
-    Field yang dicek:
-    - inv_quantity
-    - inv_unit_price
-    - inv_amount
-    - pl_quantity
-    - pl_nw
-    - pl_gw
-    - pl_volume
-
-    Catatan:
-    - null / kosong tidak dianggap 0.
-    - String "0", "0.0", angka 0, Decimal(0) dianggap 0.
-    """
-    if not isinstance(row, dict):
-        return False
-
-    for field in ZERO_CONTINUATION_MATCH_DESCRIPTION_FIELDS:
-        value = _to_float(row.get(field))
-
-        if value is None:
-            return False
-
-        if abs(value) > 1e-9:
-            return False
-
-    return True
-
-
-def _inherit_match_description_for_zero_continuation_rows(rows: list):
-    """
-    Approach 2:
-    Single-pass.
-
-    Simpan match_description dari row parent terakhir yang BUKAN row nol.
-    Jika row saat ini adalah row nol, copy match_description dari parent terakhir.
-    """
-    if not isinstance(rows, list):
-        return rows
-
-    parent_match_description = None
-    parent_inv_seq = None
-    parent_row_no = None
-    changed_count = 0
-
-    for idx, row in enumerate(rows):
-        if not isinstance(row, dict):
-            continue
-
-        if _is_zero_continuation_row(row):
-            if not _is_null(parent_match_description):
-                row["match_description"] = parent_match_description
-                row["inv_seq"] = parent_inv_seq
-                changed_count += 1
-
-                print(
-                    f"[ZERO_CONTINUATION_MATCH_DESCRIPTION] "
-                    f"row={idx + 1} inherited_from_parent_row={parent_row_no}"
-                )
-
-            continue
-
-        # Row bukan nol menjadi parent baru.
-        current_match_description = row.get("match_description")
-        current_sequence = row.get("inv_sequence")
-
-        if not _is_null(current_match_description):
-            parent_match_description = current_match_description
-            parent_inv_seq = current_sequence
-
-            parent_row_no = idx + 1
-        else:
-            parent_match_description = None
-            parent_inv_seq = None
-            parent_row_no = idx + 1
-
-    print(
-        f"[ZERO_CONTINUATION_MATCH_DESCRIPTION] "
-        f"changed_rows={changed_count}"
-    )
-
-    return rows
 
 def _get_detail_total_group_key(row: dict, row_index: int) -> str:
     """
@@ -2987,29 +2889,6 @@ def _volume_values_match_with_conversion(left_value, right_value, eps=None, fact
         return True
 
     return False
-DETAIL_ROW_DEDUP_COMPARE_FIELDS = [
-    "inv_customer_po_no",
-    "inv_spart_item_no",
-    "inv_quantity",
-    "inv_unit_price",
-    "pl_customer_po_no",
-    "pl_spart_item_no",   # alias -> pl_item_no bila field ini tidak ada
-    "pl_package_count",
-    "pl_quantity",
-    "pl_nw",
-    "pl_gw",
-    "pl_volume",
-]
-
-DETAIL_ROW_DEDUP_NUM_FIELDS = {
-    "inv_quantity",
-    "inv_unit_price",
-    "pl_package_count",
-    "pl_quantity",
-    "pl_nw",
-    "pl_gw",
-    "pl_volume",
-}
 
 def _validate_total_rows(total_data, detail_rows: list):
     if total_data is None:
@@ -3928,17 +3807,6 @@ def _extract_text_from_gemini_response(response):
 
     return ""
 
-def _split_match_description_messages(value):
-    if value is None:
-        return []
-
-    s = str(value).strip()
-    if s == "" or s.lower() == "null":
-        return []
-
-    return [part.strip() for part in re.split(r"\s*;\s*", s) if part and part.strip()]
-
-
 _TOTAL_ISSUE_REGEX = re.compile(
     r"\btotal[_\s\-]*(quantity|amount|nw|gw|volume|package|qty|weight|nett|gross)\b"
     r"[^a-z0-9]*"
@@ -3975,46 +3843,6 @@ def _is_total_issue_message(msg: str) -> bool:
     return any(kw in s_low for kw in legacy_keywords)
 
 
-def _row_has_non_total_issue(row: dict) -> bool:
-    if not isinstance(row, dict):
-        return False
-
-    match_score = str(row.get("match_score", "")).strip().lower()
-    match_description = row.get("match_description")
-
-    if match_score != "false":
-        return False
-
-    messages = _split_match_description_messages(match_description)
-
-    # Kalau false tapi tidak ada description, jangan otomatis negative.
-    # Bisa terjadi karena total issue sudah diproses / field kosong.
-    if not messages:
-        return False
-
-    ignored_total_metadata_prefixes = (
-        "suspected_row_contribution=",
-        "reason=",
-        "row_value=",
-        "root_cause=",
-    )
-
-    meaningful_messages = []
-
-    for msg in messages:
-        s = str(msg or "").strip().lower()
-        if not s:
-            continue
-
-        if s.startswith(ignored_total_metadata_prefixes):
-            continue
-
-        meaningful_messages.append(msg)
-
-    if not meaningful_messages:
-        return False
-
-    return any(not _is_total_issue_message(msg) for msg in meaningful_messages)
 
 
 def _row_has_total_issue_only(row: dict) -> bool:
@@ -5760,36 +5588,6 @@ def _po_line_sort_key(po_line: dict):
     except Exception:
         return (1, str(raw or ""))
 
-PO_ITEM_NO_FIELDS = [
-    "vendor_article_no",
-    "po_vendor_article_no",
-    "sap_article_no",
-    "po_sap_article_no",
-]
-
-ITEM_CODE_CONFUSABLE_MAP = {
-    "0": ["0", "O", "Q", "D"],
-    "O": ["O", "0", "Q", "D"],
-    "Q": ["Q", "0", "O"],
-    "D": ["D", "0", "O"],
-
-    "1": ["1", "I", "L"],
-    "I": ["I", "1", "L"],
-    "L": ["L", "1", "I"],
-
-    "2": ["2", "Z"],
-    "Z": ["Z", "2"],
-
-    "5": ["5", "S"],
-    "S": ["S", "5"],
-
-    "6": ["6", "G"],
-    "G": ["G", "6"],
-
-    "8": ["8", "B"],
-    "B": ["B", "8"],
-}
-
 ITEM_CODE_CONFUSABLE_GROUPS = [
     ("0", "O", "Q", "D"),
     ("1", "I", "L"),
@@ -5804,24 +5602,6 @@ for group in ITEM_CODE_CONFUSABLE_GROUPS:
     canonical = group[0]
     for ch in group:
         ITEM_CODE_CANONICAL_MAP[ch] = canonical
-
-MAX_ITEM_CODE_VARIANTS = 128
-
-def _get_best_po_article_value(po_line: dict):
-    if not isinstance(po_line, dict):
-        return "null"
-
-    for key in [
-        "vendor_article_no",
-        "po_vendor_article_no",
-        "sap_article_no",
-        "po_sap_article_no",
-    ]:
-        value = po_line.get(key)
-        if not _is_null(value):
-            return str(value).strip()
-
-    return "null"
 
 
 def _get_mapped_po_no_from_result_rows(result_rows: list):
@@ -6072,10 +5852,6 @@ def _map_single_detail_row_to_po(
             _zero_po_split_secondary_total_fields(new_row)
 
         # selalu pakai item no asli dari PO JSON
-        # po_article_value = _get_best_po_article_value(matched_line)
-        # if not _is_null(po_article_value):
-        #     new_row["inv_spart_item_no"] = po_article_value
-        #     new_row["pl_item_no"] = po_article_value
         if matched_by == "inv_spart_item_no" and not _is_null(new_row.get("inv_spart_item_no")):
             new_row["pl_item_no"] = new_row.get("inv_spart_item_no")
         elif matched_by == "pl_item_no" and not _is_null(new_row.get("pl_item_no")):
@@ -9055,10 +8831,6 @@ VENDORS_WITH_AGGREGATED_COO = {
 }
 
 
-def _is_aggregated_coo_vendor(vendor_id: str) -> bool:
-    return normalize_vendor_id(vendor_id) in VENDORS_WITH_AGGREGATED_COO
-
-
 # Subset dari VENDORS_WITH_AGGREGATED_COO yang nilai NUMERIK COO-nya ditampilkan
 # meng-agregat per produk pada SATU baris (baris pertama group) + 0 di baris lain,
 # SESUAI dokumen COO -- BUKAN didistribusi per-baris mengikuti Packing List.
@@ -10236,70 +10008,6 @@ DETAIL_RECHECK_CONTEXT_FIELDS = [
     "pl_weight_unit",
     "pl_volume_unit",
 ]
-
-def _clean_anchor_value(value):
-    if _is_null(value):
-        return "null"
-    return str(value).strip()
-
-
-def _build_line_item_anchor_context(row: dict) -> dict:
-    """
-    Anchor utama agar Gemini menemukan line item yang sama di PDF
-    sebelum memutuskan numeric value benar/salah.
-    """
-    if not isinstance(row, dict):
-        return {}
-
-    return {
-        "anchor_priority": [
-            "invoice_no",
-            "customer_po_no",
-            "item_or_article_no",
-            "description",
-            "hs_code",
-            "sequence",
-        ],
-        "invoice_anchors": {
-            "inv_invoice_no": _clean_anchor_value(row.get("inv_invoice_no")),
-            "pl_invoice_no": _clean_anchor_value(row.get("pl_invoice_no")),
-            "coo_invoice_no": _clean_anchor_value(row.get("coo_invoice_no")),
-            "coo_no": _clean_anchor_value(row.get("coo_no")),
-        },
-        "po_anchors": {
-            "inv_customer_po_no": _clean_anchor_value(row.get("inv_customer_po_no")),
-            "pl_customer_po_no": _clean_anchor_value(row.get("pl_customer_po_no")),
-            "coo_customer_po_no": _clean_anchor_value(row.get("coo_customer_po_no")),
-        },
-        "item_anchors": {
-            "inv_spart_item_no": _clean_anchor_value(row.get("inv_spart_item_no")),
-            "inv_item_no": _clean_anchor_value(row.get("inv_item_no")),
-            "pl_item_no": _clean_anchor_value(row.get("pl_item_no")),
-            "coo_item_no": _clean_anchor_value(row.get("coo_item_no")),
-        },
-        "description_anchors": {
-            "inv_description": _clean_anchor_value(row.get("inv_description")),
-            "pl_description": _clean_anchor_value(row.get("pl_description")),
-            "coo_description": _clean_anchor_value(row.get("coo_description")),
-        },
-        "code_anchors": {
-            "inv_hs_code": _clean_anchor_value(row.get("inv_hs_code")),
-            "coo_hs_code": _clean_anchor_value(row.get("coo_hs_code")),
-            "bl_hs_code": _clean_anchor_value(row.get("bl_hs_code")),
-        },
-        "sequence_anchors": {
-            "inv_seq": _clean_anchor_value(row.get("inv_seq")),
-            "pl_seq": _clean_anchor_value(row.get("pl_seq")),
-            "coo_seq": _clean_anchor_value(row.get("coo_seq")),
-            "_detail_row_no": _clean_anchor_value(row.get("_detail_row_no")),
-        },
-        "rule": (
-            "Cari target line item di PDF menggunakan kombinasi invoice_no + PO + item/article. "
-            "Jika item/article kosong, gunakan description/HS/sequence sebagai fallback. "
-            "Jangan koreksi numeric field jika anchor line item tidak jelas."
-        ),
-    }
-
 
 def _round_recheck_candidate(value, ndigits: int = 6):
     num = _to_float(value)
@@ -11695,13 +11403,6 @@ def _build_detail_line_recheck_rows_payload(rows: list):
 
     return payload
 
-def _build_detail_line_recheck_schema():
-    schema = {
-        "_detail_row_no": "number",
-        "_recheck_fields": ["string"],
-    }
-    schema.update(DETAIL_RECHECK_SCHEMA)
-    return schema
 
 def _build_vendor_reference_block_for_recheck(
     vendor_id: str = "default",
@@ -13661,176 +13362,7 @@ def _apply_detail_line_recheck_result(rows: list, repaired_rows: list):
 # PASS 2: FULL docs hanya untuk ambil BL/COO fields
 # =========================================================
 
-OPTIONAL_DETAIL_FIELDS = {
-    "bl_description",
-    "bl_hs_code",
-    "bl_mark_number",
-
-    "coo_seq",
-    "coo_mark_number",
-    "coo_description",
-    "coo_hs_code",
-    "coo_quantity",
-    "coo_unit",
-    "coo_package_count",
-    "coo_package_unit",
-    "coo_gw",
-    "coo_amount",
-    "coo_criteria",
-    "coo_customer_po_no",
-}
-
 OPTIONAL_HEADER_PREFIXES = ("bl_", "coo_")
-
-BASE_ANCHOR_FIELDS_FOR_OPTIONAL = [
-    "_expected_index",
-    "_detail_row_no",
-
-    "inv_invoice_no",
-    "inv_invoice_date",
-    "inv_customer_po_no",
-    "inv_spart_item_no",
-    "inv_seq",
-    "inv_description",
-    "inv_quantity",
-    "inv_quantity_unit",
-    "inv_amount",
-
-    "pl_invoice_no",
-    "pl_invoice_date",
-    "pl_customer_po_no",
-    "pl_item_no",
-    "pl_description",
-    "pl_quantity",
-    "pl_package_count",
-    "pl_nw",
-    "pl_gw",
-    "pl_volume",
-]
-
-
-def _optional_safe_int(value):
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def _optional_row_key(row: dict):
-    if not isinstance(row, dict):
-        return None
-
-    # _expected_index paling stabil karena berasal dari index item batch.
-    for key in ["_expected_index", "_detail_row_no", "idx"]:
-        value = _optional_safe_int(row.get(key))
-        if value is not None:
-            return value
-
-    return None
-
-
-def _is_meaningful_optional_value(value):
-    if value is None:
-        return False
-
-    if isinstance(value, str):
-        s = value.strip()
-        if s == "":
-            return False
-        if s.lower() == "null":
-            return False
-
-    return True
-
-
-def _compact_base_rows_for_optional_anchor(base_rows: list, first_index=None, last_index=None):
-    compacted = []
-
-    for row in base_rows or []:
-        if not isinstance(row, dict):
-            continue
-
-        idx = _optional_row_key(row)
-        if idx is None:
-            continue
-
-        if first_index is not None and idx < int(first_index):
-            continue
-
-        if last_index is not None and idx > int(last_index):
-            continue
-
-        item = {}
-
-        for key in BASE_ANCHOR_FIELDS_FOR_OPTIONAL:
-            if key in row:
-                item[key] = row.get(key)
-
-        if "_expected_index" not in item:
-            item["_expected_index"] = idx
-
-        compacted.append(item)
-
-    compacted.sort(key=lambda x: int(x.get("_expected_index", 0) or 0))
-    return compacted
-
-
-def _append_base_anchor_to_existing_prompt(existing_prompt: str, base_anchor_rows: list) -> str:
-    """
-    Tetap pakai prompt vendor/detail existing.
-    Ini hanya menambahkan base_rows sebagai anchor supaya PASS 2 bisa mapping BL/COO
-    ke row INV+PL yang sudah jadi.
-    """
-    base_anchor_json = json.dumps(base_anchor_rows, ensure_ascii=False)
-
-    return f"""
-{existing_prompt}
-
-==============================
-BASE_ROWS HASIL FINAL INV + PL
-==============================
-
-Gunakan BASE_ROWS berikut sebagai anchor row yang sudah final dari Invoice + Packing List.
-
-BASE_ROWS:
-{base_anchor_json}
-
-ATURAN KHUSUS UNTUK PASS OPTIONAL:
-- Prompt vendor dan schema di atas tetap berlaku.
-- Jangan membuat row baru.
-- Jangan menghapus row.
-- Jangan mengubah urutan row.
-- Output harus tetap untuk _expected_index dalam batch ini.
-- Gunakan BASE_ROWS sebagai master row.
-- Field inv_* dan pl_* boleh tetap diekstrak pada output, tetapi nanti sistem hanya akan memakai field bl_* dan coo_* dari PASS OPTIONAL.
-- Fokus tambahan pada mapping field bl_* dan coo_* ke _expected_index yang paling cocok.
-""".strip()
-
-
-def _build_optional_jobs_from_base_rows(jobs: list, base_rows: list) -> list:
-    optional_jobs = []
-
-    for job in jobs or []:
-        first_index = int(job["first_index"])
-        last_index = int(job["last_index"])
-
-        base_anchor_rows = _compact_base_rows_for_optional_anchor(
-            base_rows=base_rows,
-            first_index=first_index,
-            last_index=last_index,
-        )
-
-        optional_prompt = _append_base_anchor_to_existing_prompt(
-            existing_prompt=job["prompt"],
-            base_anchor_rows=base_anchor_rows,
-        )
-
-        optional_jobs.append({
-            **job,
-            "prompt": optional_prompt,
-        })
-
-    return optional_jobs
 
 
 def _merge_optional_header_into_base_header(base_header_obj: dict, optional_header_obj: dict) -> dict:
@@ -13848,58 +13380,6 @@ def _merge_optional_header_into_base_header(base_header_obj: dict, optional_head
             merged[key] = value
 
     return merged
-
-
-def _merge_optional_rows_into_base_rows(base_rows: list, optional_rows: list) -> list:
-    """
-    Merge PASS 2 ke PASS 1.
-    Hanya field OPTIONAL_DETAIL_FIELDS yang boleh masuk.
-    inv_* dan pl_* dari optional_rows tidak akan pernah overwrite base_rows.
-    """
-    base_by_key = {}
-
-    for row in base_rows or []:
-        if not isinstance(row, dict):
-            continue
-
-        key = _optional_row_key(row)
-        if key is not None:
-            base_by_key[key] = row
-
-    merged_count = 0
-
-    for opt in optional_rows or []:
-        if not isinstance(opt, dict):
-            continue
-
-        key = _optional_row_key(opt)
-        if key is None:
-            continue
-
-        base = base_by_key.get(key)
-        if not base:
-            continue
-
-        for field in OPTIONAL_DETAIL_FIELDS:
-            if field not in opt:
-                continue
-
-            value = opt.get(field)
-
-            # Jangan timpa value existing dengan null/kosong dari optional pass.
-            if not _is_meaningful_optional_value(value):
-                continue
-
-            base[field] = value
-            merged_count += 1
-
-    print(
-        f"[OPTIONAL_MERGE] "
-        f"optional_rows={len(optional_rows or [])} "
-        f"merged_fields={merged_count}"
-    )
-
-    return base_rows
 
 
 def _run_detail_jobs(
