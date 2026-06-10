@@ -13294,11 +13294,19 @@ def run_ocr(
         # cenderung balikin halusinasi atau array kosong. Mengirim PDF
         # multi-page asli membiarkan Gemini membaca tiap halaman secara
         # alami.
+        #
+        # CATATAN suntour_vietnam: SENGAJA TIDAK di-skip. Invoice Suntour
+        # berformat TABEL bersih per item (bukan blok seperti shimano).
+        # Saat dikirim multi-page asli, model murah (2.5-flash / 3.1-flash-lite)
+        # hanya membaca halaman pertama -> cuma 6 dari 14 line item terbaca.
+        # Dengan one-page merge, semua halaman ditumpuk jadi satu page panjang
+        # sehingga: (1) model melihat seluruh 14 baris sekaligus tanpa berhenti
+        # di halaman 1, dan (2) line item yang terpotong batas halaman menjadi
+        # menyambung. Ini jalur yang sama dengan vendor tabular lain (chengs dkk).
         _skip_onepage_preprocess = normalize_vendor_id(forced_vendor_id) in {
             "shimano_inc",
             "shimano_singapore",
             "karet_deli",
-            "suntour_vietnam",
         }
 
         if _skip_onepage_preprocess:
@@ -13341,9 +13349,11 @@ def run_ocr(
         )
 
         # SUNTOUR VIETNAM: invoice-only PDF untuk index extraction.
-        # file_uri_detail (merged INV+PL multi-page) membuat Gemini hanya baca
-        # halaman pertama invoice → index hanya 6 item dari 14. Dengan mengirim
-        # invoice saja (2-3 halaman), Gemini fokus dan membaca semua halaman.
+        # invoice_onepage_pdf kini sudah hasil one-page merge (semua halaman
+        # invoice ditumpuk jadi SATU page panjang) sehingga model murah membaca
+        # seluruh 14 baris sekaligus. Mengirim invoice-only (tanpa PL) menjaga
+        # index fokus ke baris invoice saja dan menghindari baris PL salah
+        # terbaca sebagai line item.
         file_uri_inv_index = file_uri_detail  # default: semua vendor pakai merged
         if normalize_vendor_id(forced_vendor_id) == "suntour_vietnam":
             inv_index_compressed = _compress_pdf_if_needed(invoice_onepage_pdf)
@@ -13354,7 +13364,7 @@ def run_ocr(
                 run_prefix,
                 name="inv_index"
             )
-            print("[SUNTOUR_INV_INDEX] Menggunakan invoice-only PDF untuk index extraction")
+            print("[SUNTOUR_INV_INDEX] Menggunakan invoice-only one-page PDF untuk index extraction")
 
         file_uri_full = None
         file_uri_container_bl = None
@@ -13535,6 +13545,11 @@ def run_ocr(
         # SUNTOUR VIETNAM: override total_row dengan deterministic count via pymupdf.
         # Gemini sering hanya baca halaman pertama invoice (6 item) dan return 6,
         # padahal invoice bisa memiliki 10+ halaman. PyMuPDF membaca semua halaman.
+        # CATATAN: angka ini hanya dipakai sebagai TARGET yang dikirim ke index
+        # extraction (build_index_prompt) supaya model berusaha menemukan semua
+        # baris. Setelah index selesai, total_row aktual = len(index_items)
+        # (batch detail digerakkan oleh index, bukan oleh angka ini), lihat guard
+        # di bawah.
         if normalize_vendor_id(vendor_id) == "suntour_vietnam":
             invoice_pdf_for_count = normalized_pdf_paths[0]
             deterministic_total_row = _suntour_vietnam_count_line_items_from_invoice_pdf(
@@ -13617,22 +13632,14 @@ def run_ocr(
                     f"dropped={before_ghost - after_ghost}"
                 )
 
-        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual
+        # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual.
+        # Batch detail digerakkan oleh index_items (index_items[first-1:last]), jadi
+        # total_row WAJIB == len(index_items); menahan total_row lebih besar dari index
+        # justru memicu "Index slice mismatch". Berlaku untuk semua vendor termasuk
+        # suntour_vietnam (target deterministic sudah dipakai saat index extraction).
         if len(index_items) != total_row:
-            if (
-                normalize_vendor_id(vendor_id) == "suntour_vietnam"
-                and len(index_items) < total_row
-            ):
-                # total_row dari deterministic PyMuPDF count lebih reliable daripada
-                # index Gemini yang bisa undercount (hanya baca halaman pertama invoice).
-                # Jangan shrink — biarkan detail extraction loop pakai total_row yang benar.
-                print(
-                    f"[WARN][SUNTOUR_INDEX] index_items={len(index_items)} < "
-                    f"total_row={total_row} (deterministic). Keeping deterministic total_row."
-                )
-            else:
-                print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
-                total_row = len(index_items)
+            print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
+            total_row = len(index_items)
 
         _fill_forward(index_items, "inv_customer_po_no")
         _fill_forward(index_items, "pl_customer_po_no")

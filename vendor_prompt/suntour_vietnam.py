@@ -32,6 +32,17 @@ INVOICE (INV)
    - Ekstrak dari kolom "U/P(Trans.C)".
    - Contoh: "13.2000", "17.4000", "20.0000".
 
+8. inv_price_unit & inv_amount_unit:
+   - Kedua field ini adalah mata uang (currency) dan WAJIB diambil dari dokumen,
+     JANGAN diasumsikan/di-hardcode.
+   - Pada invoice vendor ini currency tercetak di area amount (kolom/label mata
+     uang di dekat "U/P(Trans.C)/Amt") dan pada baris "SAY TOTAL : <MATA UANG> ..."
+     di bagian bawah invoice. Baca currency yang benar-benar tertulis di situ.
+   - Gunakan kode ISO 4217 3 huruf, bukan simbol (mis. "US DOLLARS"/"US$" -> USD,
+     "RMB"/"¥" -> CNY, "€" -> EUR).
+   - inv_price_unit dan inv_amount_unit harus currency yang SAMA.
+   - Jika currency benar-benar tidak tertulis pada dokumen, isi null.
+
 PACKING LIST (PL)
 
 1. pl_customer_po_no:
