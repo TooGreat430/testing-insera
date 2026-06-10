@@ -4197,7 +4197,7 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
     # DYNAMIC MODEL ROUTING
     # =====================================================================
     norm_vendor = normalize_vendor_id(vendor_id)
-    if norm_vendor in {"shimano_singapore"}:
+    if norm_vendor in {"shimano_singapore", "suntour_vietnam", "shimano_inc"}:
         model_name = "gemini-2.5-flash"
     else:
         model_name = "gemini-3.1-flash-lite"
