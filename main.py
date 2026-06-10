@@ -330,10 +330,11 @@ if menu == "Upload":
             st.warning("Vendor wajib dipilih sebelum Extract.")
             st.stop()
 
-        if not invoice_files or not packing_files:
-            st.warning("Invoice dan Packing List wajib diupload")
+        if not invoice_files:
+            st.warning("Invoice wajib diupload")
 
         else:
+            has_pl = bool(packing_files)
             has_bl = bool(bl)
             has_coo = bool(coo_files)
             with_total_container = has_bl
@@ -342,8 +343,10 @@ if menu == "Upload":
                 st.error("COO hanya bisa diproses jika Bill of Lading juga diupload.")
                 st.stop()
 
-            if not has_bl and not has_coo:
-                st.info("Hanya Invoice dan Packing List yang diupload. Sistem akan menghasilkan DETAIL saja.")
+            if not has_pl and not has_bl and not has_coo:
+                st.info("Hanya Invoice yang diupload. Sistem akan menghasilkan DETAIL (kolom inv_* dan po_*) saja.")
+            elif has_pl and not has_bl and not has_coo:
+                st.info("Invoice dan Packing List diupload. Sistem akan menghasilkan DETAIL saja.")
             elif has_bl and not has_coo:
                 st.info("Bill of Lading terdeteksi tanpa COO. Sistem akan tetap menghasilkan DETAIL, TOTAL, dan CONTAINER.")
             elif has_bl and has_coo:

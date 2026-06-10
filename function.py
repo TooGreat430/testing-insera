@@ -93,6 +93,28 @@ def _get_detail_csv_field_order(vendor_id: str = "default"):
         if k != "inv_hs_code"
     ]
 
+def _doc_drop_prefixes(
+    has_pl_doc: bool = True,
+    has_bl_doc: bool = True,
+    has_coo_doc: bool = True,
+) -> tuple:
+    """
+    Prefix kolom yang HARUS dibuang dari output CSV detail kalau dokumen
+    sumbernya tidak diupload. Kolom inv_*, po_*, match_*, confidence_label
+    SELALU dipertahankan.
+
+    Catatan prefix: "pl_" dan "po_" adalah prefix 3-karakter yang berbeda,
+    jadi membuang "pl_" tidak akan menyentuh kolom po_*.
+    """
+    prefixes = []
+    if not has_pl_doc:
+        prefixes.append("pl_")
+    if not has_bl_doc:
+        prefixes.append("bl_")
+    if not has_coo_doc:
+        prefixes.append("coo_")
+    return tuple(prefixes)
+
 # Tambahkan vendor lain ke dalam set ini di masa depan jika butuh deduplikasi PL.
 #
 # CATATAN PENTING: dedup PL-numeric ini menol-kan baris yang signature PL-nya
@@ -2729,7 +2751,7 @@ def _extract_invoice_no_for_grouping(local_pdf_path: str, doc_type: str, vendor_
 
     return group_key, raw_invoice_no, header_obj
 
-def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vendor_id: str = "default"):
+def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vendor_id: str = "default", require_packing: bool = True):
     coo_paths = coo_paths or []
     groups = {}
     skipped_packing = []
@@ -2793,7 +2815,10 @@ def _group_docs_by_invoice_no(invoice_paths, packing_paths, coo_paths=None, vend
 
     valid_groups = {}
     for group_key, grp in groups.items():
-        if not grp["packing_paths"]:
+        # PL hanya wajib kalau memang ada PL yang diupload (require_packing).
+        # Mode invoice-only (require_packing=False) tidak boleh membuang group
+        # hanya karena tidak punya packing.
+        if require_packing and not grp["packing_paths"]:
             dropped_invoice_groups.append({"invoice_no": grp["invoice_no"], "invoice_files": [os.path.basename(x) for x in grp["invoice_paths"]]})
             continue
         valid_groups[group_key] = grp
@@ -6868,18 +6893,23 @@ def _enforce_absent_optional_docs_empty(
     header_obj: dict = None,
     total_rows: list = None,
     container_rows: list = None,
+    has_pl_doc: bool = True,
     has_bl_doc: bool = True,
     has_coo_doc: bool = True,
 ):
     """
-    Jika BL / COO tidak diupload, semua kolom terkait wajib kosong/null.
+    Jika PL / BL / COO tidak diupload, semua kolom terkait wajib kosong/null.
 
     Rule:
+    - has_pl_doc=False  -> semua pl_* = 'null'
     - has_bl_doc=False  -> semua bl_* = 'null'
     - has_coo_doc=False -> semua coo_* = 'null'
     - jika BL tidak ada, container_rows juga dikosongkan
     """
     prefixes = []
+
+    if not has_pl_doc:
+        prefixes.append("pl_")
 
     if not has_bl_doc:
         prefixes.append("bl_")
@@ -6902,6 +6932,7 @@ def _enforce_absent_optional_docs_empty(
 
     print(
         f"[OPTIONAL_DOC_GUARD] "
+        f"has_pl_doc={has_pl_doc} "
         f"has_bl_doc={has_bl_doc} "
         f"has_coo_doc={has_coo_doc} "
         f"forced_null_prefixes={prefixes}"
@@ -8556,7 +8587,7 @@ def _rename_final_fields(rows: list):
 # ==============================
 # (NEW) CONVERT TO CSV -> CUSTOM FOLDER/PATH
 # ==============================
-def _convert_to_csv_path(blob_path, rows, field_order=None):
+def _convert_to_csv_path(blob_path, rows, field_order=None, drop_prefixes=None):
     if rows is None:
         raise Exception("Tidak ada data untuk CSV")
 
@@ -8597,6 +8628,13 @@ def _convert_to_csv_path(blob_path, rows, field_order=None):
         front = [k for k in priority if k in union_keys]
         rest = [k for k in union_keys if k not in set(front)]
         keys = front + rest
+
+    # Buang kolom milik dokumen yang tidak diupload (mis. bl_/coo_/pl_).
+    # Diterapkan setelah keys final supaya extra-key dari union_keys juga
+    # ikut ter-drop, bukan cuma yang ada di field_order.
+    if drop_prefixes:
+        dp = tuple(drop_prefixes)
+        keys = [k for k in keys if not str(k).startswith(dp)]
 
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     with open(tmp_file.name, "w", newline="", encoding="utf-8") as f:
@@ -9609,8 +9647,9 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
 
     if not invoice_paths:
         raise Exception("invoice_paths kosong")
-    if not packing_paths:
-        raise Exception("packing_paths kosong")
+
+    # Hanya INVOICE yang wajib. PL opsional (mode invoice-only).
+    has_pl_doc_global = bool(packing_paths)
 
     create_running_markers(invoice_name, with_total_container)
 
@@ -9623,6 +9662,9 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             packing_paths=packing_paths,
             coo_paths=coo_paths,
             vendor_id=forced_vendor_id, # Masukkan vendor target pemetaan di sini
+            # Kalau PL tidak diupload, jangan buang group invoice yang tidak
+            # punya packing.
+            require_packing=has_pl_doc_global,
         )
 
         total_groups = len(groups)
@@ -9646,13 +9688,14 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                 merged_invoice_pdf = _merge_pdfs(grp["invoice_paths"])
                 temp_group_paths.append(merged_invoice_pdf)
 
-                merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
-                temp_group_paths.append(merged_packing_pdf)
+                grouped_pdf_paths = [merged_invoice_pdf]
 
-                grouped_pdf_paths = [
-                    merged_invoice_pdf,
-                    merged_packing_pdf,
-                ]
+                # PL per group (opsional). Urutan input WAJIB: [invoice, packing?, BL?, COO?]
+                grp_has_pl = bool(grp["packing_paths"])
+                if grp_has_pl:
+                    merged_packing_pdf = _merge_pdfs(grp["packing_paths"])
+                    temp_group_paths.append(merged_packing_pdf)
+                    grouped_pdf_paths.append(merged_packing_pdf)
 
                 # BL global (1 file untuk semua OCR)
                 if bl_path:
@@ -9679,6 +9722,7 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
                     persist_output=False,
                     manage_markers=False,
                     forced_vendor_id=forced_vendor_id,
+                    has_pl_doc=grp_has_pl,
                     has_bl_doc=bool(bl_path),
                     has_coo_doc=bool(grp["coo_paths"]),
                 )
@@ -9867,7 +9911,8 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
             # Hitung ulang sum dan berikan error total yang benar-benar akurat
             for inv_no, group_rows in rows_by_inv.items():
                 _validate_invoice_rows(group_rows)
-                _validate_packing_rows(group_rows, vendor_id=forced_vendor_id)
+                if has_pl_doc_global:
+                    _validate_packing_rows(group_rows, vendor_id=forced_vendor_id)
             
             # Pastikan status final (TRUE/FALSE) sinkron dengan error terupdate
             _finalize_match_fields(merged_detail_rows)
@@ -9912,7 +9957,14 @@ def run_grouped_ocr(invoice_name, uploaded_docs, with_total_container, forced_ve
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             merged_detail_rows,
-            field_order=_get_detail_csv_field_order(forced_vendor_id)
+            field_order=_get_detail_csv_field_order(forced_vendor_id),
+            # Kolom menyesuaikan dokumen yang diupload di level run:
+            # pl_* hanya kalau ada PL, bl_* kalau ada BL, coo_* kalau ada COO.
+            drop_prefixes=_doc_drop_prefixes(
+                has_pl_doc=has_pl_doc_global,
+                has_bl_doc=bool(bl_path),
+                has_coo_doc=bool(coo_paths),
+            ),
         )
 
         total_csv_uri = None
@@ -13526,16 +13578,23 @@ def run_ocr(
     persist_output=True,
     manage_markers=True,
     forced_vendor_id=None,
+    has_pl_doc=None,
     has_bl_doc=None,
     has_coo_doc=None,
 ):
     uploaded_pdf_paths = uploaded_pdf_paths or []
 
+    explicit_has_pl_doc = has_pl_doc is not None
     explicit_has_bl_doc = has_bl_doc is not None
     explicit_has_coo_doc = has_coo_doc is not None
 
     # Infer default untuk flow lama:
-    # urutan file legacy diasumsikan: invoice, packing, BL, COO
+    # urutan file legacy diasumsikan: invoice, packing, BL, COO.
+    # has_pl_doc default True supaya caller legacy (yang selalu kirim INV+PL)
+    # tidak berubah perilakunya.
+    if has_pl_doc is None:
+        has_pl_doc = len(uploaded_pdf_paths) >= 2
+
     if has_bl_doc is None:
         has_bl_doc = bool(with_total_container and len(uploaded_pdf_paths) >= 3)
 
@@ -13582,9 +13641,38 @@ def run_ocr(
             if os.path.abspath(str(normalized)) != os.path.abspath(str(p)):
                 temp_local_paths.append(normalized)
 
-        # DETAIL: invoice+packing saja (2 file pertama dari UI)
-        if len(normalized_pdf_paths) < 2:
-            raise Exception("Minimal harus ada 2 file: invoice dan packing list.")
+        # Hanya INVOICE yang wajib. PL/BL/COO opsional.
+        if len(normalized_pdf_paths) < 1:
+            raise Exception("Minimal harus ada 1 file: invoice.")
+        if has_pl_doc and len(normalized_pdf_paths) < 2:
+            raise Exception("has_pl_doc=True tapi packing list tidak ada di input.")
+
+        # ==========================================
+        # POSITIONAL SLOT MAP
+        # ==========================================
+        # Urutan input: [invoice, packing?, BL?, COO?] — slot dinamis sesuai
+        # dokumen yang benar-benar diupload. Index dihitung berurutan supaya
+        # mode invoice-only / inv+bl (tanpa PL) tetap menunjuk file yang benar.
+        invoice_idx = 0
+        _next_idx = 1
+        packing_idx = None
+        if has_pl_doc:
+            packing_idx = _next_idx
+            _next_idx += 1
+        bl_idx = None
+        if has_bl_doc and len(normalized_pdf_paths) > _next_idx:
+            bl_idx = _next_idx
+            _next_idx += 1
+        coo_idx = None
+        if has_coo_doc and len(normalized_pdf_paths) > _next_idx:
+            coo_idx = _next_idx
+            _next_idx += 1
+
+        print(
+            f"[DOC_SLOTS] has_pl_doc={has_pl_doc} has_bl_doc={has_bl_doc} "
+            f"has_coo_doc={has_coo_doc} invoice_idx={invoice_idx} "
+            f"packing_idx={packing_idx} bl_idx={bl_idx} coo_idx={coo_idx}"
+        )
 
         # ==========================================
         # PREPROCESS HANYA INVOICE + PACKING LIST
@@ -13616,30 +13704,34 @@ def run_ocr(
             "karet_deli",
         }
 
+        # packing_onepage_pdf = None kalau PL tidak diupload (mode invoice-only).
+        packing_onepage_pdf = None
         if _skip_onepage_preprocess:
             print(
                 f"[PREPROCESS] vendor_id={forced_vendor_id}: skip one-page "
                 "merge, kirim PDF multi-page asli ke Gemini."
             )
-            invoice_onepage_pdf = normalized_pdf_paths[0]
-            packing_onepage_pdf = normalized_pdf_paths[1]
+            invoice_onepage_pdf = normalized_pdf_paths[invoice_idx]
+            if packing_idx is not None:
+                packing_onepage_pdf = normalized_pdf_paths[packing_idx]
         else:
             invoice_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-                normalized_pdf_paths[0],
+                normalized_pdf_paths[invoice_idx],
                 "invoice"
             )
             temp_local_paths.append(invoice_onepage_pdf)
 
-            packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
-                normalized_pdf_paths[1],
-                "packing"
-            )
-            temp_local_paths.append(packing_onepage_pdf)
+            if packing_idx is not None:
+                packing_onepage_pdf = _preprocess_invoice_or_pl_to_one_page(
+                    normalized_pdf_paths[packing_idx],
+                    "packing"
+                )
+                temp_local_paths.append(packing_onepage_pdf)
 
-        preprocessed_detail_inputs = [
-            invoice_onepage_pdf,
-            packing_onepage_pdf,
-        ]
+        # Detail input = invoice (+ packing kalau ada).
+        preprocessed_detail_inputs = [invoice_onepage_pdf]
+        if packing_onepage_pdf is not None:
+            preprocessed_detail_inputs.append(packing_onepage_pdf)
 
         # DETAIL: invoice + packing yang sudah di-merge jadi 1 page masing-masing
         merged_pdf_detail = _merge_pdfs(preprocessed_detail_inputs)
@@ -13696,18 +13788,15 @@ def run_ocr(
         file_uri_container_bl = None
 
         # FULL:
-        # invoice + packing pakai hasil preprocess
+        # invoice (+ packing) pakai hasil preprocess
         # BL / COO / dokumen lain tetap original
         # Dipakai untuk optional header/detail enrichment.
-        has_extra_docs = (
-            len(normalized_pdf_paths) > 2
-            and (has_bl_doc or has_coo_doc)
-        )
+        extra_doc_indices = [i for i in (bl_idx, coo_idx) if i is not None]
+        has_extra_docs = bool(extra_doc_indices) and (has_bl_doc or has_coo_doc)
         if has_extra_docs:
-            full_input_paths = [
-                invoice_onepage_pdf,
-                packing_onepage_pdf,
-            ] + normalized_pdf_paths[2:]
+            full_input_paths = list(preprocessed_detail_inputs) + [
+                normalized_pdf_paths[i] for i in extra_doc_indices
+            ]
 
             merged_pdf_full = _merge_pdfs(full_input_paths)
             temp_local_paths.append(merged_pdf_full)
@@ -13726,9 +13815,9 @@ def run_ocr(
         file_uri_bl = None
         file_uri_coo = None
 
-        if has_bl_doc and len(normalized_pdf_paths) > 2:
-            bl_only_pdf = _compress_pdf_if_needed(normalized_pdf_paths[2])
-            if bl_only_pdf not in temp_local_paths and bl_only_pdf != normalized_pdf_paths[2]:
+        if has_bl_doc and bl_idx is not None:
+            bl_only_pdf = _compress_pdf_if_needed(normalized_pdf_paths[bl_idx])
+            if bl_only_pdf not in temp_local_paths and bl_only_pdf != normalized_pdf_paths[bl_idx]:
                 temp_local_paths.append(bl_only_pdf)
             file_uri_bl = _upload_temp_pdf_to_gcs(
                 bl_only_pdf,
@@ -13736,9 +13825,9 @@ def run_ocr(
                 name="bl_only"
             )
 
-        if has_coo_doc and len(normalized_pdf_paths) > 3:
-            coo_only_pdf = _compress_pdf_if_needed(normalized_pdf_paths[3])
-            if coo_only_pdf not in temp_local_paths and coo_only_pdf != normalized_pdf_paths[3]:
+        if has_coo_doc and coo_idx is not None:
+            coo_only_pdf = _compress_pdf_if_needed(normalized_pdf_paths[coo_idx])
+            if coo_only_pdf not in temp_local_paths and coo_only_pdf != normalized_pdf_paths[coo_idx]:
                 temp_local_paths.append(coo_only_pdf)
             file_uri_coo = _upload_temp_pdf_to_gcs(
                 coo_only_pdf,
@@ -13748,15 +13837,14 @@ def run_ocr(
 
         # CONTAINER:
         # Khusus output container, input Gemini harus hanya dokumen BL.
-        # Urutan input legacy/grouped: [invoice, packing, BL, COO?]
         if with_total_container:
-            if not has_bl_doc or len(normalized_pdf_paths) < 3:
+            if not has_bl_doc or bl_idx is None:
                 raise Exception("Output total/container membutuhkan dokumen Bill of Lading.")
 
-            bl_pdf_for_container = _compress_pdf_if_needed(normalized_pdf_paths[2])
+            bl_pdf_for_container = _compress_pdf_if_needed(normalized_pdf_paths[bl_idx])
             if (
                 bl_pdf_for_container not in temp_local_paths
-                and bl_pdf_for_container != normalized_pdf_paths[2]
+                and bl_pdf_for_container != normalized_pdf_paths[bl_idx]
             ):
                 temp_local_paths.append(bl_pdf_for_container)
 
@@ -13827,6 +13915,7 @@ def run_ocr(
 
         _enforce_absent_optional_docs_empty(
             header_obj=header_obj,
+            has_pl_doc=has_pl_doc,
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
@@ -14290,6 +14379,7 @@ def run_ocr(
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
             header_obj=header_obj,
+            has_pl_doc=has_pl_doc,
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
@@ -14413,6 +14503,7 @@ def run_ocr(
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
             header_obj=header_obj,
+            has_pl_doc=has_pl_doc,
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
@@ -14420,11 +14511,15 @@ def run_ocr(
         # Vendor merged-cell (mis. joy): turunkan inv_quantity/inv_amount per-baris
         # dari pl_quantity SEBELUM mapping, supaya total invoice rekonsiliasi dan
         # tiap baris bisa di-map ke PO line-nya masing-masing.
-        all_rows = _derive_inv_qty_from_pl_for_merged_vendors(all_rows, vendor_id=vendor_id)
+        # SKIP kalau tidak ada PL: tanpa pl_quantity, derivasi ini justru bisa
+        # men-nol-kan inv_quantity/inv_amount yang sudah benar dari invoice.
+        if has_pl_doc:
+            all_rows = _derive_inv_qty_from_pl_for_merged_vendors(all_rows, vendor_id=vendor_id)
 
         all_rows = _map_po_to_details(po_lines, all_rows, vendor_id=vendor_id)
 
-        all_rows = _deduplicate_pl_numeric_fields_for_vendors(all_rows, vendor_id=vendor_id)
+        if has_pl_doc:
+            all_rows = _deduplicate_pl_numeric_fields_for_vendors(all_rows, vendor_id=vendor_id)
 
         all_rows = _generate_inv_amount_before_validation(all_rows)
 
@@ -14454,6 +14549,7 @@ def run_ocr(
         _enforce_absent_optional_docs_empty(
             rows=all_rows,
             header_obj=header_obj,
+            has_pl_doc=has_pl_doc,
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
@@ -14507,7 +14603,11 @@ def run_ocr(
             columns=["inv_total_quantity", "pl_total_package"],
         )
  
-        if _is_coo_aggregate_top_row_vendor(vendor_id):
+        if not has_pl_doc:
+            # COO numeric diturunkan dari PL; tanpa PL, skip supaya coo_* tidak
+            # malah ke-nol-kan. (coo_* tetap dijaga guard absent-doc di bawah.)
+            print("[COO_NUMERIC_FROM_PL] skipped: no packing list")
+        elif _is_coo_aggregate_top_row_vendor(vendor_id):
             # COO ter-agregat (mis. joy): tampilkan nilai agregat per produk di
             # SATU baris (baris pertama group) + 0 di baris lain, sesuai dokumen
             # COO. Jangan distribusi per-baris mengikuti PL.
@@ -14529,8 +14629,12 @@ def run_ocr(
         _kunshan_landon_realign_descriptions(all_rows, vendor_id)
 
         _validate_invoice_rows(all_rows)
-        _validate_packing_rows(all_rows, vendor_id=vendor_id)
-        _validate_invoice_vs_packing_extra(all_rows, vendor_id=vendor_id)
+
+        # Validasi PL hanya kalau PL diupload. Tanpa PL, pl_* sengaja null dan
+        # tidak boleh memunculkan flag "missing pl_*" / mismatch.
+        if has_pl_doc:
+            _validate_packing_rows(all_rows, vendor_id=vendor_id)
+            _validate_invoice_vs_packing_extra(all_rows, vendor_id=vendor_id)
 
         if has_bl_doc:
             _validate_bl_rows(all_rows)
@@ -14585,6 +14689,7 @@ def run_ocr(
             header_obj=header_obj,
             total_rows=total_data,
             container_rows=container_data,
+            has_pl_doc=has_pl_doc,
             has_bl_doc=has_bl_doc,
             has_coo_doc=has_coo_doc,
         )
@@ -14660,7 +14765,12 @@ def run_ocr(
         detail_csv_uri = _convert_to_csv_path(
             f"output/detail/{invoice_name}_detail.csv",
             result["detail_rows"],
-            field_order=_get_detail_csv_field_order(vendor_id)
+            field_order=_get_detail_csv_field_order(vendor_id),
+            drop_prefixes=_doc_drop_prefixes(
+                has_pl_doc=has_pl_doc,
+                has_bl_doc=has_bl_doc,
+                has_coo_doc=has_coo_doc,
+            ),
         )
 
         total_csv_uri = None
