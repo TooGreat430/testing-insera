@@ -2277,6 +2277,43 @@ def _split_pdf_by_invoice_no(local_pdf_path: str, doc_type: str, vendor_id: str 
         raise Exception(f"PDF {doc_type} kosong: {os.path.basename(local_pdf_path)}")
 
     norm_vendor = normalize_vendor_id(vendor_id)
+
+    # SUNTOUR VIETNAM: 1 file upload = 1 grup invoice, TANPA split intra-file.
+    # Halaman lanjutan invoice/PL Suntour TIDAK mencetak ulang "Invoice No."
+    # (hanya item + TOTAL), sehingga keying per halaman oleh model murah rawan
+    # salah membaca nomor lain (Ref. No. / PO No.) sebagai invoice key. Begitu
+    # key halaman 2 berbeda dari halaman 1, halaman 2+ terpisah jadi "grup"
+    # lain yang tidak punya pasangan PL lalu DI-DROP — grup asli kehilangan
+    # halaman berisi item lanjutan + baris TOTAL + currency (root cause kasus
+    # "cuma 6 dari 14 line item" yang bertahan walau index/reconcile diperkuat).
+    # Pola upload vendor ini memang 1 invoice per file (INV xxx.pdf / PL xxx.pdf),
+    # jadi intra-file split tidak dibutuhkan. Key grup diambil dari header
+    # dokumen-level yang terbukti stabil di seluruh run produksi.
+    if norm_vendor == "suntour_vietnam":
+        doc_group_key, raw_invoice_no, _ = _extract_invoice_no_for_grouping(
+            local_pdf_path, doc_type, vendor_id=vendor_id
+        )
+        only_key = _normalize_invoice_group_key(raw_invoice_no or doc_group_key)
+        if only_key:
+            print(
+                f"[GROUPING][{doc_type.upper()}] suntour_vietnam: whole-file "
+                f"single group key={only_key} pages=1-{total_pages} "
+                f"(skip intra-file split)"
+            )
+            return [{
+                "group_key": only_key,
+                "invoice_no": raw_invoice_no if raw_invoice_no else only_key,
+                "path": local_pdf_path,
+                "source_file": os.path.basename(local_pdf_path),
+                "page_range": f"1-{total_pages}",
+                "is_temp": False,
+                "doc_type": doc_type,
+            }]
+        print(
+            f"[GROUPING][{doc_type.upper()}] suntour_vietnam: gagal baca invoice "
+            f"key dokumen-level, lanjut flow split normal"
+        )
+
     # Bypass LLM Trace khusus vendor berikut, langsung ke page fallback
     if norm_vendor in {"shimano_singapore", "shimano_inc", "karet_deli"}:
         print(f"[GROUPING][{doc_type.upper()}] Bypass LLM Trace khusus vendor {norm_vendor}, langsung ke page fallback")
@@ -14067,7 +14104,19 @@ def run_ocr(
         if normalize_vendor_id(vendor_id) == "suntour_vietnam":
             # Marker versi untuk verifikasi deploy: kalau log run TIDAK memuat
             # baris ini, berarti run tersebut masih memakai build lama.
-            print("[SUNTOUR_FIX_VERSION] reconcile-v3 aktif (multi-input printed-total + pl_total_quantity fallback)")
+            print("[SUNTOUR_FIX_VERSION] reconcile-v4 aktif (whole-file grouping + multi-input printed-total + pl fallback)")
+
+            # Diagnostik: jumlah halaman dokumen yang BENAR-BENAR masuk ke
+            # extraction. Kalau invoice_pages=1 padahal invoice aslinya
+            # multi-halaman, berarti halaman hilang di tahap grouping/split
+            # (bukan di Gemini extraction).
+            try:
+                print(
+                    f"[SUNTOUR_DIAG] invoice_pages={_count_pdf_pages(normalized_pdf_paths[0])} "
+                    f"pl_pages={_count_pdf_pages(normalized_pdf_paths[1])}"
+                )
+            except Exception as _diag_e:
+                print(f"[SUNTOUR_DIAG] gagal hitung halaman: {_diag_e}")
 
             # Baca TOTAL tercetak: coba invoice MULTI-PAGE asli dulu (panggilan
             # fokus terbukti membaca halaman akhir dengan baik, dan tidak kena
