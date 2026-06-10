@@ -12095,7 +12095,12 @@ def _apply_detail_line_recheck_label_only(rows: list, repaired_rows: list):
 
 # PL numeric yang aman di-backfill dari recheck (additif per baris).
 # pl_volume sengaja TIDAK diikutkan: untuk liow_ko volume memang null.
-_PL_NUMERIC_BACKFILL_FIELDS = ("pl_quantity", "pl_package_count", "pl_nw", "pl_gw")
+# pl_package_count sengaja TIDAK di-backfill: pada liow_ko, baris lanjutan
+# carton group memang punya pl_package_count = 0 (carton di-share, count
+# dicetak hanya di baris pertama group) padahal pl_quantity-nya > 0 — guard
+# is_real_pl_row tidak bisa membedakan kasus ini, sehingga backfill justru
+# meng-overwrite 0 yang benar dengan suggestion recheck yang fill-forward.
+_PL_NUMERIC_BACKFILL_FIELDS = ("pl_quantity", "pl_nw", "pl_gw")
 
 
 def _backfill_zeroed_pl_numeric_from_recheck(rows: list, repaired_rows: list, vendor_id: str = "default"):
@@ -12107,10 +12112,12 @@ def _backfill_zeroed_pl_numeric_from_recheck(rows: list, repaired_rows: list, ve
     Sangat konservatif supaya tidak meng-override merge sub-row yang memang 0:
     - Hanya untuk vendor di PL_NUMERIC_RECHECK_BACKFILL_VENDORS.
     - Lewati row TRUE / CHILD PO dan child-split (_po_split_primary is False).
-    - Hanya isi field PL numeric (pl_quantity, pl_package_count, pl_nw, pl_gw)
+    - Hanya isi field PL numeric (pl_quantity, pl_nw, pl_gw)
       kalau:
         nilai row saat ini 0 / null / missing, DAN
         nilai hasil recheck adalah angka > 0.
+    - pl_package_count TIDAK pernah di-backfill (lihat komentar di
+      _PL_NUMERIC_BACKFILL_FIELDS).
     - pl_nw / pl_gw hanya di-backfill kalau baris itu BUKAN merge sub-row,
       yaitu pl_quantity baris (existing ATAU hasil recheck) > 0. Ini mencegah
       menulis NW/GW ke sub-row yang seharusnya 0.

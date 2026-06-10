@@ -232,6 +232,10 @@ ATURAN IDENTITAS BARIS PL (PURCHASE ORDER NUMBER = ANCHOR UTAMA):
 - JANGAN MENYALIN NW/GW dari baris tetangga. Tiap baris punya angka NW/GW-nya SENDIRI
   di dua posisi paling kanan. Kalau baris di atasnya bernilai 6.00/6.20 lalu baris
   berikut (PO beda) tercetak 0.87/1.07, AMBIL 0.87/1.07 — jangan ikut 6.00/6.20.
+- BACA ANGKA NW/GW PERSIS SEPERTI TERCETAK, digit per digit (umumnya 2 desimal).
+  DILARANG membulatkan atau menebak: kalau tercetak 35.60 tulis 35.60 (bukan 36.0);
+  kalau tercetak 6.00 tulis 6.00 (bukan 8.00). Kalau baris terlihat terpotong/
+  ter-clip secara visual, tetap baca dua angka paling kanan baris itu apa adanya.
 - Carton mark (mis. "LK-1", "LK-29-32") = anchor SEKUNDER saja. Baris lanjutan yang
   BERBAGI carton range dengan baris di atasnya TETAP baris fisik sendiri jika PO beda.
 - KHUSUS HALAMAN TERAKHIR / SETELAH PAGE BREAK: tetap baca PO, NW, dan GW per baris
@@ -344,6 +348,16 @@ KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
      Carton range "LK-82-84" mencakup LK-82, LK-83, LK-84 = 3 karton; angka TOTAL CTN
      yang tercetak di sebelahnya (3) itulah pl_package_count. JANGAN default ke 1
      hanya karena range terlihat seperti satu sel.
+
+   VERIFIKASI MEKANIS WAJIB (lakukan untuk SETIAP baris yang punya carton range):
+     LANGKAH 1: Baca range carton pada baris ini. Contoh: "LK-82-84".
+     LANGKAH 2: Hitung lebar range inklusif: akhir - awal + 1. Contoh: 84 - 82 + 1 = 3.
+     LANGKAH 3: Cocokkan dengan angka kolom TOTAL CTN yang tercetak. Keduanya HARUS sama.
+       Kalau Anda mau menulis pl_package_count = 1 padahal range-nya "LK-82-84",
+       verifikasi GAGAL (1 != 3) — perbaiki ke 3.
+     Contoh lain: "LK-85-88" -> 88 - 85 + 1 = 4 -> pl_package_count = 4.
+                  "LK-43-57" -> 57 - 43 + 1 = 15 -> pl_package_count = 15.
+                  "LK-13" (tanpa range) -> 1 karton -> pl_package_count = 1.
    - Untuk baris yang BERBAGI carton dengan baris di atasnya (carton mark/TOTAL CTN
      kosong karena merge), pl_package_count = 0 (jangan menghitung ganda karton yang
      sama). Contoh: dua baris berbagi "LK-77 1" → top row pl_package_count = 1,
