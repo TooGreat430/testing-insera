@@ -4707,7 +4707,7 @@ OUTPUT SCHEMA:
 
 
 def _suntour_vietnam_extend_index_until_totals_match(
-    file_uri: str,
+    file_uris,
     index_items: list,
     printed_totals: dict,
     vendor_id: str = "default",
@@ -4732,6 +4732,16 @@ def _suntour_vietnam_extend_index_until_totals_match(
     # - ROLLBACK kalau sebuah round membuat sum MELEWATI total tercetak
     #   (indikasi ghost fill / item karangan).
     # - Tanpa total tercetak ({} / null): loop di-skip total, zero blast radius.
+    #
+    # file_uris boleh string tunggal atau list URI. Tiap round mencoba URI
+    # berurutan sampai ada yang menghasilkan item baru — input one-page (item
+    # lintas halaman menyambung) dan multi-page asli (tahan downscale halaman
+    # tinggi) saling menutupi kelemahan masing-masing.
+    if isinstance(file_uris, str):
+        file_uris = [file_uris]
+    file_uris = [u for u in (file_uris or []) if u]
+    if not file_uris:
+        return index_items
     if not isinstance(index_items, list) or not index_items:
         return index_items
     if not isinstance(printed_totals, dict):
@@ -4855,36 +4865,49 @@ HANYA JSON ARRAY (tanpa teks lain). Schema per object:
 - "idx" WAJIB mulai dari {last_idx + 1} dan naik 1 per item.
 """
 
-        try:
-            extra_items = _call_gemini_json_uri(
-                file_uri,
-                continuation_prompt,
-                expect_array=True,
-                retries=2,
-                vendor_id=vendor_id,
-            )
-        except Exception as e:
-            print(f"[SUNTOUR_INDEX_RECONCILE] round={round_no} gagal: {e}")
-            return index_items
-
-        if not isinstance(extra_items, list):
-            extra_items = []
-
+        # Coba tiap input URI berurutan sampai ada yang menghasilkan item baru.
         new_items = []
-        for it in extra_items:
-            if not isinstance(it, dict):
+        for uri_pos, file_uri in enumerate(file_uris, start=1):
+            try:
+                extra_items = _call_gemini_json_uri(
+                    file_uri,
+                    continuation_prompt,
+                    expect_array=True,
+                    retries=2,
+                    vendor_id=vendor_id,
+                )
+            except Exception as e:
+                print(
+                    f"[SUNTOUR_INDEX_RECONCILE] round={round_no} "
+                    f"uri#{uri_pos} gagal: {e}"
+                )
                 continue
-            # item kosong / tanpa identitas tidak diterima
-            item_no = str(it.get("inv_spart_item_no") or "").strip()
-            qty = _to_float(it.get("inv_quantity"))
-            if not item_no or item_no.lower() == "null" or qty is None:
-                continue
-            new_items.append(it)
+
+            if not isinstance(extra_items, list):
+                extra_items = []
+
+            for it in extra_items:
+                if not isinstance(it, dict):
+                    continue
+                # item kosong / tanpa identitas tidak diterima
+                item_no = str(it.get("inv_spart_item_no") or "").strip()
+                qty = _to_float(it.get("inv_quantity"))
+                if not item_no or item_no.lower() == "null" or qty is None:
+                    continue
+                new_items.append(it)
+
+            if new_items:
+                if uri_pos > 1:
+                    print(
+                        f"[SUNTOUR_INDEX_RECONCILE] round={round_no} item baru "
+                        f"ditemukan via input alternatif uri#{uri_pos}"
+                    )
+                break
 
         if not new_items:
             print(
                 f"[SUNTOUR_INDEX_RECONCILE] round={round_no} tidak menemukan "
-                f"item baru, stop (items={len(index_items)})"
+                f"item baru di semua input, stop (items={len(index_items)})"
             )
             return index_items
 
@@ -13639,6 +13662,7 @@ def run_ocr(
         # index fokus ke baris invoice saja dan menghindari baris PL salah
         # terbaca sebagai line item.
         file_uri_inv_index = file_uri_detail  # default: semua vendor pakai merged
+        file_uri_inv_original = None
         if normalize_vendor_id(forced_vendor_id) == "suntour_vietnam":
             inv_index_compressed = _compress_pdf_if_needed(invoice_onepage_pdf)
             if inv_index_compressed not in temp_local_paths and inv_index_compressed != invoice_onepage_pdf:
@@ -13649,6 +13673,24 @@ def run_ocr(
                 name="inv_index"
             )
             print("[SUNTOUR_INV_INDEX] Menggunakan invoice-only one-page PDF untuk index extraction")
+
+            # Invoice MULTI-PAGE asli sebagai input alternatif untuk panggilan
+            # fokus (baca baris TOTAL) dan continuation. Halaman scan yang
+            # ditumpuk jadi 1 page sangat tinggi bisa ter-downscale saat
+            # dirender Gemini sehingga bagian bawah dokumen tidak terbaca;
+            # bentuk multi-page asli tidak punya masalah itu (header pass
+            # terbukti membaca total PL di halaman terakhir secara konsisten).
+            inv_original_compressed = _compress_pdf_if_needed(normalized_pdf_paths[0])
+            if (
+                inv_original_compressed not in temp_local_paths
+                and inv_original_compressed != normalized_pdf_paths[0]
+            ):
+                temp_local_paths.append(inv_original_compressed)
+            file_uri_inv_original = _upload_temp_pdf_to_gcs(
+                inv_original_compressed,
+                run_prefix,
+                name="inv_original"
+            )
 
         file_uri_full = None
         file_uri_container_bl = None
@@ -13934,14 +13976,56 @@ def run_ocr(
         # (append-only, bounded, rollback kalau overshoot).
         suntour_printed_inv_totals = {}
         if normalize_vendor_id(vendor_id) == "suntour_vietnam":
-            suntour_printed_inv_totals = _suntour_vietnam_extract_printed_invoice_totals(
-                file_uri=file_uri_inv_index,
-                vendor_id=vendor_id,
-            )
+            # Marker versi untuk verifikasi deploy: kalau log run TIDAK memuat
+            # baris ini, berarti run tersebut masih memakai build lama.
+            print("[SUNTOUR_FIX_VERSION] reconcile-v3 aktif (multi-input printed-total + pl_total_quantity fallback)")
+
+            # Baca TOTAL tercetak: coba invoice MULTI-PAGE asli dulu (panggilan
+            # fokus terbukti membaca halaman akhir dengan baik, dan tidak kena
+            # risiko downscale halaman one-page yang sangat tinggi), lalu
+            # fallback ke one-page. PROD4 membuktikan satu sumber saja rapuh:
+            # TOTAL gagal terbaca -> reconciliation di-skip -> tetap 6 item.
+            suntour_printed_inv_totals = {}
+            for _pt_uri, _pt_label in [
+                (file_uri_inv_original, "inv_original_multipage"),
+                (file_uri_inv_index, "inv_onepage"),
+            ]:
+                if not _pt_uri:
+                    continue
+                _pt_res = _suntour_vietnam_extract_printed_invoice_totals(
+                    file_uri=_pt_uri,
+                    vendor_id=vendor_id,
+                )
+                if _pt_res.get("total_quantity") or _pt_res.get("total_amount"):
+                    suntour_printed_inv_totals = _pt_res
+                    print(f"[SUNTOUR_PRINTED_TOTAL] sumber terpakai: {_pt_label}")
+                    break
+                if not suntour_printed_inv_totals and _pt_res.get("currency"):
+                    # simpan currency walau qty/amount gagal; jangan break,
+                    # sumber berikutnya mungkin dapat qty/amount lengkap
+                    suntour_printed_inv_totals = _pt_res
+
+            # Target reconciliation TERPISAH dari nilai printed murni:
+            # kalau TOTAL invoice gagal terbaca, fallback ke pl_total_quantity
+            # dari header (terbukti terbaca konsisten di semua run produksi;
+            # untuk vendor ini total qty PL == total qty invoice). Fallback ini
+            # HANYA untuk loop — TIDAK dipakai meng-override header inv_total_*
+            # maupun currency backfill (keduanya tetap wajib dari nilai printed).
+            suntour_reconcile_targets = dict(suntour_printed_inv_totals)
+            if not suntour_reconcile_targets.get("total_quantity"):
+                pl_total_qty_fallback = _to_float(base_header_obj.get("pl_total_quantity"))
+                if pl_total_qty_fallback and pl_total_qty_fallback > 0:
+                    suntour_reconcile_targets["total_quantity"] = pl_total_qty_fallback
+                    print(
+                        f"[SUNTOUR_INDEX_RECONCILE] TOTAL invoice tidak terbaca, "
+                        f"fallback target qty dari header pl_total_quantity="
+                        f"{pl_total_qty_fallback}"
+                    )
+
             index_items = _suntour_vietnam_extend_index_until_totals_match(
-                file_uri=file_uri_inv_index,
+                file_uris=[file_uri_inv_index, file_uri_inv_original],
                 index_items=index_items,
-                printed_totals=suntour_printed_inv_totals,
+                printed_totals=suntour_reconcile_targets,
                 vendor_id=vendor_id,
             )
 
