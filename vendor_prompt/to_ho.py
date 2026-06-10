@@ -24,6 +24,15 @@ Struktur umum invoice TOHO:
      - "P/O No.C25-1619U/45324707" -> inv_customer_po_no = "45324707"
    - Jangan ambil prefix seperti "C25-1544U" atau "C25-1619U" sebagai customer PO number.
    - Jangan ambil invoice number, BL number, atau nomor lain.
+   - PENGECUALIAN P/O KLAIM / TANPA NOMOR:
+     - Kadang group "Customer P/O No." BUKAN nomor PO, melainkan teks referensi klaim/retur,
+       mis. "Customer P/O No.CDC CLAIM RT" (tidak ada angka customer PO setelah slash).
+     - Untuk kasus ini, inv_customer_po_no = teks referensi APA ADANYA, mis. "CDC CLAIM RT".
+       (boleh juga null jika benar-benar tidak ada teks), tetapi JANGAN diisi angka.
+     - DILARANG meminjam angka PO dari group P/O lain (mis. "45319869") untuk item di
+       bawah group klaim ini. Item di group "CDC CLAIM RT" punya customer PO sendiri = "CDC CLAIM RT".
+     - Tujuannya: item klaim ini memang TIDAK punya PO komersial, jadi jangan dipaksa
+       memakai nomor PO milik group lain.
 
 2. inv_seq
    - Gunakan nilai pada kolom "Seq.".
@@ -147,6 +156,10 @@ Struktur umum packing list TOHO:
    - Contoh:
      - "Customer P/O No.C25-1544U/45323564" -> pl_customer_po_no = "45323564"
      - "Customer P/O No.C25-1619U/45324707" -> pl_customer_po_no = "45324707"
+   - PENGECUALIAN P/O KLAIM / TANPA NOMOR:
+     - Jika group "Customer P/O No." BUKAN nomor PO melainkan teks klaim/retur, mis.
+       "Customer P/O No.CDC CLAIM RT", maka pl_customer_po_no = teks APA ADANYA "CDC CLAIM RT"
+       (boleh null), JANGAN diisi angka dan JANGAN meminjam nomor PO dari group lain.
 
 2. pl_item_no
    - Ambil part code / item code line item packing list.
@@ -213,24 +226,32 @@ Struktur umum packing list TOHO:
    - Jangan ambil SET sebagai pl_package_unit.
 
 6. pl_package_count
-   - Hitung jumlah package fisik line item dari Carton No.
-   - Untuk vendor TOHO, Carton No. bisa berupa:
-     - range dengan "~"
-     - single carton no
+   - Hitung jumlah package fisik line item dari kolom Carton No. SAJA.
+   - !!! PALING SERING SALAH: pl_package_count BUKAN pl_quantity (SET). !!!
+     - Banyaknya SET DI DALAM satu carton TIDAK menambah jumlah carton.
+     - Satu Carton No. TUNGGAL = 1 carton, WALAUPUN isinya 5 SET / 6 SET / banyak SET.
+     - DILARANG menyalin nilai pl_quantity (SET) ke pl_package_count.
+   - Untuk vendor TOHO, Carton No. bisa berupa (boleh ada awalan huruf, mis. "A68"):
+     - range dengan "~" -> jumlah carton = angka di dalam kurung "(NN)" jika ada,
+       atau dihitung dari range (mis. "23~32" -> 10 ; "A34~A46" -> 13)
+     - single carton no (mis. "79", "145", "A47", "A68") -> 1 (SELALU 1, apa pun jumlah SET-nya)
    - Aturan:
      - "23~32" -> 10
-     - "33~42" -> 10
-     - "63~78" -> 16
-     - "79" -> 1
-     - "80~91" -> 12
-     - "92" -> 1
+     - "A34~A46" -> 13
+     - "A47" (berisi 1 SET) -> 1
+     - "A68" (berisi 5 SET) -> 1   (BUKAN 5)
+     - "A70" (berisi 5 SET) -> 1   (BUKAN 5)
      - "93~144" -> 52
      - "145" -> 1
-   - Jika satu logical item dipecah ke beberapa carton rows, jumlahkan semua package_count-nya.
+   - Jika satu logical item terdiri dari beberapa sub-row (range + single carton),
+     jumlahkan jumlah CARTON tiap sub-row (BUKAN jumlah SET).
    - Contoh:
      - 63~78 + 79 -> 16 + 1 = 17
-     - 80~91 + 92 -> 12 + 1 = 13
-     - 93~144 + 145 -> 52 + 1 = 53
+     - range "(13)" 26 SET + single carton "A47" 1 SET -> 13 + 1 = 14
+     - single carton "A68" 5 SET + baris LEPAS 1 SET (tanpa Carton No.) -> 1 + 0 = 1
+       (pl_quantity tetap 6, tetapi pl_package_count = 1)
+   - Baris LEPAS tanpa Carton No. (hanya quantity) menyumbang 0 carton.
+   - JANGAN menghitung baris rate "@" sebagai carton.
    - Jangan ambil total dokumen "163CTNS" sebagai package_count item-level.
 
 7. pl_nw
