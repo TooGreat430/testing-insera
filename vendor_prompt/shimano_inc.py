@@ -24,15 +24,27 @@ INVOICE (INV):
    - Contoh B: CTN NO. 14-15 (400 PCS) + CTN NO. 16 (130 PCS) → TOTAL 530 PCS → inv_quantity = 530 (sanity: 400+130=530 ✓).
    - Contoh C: PLT NO. 15-16 (320 SETS) + CTN NO. 17-22 (60 SETS) + CTN NO. 23 (6 SETS) → TOTAL 386 SETS → inv_quantity = 386 (sanity: 320+60+6=386 ✓).
    - Jika sanity check GAGAL, kemungkinan besar Anda mengambil TOTAL dari item LAIN — perbaiki dengan bind ke list carton item ini.
+   - SANITY CHECK TAMBAHAN (anti salah baca digit): inv_quantity x inv_unit_price HARUS = angka amount yang TERCETAK pada baris TOTAL item ini.
+     Jika tidak sama, berarti ada digit quantity yang salah baca (digit pada dokumen ini mudah tertukar, mis. 6↔8, 4↔9, 3↔8) — baca ulang angka quantity pada baris TOTAL; quantity yang benar = amount tercetak / unit price (bila pembagiannya bulat).
+
+   ATURAN PAGE BREAK (ITEM NYAMBUNG ANTAR HALAMAN — WAJIB):
+   - Satu line item bisa TERPOTONG page break: baris carton/pallet (CTN NO. / PLT NO.) LANJUTAN milik item yang sama bisa muncul di BAGIAN ATAS halaman berikutnya, dan baris TOTAL item itu bisa berada di halaman berikutnya juga.
+   - Blok sebuah item berakhir HANYA pada baris TOTAL miliknya — BUKAN pada batas halaman.
+   - Jika di awal halaman ada baris carton/pallet TANPA blok header item baru (tanpa PART# baru dan tanpa blok "P/O No. ..." baru) sebelum baris TOTAL, maka baris itu adalah LANJUTAN item dari halaman sebelumnya dan qty-nya WAJIB ikut dijumlahkan ke inv_quantity item tersebut.
+   - JANGAN menutup item lebih awal hanya karena berganti halaman; telusuri sampai ketemu baris TOTAL item itu, baru ambil inv_quantity dari baris TOTAL tersebut.
 
    DILARANG KERAS:
    - Mengambil nilai dari baris "@..." (per-carton rate) — itu BUKAN TOTAL.
    - Menjumlahkan TOTAL lintas line item (mis. 386 + 42 untuk dua FRONT CHAINWHEEL berbeda).
    - Membiarkan inv_quantity di-set sama dengan po_quantity tanpa verifikasi visual ke dokumen.
+   - Mengambil qty parsial (hanya carton di halaman pertama) untuk item yang terpotong page break.
 6. `inv_quantity_unit`: Ekstrak unit dari kolom "Quantity Unit" (misalnya "PCS").
 7. `inv_unit_price`: Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris bawah yang diawali dengan simbol "@" (misalnya dari "@JPY75", ekstrak 75).
-8. `inv_amount`: 
+8. `inv_amount`:
 - Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris atas yang tidak memiliki simbol "@" (misalnya dari "JPY69,600", ekstrak 69600).
+- inv_amount WAJIB nilai yang TERCETAK pada baris TOTAL milik item ini. DILARANG KERAS menghitung sendiri inv_amount dari inv_quantity x inv_unit_price.
+- Untuk item yang terpotong page break, baris TOTAL (berisi quantity dan amount) bisa berada di halaman SETELAH baris carton pertama item itu — gunakan baris TOTAL tercetak tersebut, jangan menjumlahkan carton sebagian lalu mengalikan unit price.
+- SANITY CHECK: inv_amount harus = inv_quantity x inv_unit_price. Jika tidak konsisten, yang hampir selalu salah adalah bacaan QUANTITY (digit tertukar) — perbaiki inv_quantity dari amount tercetak / unit price, JANGAN mengubah inv_amount mengikuti quantity yang salah.
 
 PACKING LIST (PL):
 1. `pl_customer_po_no`: Ekstrak dari teks "P/O No." yang berada di dalam blok "MARKS NOS".
@@ -42,6 +54,7 @@ PACKING LIST (PL):
 
    ATURAN BINDING KETAT (sama seperti inv_quantity):
    - Setiap line item PL memiliki SATU baris "TOTAL" di bawah daftar carton/pallet item itu, SEBELUM line item berikutnya dimulai.
+   - ATURAN PAGE BREAK berlaku sama seperti inv_quantity: baris carton/pallet lanjutan milik item yang sama bisa berada di bagian atas halaman berikutnya (dan baris TOTAL-nya juga bisa di halaman berikutnya). Blok item berakhir HANYA pada baris TOTAL-nya, bukan pada batas halaman; qty lanjutan WAJIB ikut dijumlahkan.
    - Bind TOTAL ke kode item exact match (PART#/S.PART#) — JANGAN ambil TOTAL milik item lain.
    - DILARANG menyamakan TOTAL antar item dengan kode mirip (mis. KFCR7100CX04 ≠ KFCR8100CX04).
    - SANITY CHECK: pl_quantity HARUS = jumlah qty per carton/pallet pada line item ini.

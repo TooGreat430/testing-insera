@@ -6676,6 +6676,31 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
     # Cek apakah vendor saat ini butuh fallback
     use_po_fallback = _should_use_po_item_fallback(vendor_id)
 
+    # GUARD ANTI-CLOBBER untuk override "PO nyasar akibat fill_forward" di bawah.
+    # PO hasil ekstraksi hanya boleh ditimpa kalau PO itu TER-ANCHOR oleh baris
+    # LAIN pada dokumen ini (ada baris lain yang pasangan (po, article)-nya
+    # terbukti ada di PO master) — itulah ciri PO warisan fill_forward dari
+    # group di atasnya. Kalau PO hasil ekstraksi tidak ter-anchor sama sekali
+    # (mis. PO memang tercetak di invoice tapi tidak ada di PO master), JANGAN
+    # ditimpa: lebih baik baris dibiarkan unmapped (po_* null) daripada
+    # mengarang PO lain yang kebetulan punya article sama (kasus produksi
+    # shimano_inc: group PO terakhir invoice diberi 3 nomor PO yang tidak
+    # pernah tercetak di dokumen).
+    doc_anchored_po_norms = set()
+    for _row in detail_rows or []:
+        if not isinstance(_row, dict):
+            continue
+        _po_norm = _norm_po_number(_row.get("inv_customer_po_no"))
+        if not _po_norm:
+            continue
+        for _art_norm in (
+            _norm_item_compare_key(_row.get("inv_spart_item_no")),
+            _norm_item_compare_key(_row.get("pl_item_no")),
+        ):
+            if _art_norm and (_po_norm, _art_norm) in po_article_index:
+                doc_anchored_po_norms.add(_po_norm)
+                break
+
     # first pass: mapping normal
     per_input_results = []
 
@@ -6718,7 +6743,17 @@ def _map_po_to_details(po_lines, detail_rows, vendor_id="default"): # <-- Jangan
                 exists_in_po = True
                 
             if not exists_in_po:
-                _fallback_po_no_by_item_no(row, po_lines)
+                if inv_po_norm in doc_anchored_po_norms:
+                    # PO ini valid untuk baris lain di dokumen -> kemungkinan
+                    # besar warisan fill_forward yang nyasar ke baris ini.
+                    _fallback_po_no_by_item_no(row, po_lines)
+                else:
+                    print(
+                        f"[PO_FALLBACK_GUARD] keep extracted PO "
+                        f"'{row.get('inv_customer_po_no')}' "
+                        f"(article={row.get('inv_spart_item_no')}): PO tidak "
+                        f"ter-anchor baris lain; tidak ditimpa PO tebakan."
+                    )
 
         mapped_rows, success = _map_single_detail_row_to_po(
             row=row,
@@ -12121,6 +12156,403 @@ def _run_shimano_hs_code_pass(file_uri: str, rows: list, vendor_id: str = "defau
 
     return rows
 
+
+# =========================================================
+# SHIMANO_INC: RECONCILE inv_quantity / inv_amount PER PO GROUP
+# TERHADAP SUBTOTAL "Order Amount" TERCETAK DI HALAMAN REKAP
+# =========================================================
+# Invoice shimano_inc menutup dokumen dengan halaman rekap per order
+# ("Invoice & Packing List By": Customer No / Order No / ... / Order Amount).
+# Subtotal tercetak per PO ini dipakai sebagai anchor deterministik:
+#
+#   1. Group detail rows per PO. Key group MEMPERTAHANKAN suffix huruf
+#      (mis. "...A" adalah baris rekap terpisah dari nomor tanpa suffix),
+#      jadi TIDAK memakai _norm_po_number yang membuang huruf.
+#   2. Kalau sum(inv_amount) suatu group != subtotal tercetak, berarti ada
+#      baris salah baca (mis. item terpotong page break sehingga qty parsial,
+#      atau digit qty misread lalu amount ikut dihitung qty x price).
+#   3. Perbaikan, dengan acceptance check ketat:
+#      a. LOCAL FIX (tanpa Gemini): kalau TEPAT SATU baris pada group yang
+#         bisa menyerap seluruh gap secara aritmetika (amount_baru =
+#         amount - gap, qty_baru = amount_baru / unit_price bulat positif),
+#         apply langsung.
+#      b. GEMINI FIX: selain itu, panggil Gemini fokus per-group untuk membaca
+#         ulang baris TOTAL tercetak tiap item. Hasil HANYA diterima kalau
+#         sum group setelah koreksi == subtotal tercetak; kalau tidak, rollback.
+#   4. Untuk group yang sum-nya sudah terverifikasi == subtotal tercetak,
+#      enforce konsistensi qty: kalau amount habis dibagi unit_price dan
+#      hasil baginya integer != qty, perbaiki qty = amount / unit_price
+#      (amount group sudah terbukti benar oleh subtotal tercetak).
+#
+# Catatan: downstream _generate_inv_amount_before_validation menghitung ulang
+# inv_amount = qty x unit_price, jadi qty WAJIB ikut dikoreksi (bukan hanya
+# amount) supaya koreksi tidak tertimpa balik.
+
+_SHIMANO_PO_KEY_STRIP_RE = re.compile(r"[^A-Z0-9]")
+
+
+def _shimano_po_group_key(value) -> str:
+    """
+    Key PO group khusus reconciliation shimano_inc.
+    BEDA dengan _norm_po_number: suffix huruf DIPERTAHANKAN.
+    """
+    if value is None:
+        return ""
+    s = _SHIMANO_PO_KEY_STRIP_RE.sub("", str(value).upper())
+    return s.lstrip("0")
+
+
+def _shimano_inc_extract_printed_po_subtotals(file_uri: str, vendor_id: str = "default") -> dict:
+    """
+    Baca subtotal "Order Amount" per Order No dari halaman rekap di AKHIR
+    dokumen invoice. Return {po_group_key: float}. {} kalau gagal.
+    """
+    prompt = """
+ROLE:
+Anda membaca halaman REKAP per order pada AKHIR dokumen INVOICE.
+
+KONTEKS:
+Setelah seluruh line item dan baris grand total, invoice ini memiliki halaman
+rekap "Invoice & Packing List By" dengan kolom seperti:
+"Customer No / Order No / Net Weight / Gross Weight / Measure / ... / Order Amount".
+Setiap baris rekap = satu Order No (P/O) beserta subtotal amount-nya.
+Halaman rekap bisa lebih dari satu halaman.
+
+TUGAS:
+Ekstrak SEMUA baris rekap per order dari SEMUA halaman rekap:
+- order_no     : nomor order persis seperti tercetak. PERTAHANKAN suffix huruf
+                 jika ada (jangan dibuang dan jangan digabung dengan order lain).
+- order_amount : angka subtotal "Order Amount" baris itu, angka murni tanpa
+                 pemisah ribuan dan tanpa kode mata uang.
+
+ATURAN:
+- HANYA nilai yang TERCETAK. DILARANG menjumlahkan line item sendiri.
+- JANGAN ikutkan baris "Total" / grand total keseluruhan.
+- Jika pada satu baris rekap tercetak dua kolom amount bernilai sama,
+  ambil salah satu saja.
+- Output HANYA JSON array valid, tanpa teks lain.
+
+OUTPUT SCHEMA:
+[{"order_no": "string", "order_amount": number}]
+""".strip()
+
+    try:
+        items = _call_gemini_json_uri(
+            file_uri,
+            prompt,
+            expect_array=True,
+            retries=2,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[SHIMANO_PO_SUBTOTAL] gagal extract: {e}")
+        return {}
+
+    out = {}
+    ambiguous = set()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        key = _shimano_po_group_key(it.get("order_no"))
+        amt = _to_float(it.get("order_amount"))
+        if not key or amt is None or amt < 0:
+            continue
+        if key in out and abs(out[key] - amt) > 0.005:
+            # Order no sama tapi nilai beda (mis. PO sama muncul di 2 invoice
+            # ter-merge) -> tidak bisa dipakai sebagai anchor, drop.
+            ambiguous.add(key)
+            continue
+        out[key] = amt
+
+    for key in ambiguous:
+        out.pop(key, None)
+    if ambiguous:
+        print(f"[SHIMANO_PO_SUBTOTAL] drop order_no ambigu: {sorted(ambiguous)}")
+
+    print(f"[SHIMANO_PO_SUBTOTAL] terbaca {len(out)} subtotal per PO")
+    return out
+
+
+def _shimano_inc_recheck_po_group_lines(
+    file_uri: str,
+    rows: list,
+    idxs: list,
+    po_key: str,
+    group_sum,
+    printed_subtotal,
+    vendor_id: str = "default",
+):
+    """
+    Recheck fokus SATU group PO: minta Gemini membaca ulang baris TOTAL
+    tercetak (quantity + amount) tiap item pada group tersebut.
+    Return list [{_detail_row_no, inv_quantity, inv_amount}].
+    """
+    payload = []
+    for i in idxs:
+        row = rows[i]
+        if not isinstance(row, dict):
+            continue
+        payload.append({
+            "_detail_row_no": _safe_row_no_int(row),
+            "inv_customer_po_no": row.get("inv_customer_po_no"),
+            "inv_spart_item_no": row.get("inv_spart_item_no"),
+            "inv_description": str(row.get("inv_description") or "")[:120],
+            "inv_quantity": row.get("inv_quantity"),
+            "inv_unit_price": row.get("inv_unit_price"),
+            "inv_amount": row.get("inv_amount"),
+        })
+
+    if not payload:
+        return []
+
+    rows_json = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    prompt = (
+        "ROLE:\n"
+        "Anda adalah verifier angka untuk dokumen INVOICE vendor shimano_inc.\n\n"
+        "KONTEKS:\n"
+        "ROWS di bawah adalah hasil ekstraksi line item untuk SATU group P/O pada invoice.\n"
+        f"Jumlah inv_amount hasil ekstraksi group ini = {group_sum}, sedangkan subtotal\n"
+        f"\"Order Amount\" yang TERCETAK pada halaman rekap akhir invoice untuk order ini = {printed_subtotal}.\n"
+        "Berarti minimal satu baris salah baca quantity/amount.\n\n"
+        "TUGAS:\n"
+        "Untuk SETIAP row, temukan kembali line item-nya pada dokumen invoice\n"
+        "(blok dengan PART# yang sama di bawah marks \"P/O No.\" yang sesuai), lalu baca ulang DARI DOKUMEN:\n"
+        "- inv_quantity : angka quantity pada baris TOTAL milik item itu.\n"
+        "- inv_amount   : angka amount yang TERCETAK pada baris TOTAL milik item itu\n"
+        "                 (baris tanpa \"@\"). DILARANG menghitung qty x harga sendiri.\n\n"
+        "ATURAN PENTING:\n"
+        "- Satu item bisa TERPOTONG page break: baris carton/pallet (CTN NO. / PLT NO.)\n"
+        "  lanjutan milik item yang sama bisa berada di bagian ATAS halaman berikutnya,\n"
+        "  dan baris TOTAL item itu bisa berada di halaman berikutnya. Blok item berakhir\n"
+        "  HANYA di baris TOTAL-nya, bukan di batas halaman.\n"
+        "- inv_quantity harus = jumlah qty semua baris carton/pallet item itu\n"
+        "  (termasuk baris lanjutan setelah page break).\n"
+        "- Sanity: inv_amount = inv_quantity x unit price. Kalau bacaan tidak konsisten,\n"
+        "  baca ulang digit quantity pada baris TOTAL (digit mudah tertukar, mis. 6 vs 8,\n"
+        "  4 vs 9); angka amount tercetak adalah penentu.\n"
+        "- Kembalikan nilai untuk SEMUA row, walaupun tidak berubah.\n"
+        "- WAJIB pertahankan \"_detail_row_no\".\n\n"
+        "OUTPUT (HANYA JSON array valid, jumlah dan urutan sama dengan ROWS):\n"
+        "[{\"_detail_row_no\": number, \"inv_quantity\": number, \"inv_amount\": number}]\n\n"
+        "ROWS:\n"
+        f"{rows_json}"
+    )
+
+    return _call_gemini_json_uri(
+        file_uri,
+        prompt,
+        expect_array=True,
+        retries=2,
+        vendor_id=vendor_id,
+    )
+
+
+def _shimano_inc_reconcile_inv_lines_with_printed_subtotals(
+    file_uri: str,
+    rows: list,
+    vendor_id: str = "default",
+):
+    if not _is_shimano_inc_vendor(vendor_id):
+        return rows
+    if not isinstance(rows, list) or not rows:
+        return rows
+
+    try:
+        subtotals = _shimano_inc_extract_printed_po_subtotals(file_uri, vendor_id=vendor_id)
+    except Exception as e:
+        print(f"[SHIMANO_PO_RECONCILE][WARN] skip (subtotal error): {e}")
+        return rows
+
+    if not subtotals:
+        print("[SHIMANO_PO_RECONCILE] subtotal rekap tidak terbaca, skip")
+        return rows
+
+    eps = Decimal("0.005")
+
+    def _clean_num(dec_value: Decimal):
+        if dec_value == dec_value.to_integral_value():
+            return int(dec_value)
+        return float(dec_value)
+
+    # Group index baris per PO key (pertahankan suffix huruf).
+    groups = {}
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        key = _shimano_po_group_key(row.get("inv_customer_po_no"))
+        if not key:
+            continue
+        groups.setdefault(key, []).append(i)
+
+    local_fixed = 0
+    gemini_fixed = 0
+    verified_keys = set()
+
+    for key, idxs in groups.items():
+        target_f = subtotals.get(key)
+        if target_f is None:
+            continue
+        target = _to_decimal_or_zero(target_f)
+        cur_sum = Decimal("0")
+        for i in idxs:
+            cur_sum += _to_decimal_or_zero(rows[i].get("inv_amount"))
+
+        gap = cur_sum - target
+        if abs(gap) <= eps:
+            verified_keys.add(key)
+            continue
+
+        print(
+            f"[SHIMANO_PO_RECONCILE] PO {key}: sum {cur_sum} != "
+            f"printed {target} (gap {gap})"
+        )
+
+        # --- (a) LOCAL FIX: tepat satu baris yang bisa menyerap gap ---
+        candidates = []
+        for i in idxs:
+            price = _to_decimal_or_zero(rows[i].get("inv_unit_price"))
+            amount = _to_decimal_or_zero(rows[i].get("inv_amount"))
+            if price <= 0:
+                continue
+            new_amount = amount - gap
+            if new_amount <= 0:
+                continue
+            new_qty = new_amount / price
+            if new_qty <= 0 or new_qty != new_qty.to_integral_value():
+                continue
+            candidates.append((i, new_qty, new_amount))
+
+        if len(candidates) == 1:
+            i, new_qty, new_amount = candidates[0]
+            old_qty = rows[i].get("inv_quantity")
+            old_amount = rows[i].get("inv_amount")
+            rows[i]["inv_quantity"] = _clean_num(new_qty)
+            rows[i]["inv_amount"] = _clean_num(new_amount)
+            local_fixed += 1
+            verified_keys.add(key)
+            print(
+                f"[SHIMANO_PO_RECONCILE] PO {key} LOCAL FIX "
+                f"row_no={rows[i].get('_detail_row_no')} "
+                f"qty {old_qty} -> {rows[i]['inv_quantity']}, "
+                f"amount {old_amount} -> {rows[i]['inv_amount']}"
+            )
+            continue
+
+        # --- (b) GEMINI FIX per group, acceptance: sum == printed ---
+        try:
+            repaired = _shimano_inc_recheck_po_group_lines(
+                file_uri=file_uri,
+                rows=rows,
+                idxs=idxs,
+                po_key=key,
+                group_sum=_clean_num(cur_sum),
+                printed_subtotal=_clean_num(target),
+                vendor_id=vendor_id,
+            )
+        except Exception as e:
+            print(f"[SHIMANO_PO_RECONCILE][WARN] PO {key} gemini recheck gagal: {e}")
+            continue
+
+        new_vals = {}
+        for it in repaired or []:
+            if not isinstance(it, dict):
+                continue
+            try:
+                row_no = int(it.get("_detail_row_no"))
+            except Exception:
+                continue
+            qty = _to_float(it.get("inv_quantity"))
+            amt = _to_float(it.get("inv_amount"))
+            if qty is None or amt is None or qty < 0 or amt < 0:
+                continue
+            new_vals[row_no] = (qty, amt)
+
+        if not new_vals:
+            continue
+
+        trial_sum = Decimal("0")
+        for i in idxs:
+            row_no = _safe_row_no_int(rows[i])
+            if row_no in new_vals:
+                trial_sum += _to_decimal_or_zero(new_vals[row_no][1])
+            else:
+                trial_sum += _to_decimal_or_zero(rows[i].get("inv_amount"))
+
+        if abs(trial_sum - target) > eps:
+            print(
+                f"[SHIMANO_PO_RECONCILE] PO {key} ROLLBACK: "
+                f"sum recheck {trial_sum} != printed {target}"
+            )
+            continue
+
+        for i in idxs:
+            row_no = _safe_row_no_int(rows[i])
+            if row_no not in new_vals:
+                continue
+            qty, amt = new_vals[row_no]
+            old_qty = _to_float(rows[i].get("inv_quantity"))
+            old_amt = _to_float(rows[i].get("inv_amount"))
+            if old_qty == qty and old_amt == amt:
+                continue
+            print(
+                f"[SHIMANO_PO_RECONCILE] PO {key} GEMINI FIX row_no={row_no} "
+                f"qty {old_qty} -> {qty}, amount {old_amt} -> {amt}"
+            )
+            rows[i]["inv_quantity"] = _clean_num(_to_decimal_or_zero(qty))
+            rows[i]["inv_amount"] = _clean_num(_to_decimal_or_zero(amt))
+
+        gemini_fixed += 1
+        verified_keys.add(key)
+
+    # --- (c) ENFORCE qty = amount / price utk group terverifikasi subtotal ---
+    qty_fixed = 0
+    for key in verified_keys:
+        for i in groups.get(key, []):
+            price = _to_decimal_or_zero(rows[i].get("inv_unit_price"))
+            amount = _to_decimal_or_zero(rows[i].get("inv_amount"))
+            if price <= 0 or amount <= 0:
+                continue
+            implied = amount / price
+            if implied <= 0 or implied != implied.to_integral_value():
+                continue
+            cur_qty = _to_float(rows[i].get("inv_quantity"))
+            if cur_qty is not None and abs(cur_qty - float(implied)) <= 1e-9:
+                continue
+            print(
+                f"[SHIMANO_PO_RECONCILE] PO {key} QTY FIX "
+                f"row_no={rows[i].get('_detail_row_no')} "
+                f"qty {cur_qty} -> {_clean_num(implied)} "
+                f"(= amount/price, amount terverifikasi subtotal tercetak)"
+            )
+            rows[i]["inv_quantity"] = _clean_num(implied)
+            qty_fixed += 1
+
+    print(
+        f"[SHIMANO_PO_RECONCILE] selesai: local_fix={local_fixed} "
+        f"gemini_fix={gemini_fixed} qty_fix={qty_fixed} "
+        f"verified_groups={len(verified_keys)}/{len(groups)}"
+    )
+    return rows
+
+
+def _run_shimano_po_subtotal_reconcile_pass(file_uri: str, rows: list, vendor_id: str = "default"):
+    if not _is_shimano_inc_vendor(vendor_id):
+        return rows
+
+    try:
+        rows = _shimano_inc_reconcile_inv_lines_with_printed_subtotals(
+            file_uri=file_uri,
+            rows=rows,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        # Jangan gagalkan OCR utama hanya karena pass tambahan gagal.
+        print(f"[SHIMANO_PO_RECONCILE][WARN] skipped: {e}")
+
+    return rows
+
+
 def _run_detail_precheck_pass(rows: list, header_obj: dict, vendor_id: str = "default"):
     _ensure_all_detail_keys(rows)
 
@@ -14369,7 +14801,22 @@ def run_ocr(
                 f"Detail row count changed after recheck. "
                 f"expected={total_row}, actual={len(all_rows)}"
             )
-        
+
+        # =========================================
+        # SHIMANO_INC: RECONCILE qty/amount PER PO GROUP vs SUBTOTAL TERCETAK
+        # Halaman rekap akhir invoice ("Invoice & Packing List By") memuat
+        # subtotal "Order Amount" per PO -> anchor deterministik untuk
+        # menangkap baris yang qty/amount-nya salah baca (item terpotong
+        # page break / digit qty misread). WAJIB sebelum _map_po_to_details
+        # dan _generate_inv_amount_before_validation (yang menghitung ulang
+        # inv_amount dari qty x price).
+        # =========================================
+        all_rows = _run_shimano_po_subtotal_reconcile_pass(
+            base_detail_input_uri,
+            all_rows,
+            vendor_id=vendor_id,
+        )
+
         # =========================================
         # HAOMENG: DROP EMPTY ROWS (HALUSINASI)
         # Harus ditaruh di sini agar lolos pengecekan Exception di atas
