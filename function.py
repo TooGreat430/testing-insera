@@ -4198,9 +4198,9 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
     # =====================================================================
     norm_vendor = normalize_vendor_id(vendor_id)
     if norm_vendor in {"shimano_singapore"}:
-        model_name = "gemini-3.5-flash"
+        model_name = "gemini-2.5-flash"
     else:
-        model_name = "gemini-3.5-flash"
+        model_name = "gemini-3.1-flash-lite"
 
     print(f"[GEMINI_ROUTING] Menggunakan model '{model_name}' untuk vendor '{norm_vendor}'")
 
