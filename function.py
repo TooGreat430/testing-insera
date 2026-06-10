@@ -4608,28 +4608,312 @@ def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
 
 def _suntour_vietnam_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
     # Hitung jumlah line item SUNTOUR VIETNAM secara deterministik via pymupdf.
-    # Invoice Suntour memakai format "N  GSF[A-Z0-9]..." di tiap row item.
-    # Ambil angka urut tertinggi yang muncul berpasangan dengan prefix GSF.
-    # Return 0 kalau gagal (caller fallback ke Gemini total_row).
+    # Dua sinyal independen, ambil MAX:
+    #   1) "N  GSF[A-Z0-9]..." -> nomor urut tertinggi pada row item.
+    #   2) jumlah kemunculan "Version:" -> tiap blok item Suntour punya tepat
+    #      satu baris "Version: VXXXXX".
+    # Return 0 kalau PDF tidak punya text layer / kedua sinyal kosong
+    # (caller fallback ke Gemini total_row).
     try:
         doc = fitz.open(invoice_pdf_path)
         try:
             full_text = "\n".join(page.get_text() for page in doc)
         finally:
             doc.close()
+
+        candidates = []
+
         matches = re.findall(r'\b(\d{1,2})\s+GSF[A-Z0-9]', full_text)
-        if not matches:
+        if matches:
+            row_nums = [int(m) for m in matches]
+            candidates.append(max(row_nums))
+            print(
+                f"[SUNTOUR_PART_COUNT] seq candidate: rows={sorted(set(row_nums))}, "
+                f"max={max(row_nums)}"
+            )
+
+        version_count = len(re.findall(r'Version\s*:', full_text, flags=re.IGNORECASE))
+        if version_count:
+            candidates.append(version_count)
+            print(f"[SUNTOUR_PART_COUNT] version candidate: count={version_count}")
+
+        if not candidates:
             return 0
-        row_nums = [int(m) for m in matches]
-        max_row = max(row_nums)
-        print(
-            f"[SUNTOUR_PART_COUNT] found row numbers: {sorted(set(row_nums))}, "
-            f"max={max_row}"
-        )
-        return max_row
+
+        return max(candidates)
     except Exception as e:
         print(f"[SUNTOUR_PART_COUNT] error: {e}")
         return 0
+
+
+SUNTOUR_INDEX_RECONCILE_MAX_ROUNDS = 5
+
+
+def _suntour_vietnam_extract_printed_invoice_totals(file_uri: str, vendor_id: str = "default") -> dict:
+    # Baca nilai TOTAL yang TERCETAK pada baris TOTAL invoice (anchor
+    # deterministik untuk reconciliation index). Bekerja pada file invoice-only,
+    # tidak tergantung text layer PDF (Gemini membaca visual).
+    # Return {} kalau gagal; caller wajib men-skip reconciliation.
+    prompt = """
+ROLE:
+Anda membaca SATU nilai spesifik dari dokumen INVOICE.
+
+TUGAS:
+Temukan baris TOTAL / grand total pada AKHIR tabel line item invoice
+(baris yang tercetak tepat sebelum kalimat "SAY TOTAL").
+
+Ambil HANYA nilai yang TERCETAK pada dokumen:
+- total_quantity : angka total quantity pada baris TOTAL.
+- total_amount   : angka total amount pada baris TOTAL.
+- currency       : kode mata uang pada baris TOTAL atau dari kalimat
+                   "SAY TOTAL : ..." (konversi ke kode ISO 4217 3 huruf,
+                   contoh "US DOLLARS" -> "USD").
+
+ATURAN:
+- DILARANG menjumlahkan line item sendiri. Nilai HARUS yang tercetak.
+- Output angka murni tanpa pemisah ribuan (contoh: 3982 bukan "3,982.000").
+- Jika suatu nilai tidak tercetak di dokumen, isi null.
+- Output HANYA JSON object valid, tanpa teks lain.
+
+OUTPUT SCHEMA:
+{"total_quantity": number, "total_amount": number, "currency": "string"}
+"""
+    try:
+        obj = _call_gemini_json_uri(
+            file_uri,
+            prompt,
+            expect_array=False,
+            retries=2,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[SUNTOUR_PRINTED_TOTAL] gagal extract: {e}")
+        return {}
+
+    if not isinstance(obj, dict):
+        return {}
+
+    currency = str(obj.get("currency") or "").strip().upper()
+    if currency in ("", "NULL") or len(currency) != 3 or not currency.isalpha():
+        currency = None
+
+    out = {
+        "total_quantity": _to_float(obj.get("total_quantity")),
+        "total_amount": _to_float(obj.get("total_amount")),
+        "currency": currency,
+    }
+    print(f"[SUNTOUR_PRINTED_TOTAL] {out}")
+    return out
+
+
+def _suntour_vietnam_extend_index_until_totals_match(
+    file_uri: str,
+    index_items: list,
+    printed_totals: dict,
+    vendor_id: str = "default",
+    max_rounds: int = SUNTOUR_INDEX_RECONCILE_MAX_ROUNDS,
+) -> list:
+    # RECONCILIATION LOOP untuk index Suntour Vietnam.
+    #
+    # Masalah: total_row (Gemini row count) bisa undercount (mis. hanya membaca
+    # bagian awal dokumen -> 6), dan build_index_prompt menyuruh index berisi
+    # TEPAT {total_row} item -> index berhenti di 6 padahal invoice punya 14.
+    #
+    # Solusi: bandingkan sum(inv_quantity)/sum(inv_amount) milik index dengan
+    # TOTAL yang TERCETAK di invoice. Selama masih kurang, minta Gemini
+    # MELANJUTKAN index dari item setelah idx terakhir. Stop saat sum mencapai
+    # total tercetak, round tidak menghasilkan item baru, atau max_rounds.
+    #
+    # Safety:
+    # - APPEND-ONLY: item yang sudah ada tidak pernah diubah/dibuang.
+    #   Worst case = perilaku lama (undercount tetap, tidak lebih buruk).
+    # - Anchor pakai idx/nomor urut item (kolom NO. invoice), BUKAN content key,
+    #   supaya genuine duplicate (2 item identik dengan NO. beda) tetap aman.
+    # - ROLLBACK kalau sebuah round membuat sum MELEWATI total tercetak
+    #   (indikasi ghost fill / item karangan).
+    # - Tanpa total tercetak ({} / null): loop di-skip total, zero blast radius.
+    if not isinstance(index_items, list) or not index_items:
+        return index_items
+    if not isinstance(printed_totals, dict):
+        return index_items
+
+    target_qty = printed_totals.get("total_quantity")
+    target_amount = printed_totals.get("total_amount")
+
+    if not target_qty and not target_amount:
+        print("[SUNTOUR_INDEX_RECONCILE] total tercetak tidak terbaca, skip loop")
+        return index_items
+
+    qty_tol = 0.5
+    amount_tol = max(1.0, 0.001 * target_amount) if target_amount else None
+
+    def _sum_field(items, key):
+        total = 0.0
+        for it in items:
+            if isinstance(it, dict):
+                v = _to_float(it.get(key))
+                if v is not None:
+                    total += v
+        return total
+
+    def _is_short(items):
+        # True kalau salah satu sum masih di bawah total tercetak.
+        if target_qty and _sum_field(items, "inv_quantity") < target_qty - qty_tol:
+            return True
+        if target_amount and _sum_field(items, "inv_amount") < target_amount - amount_tol:
+            return True
+        return False
+
+    def _is_overshoot(items):
+        if target_qty and _sum_field(items, "inv_quantity") > target_qty + qty_tol:
+            return True
+        if target_amount and _sum_field(items, "inv_amount") > target_amount + amount_tol:
+            return True
+        return False
+
+    for round_no in range(1, max_rounds + 1):
+        if not _is_short(index_items):
+            print(
+                f"[SUNTOUR_INDEX_RECONCILE] sum index sudah cocok dengan total "
+                f"tercetak (items={len(index_items)}), selesai"
+            )
+            return index_items
+
+        last_idx = len(index_items)
+        sum_qty = _sum_field(index_items, "inv_quantity")
+        sum_amount = _sum_field(index_items, "inv_amount")
+
+        print(
+            f"[SUNTOUR_INDEX_RECONCILE] round={round_no} items={last_idx} "
+            f"sum_qty={sum_qty} target_qty={target_qty} "
+            f"sum_amount={sum_amount} target_amount={target_amount}"
+        )
+
+        found_lines = []
+        for i, it in enumerate(index_items, start=1):
+            if not isinstance(it, dict):
+                continue
+            found_lines.append(
+                f"  idx={i} | item_no={it.get('inv_spart_item_no')} | "
+                f"po={it.get('inv_customer_po_no')} | qty={it.get('inv_quantity')} | "
+                f"amount={it.get('inv_amount')}"
+            )
+        found_block = "\n".join(found_lines)
+
+        evidence_lines = []
+        if target_qty:
+            evidence_lines.append(
+                f"- Jumlah quantity item di atas = {sum_qty}, padahal TOTAL "
+                f"quantity tercetak pada invoice = {target_qty}."
+            )
+        if target_amount:
+            evidence_lines.append(
+                f"- Jumlah amount item di atas = {sum_amount}, padahal TOTAL "
+                f"amount tercetak pada invoice = {target_amount}."
+            )
+        evidence_block = "\n".join(evidence_lines)
+
+        continuation_prompt = f"""
+ROLE:
+Anda melanjutkan INDEX line item dari dokumen INVOICE yang BELUM LENGKAP.
+
+ITEM YANG SUDAH DITEMUKAN (JANGAN DIKELUARKAN ULANG):
+{found_block}
+
+BUKTI BELUM LENGKAP:
+{evidence_block}
+
+TUGAS:
+- Telusuri dokumen dan temukan line item invoice SETELAH item terakhir di atas
+  (item dengan nomor urut NO. {last_idx + 1} dan seterusnya), sampai tepat
+  sebelum baris TOTAL.
+- Baris TOTAL / grand total BUKAN line item, jangan diikutkan.
+- Dua item dengan isi identik tapi nomor NO. berbeda adalah DUA item valid.
+- DILARANG mengulang item yang sudah ada di daftar di atas.
+- DILARANG mengarang item yang tidak tercetak di dokumen.
+- Jika benar-benar tidak ada item setelah NO. {last_idx}, return [].
+
+OUTPUT:
+HANYA JSON ARRAY (tanpa teks lain). Schema per object:
+{{
+  "idx": number,
+  "page": number,
+  "page_index": number,
+  "inv_customer_po_no": "string",
+  "inv_spart_item_no": "string",
+  "inv_description": "string",
+  "inv_quantity": number,
+  "inv_quantity_unit": "string",
+  "inv_unit_price": number,
+  "inv_price_unit": "string",
+  "inv_amount": number,
+  "pl_page_no": 0,
+  "pl_customer_po_no": "null",
+  "pl_description": "null",
+  "pl_quantity": 0
+}}
+- "idx" WAJIB mulai dari {last_idx + 1} dan naik 1 per item.
+"""
+
+        try:
+            extra_items = _call_gemini_json_uri(
+                file_uri,
+                continuation_prompt,
+                expect_array=True,
+                retries=2,
+                vendor_id=vendor_id,
+            )
+        except Exception as e:
+            print(f"[SUNTOUR_INDEX_RECONCILE] round={round_no} gagal: {e}")
+            return index_items
+
+        if not isinstance(extra_items, list):
+            extra_items = []
+
+        new_items = []
+        for it in extra_items:
+            if not isinstance(it, dict):
+                continue
+            # item kosong / tanpa identitas tidak diterima
+            item_no = str(it.get("inv_spart_item_no") or "").strip()
+            qty = _to_float(it.get("inv_quantity"))
+            if not item_no or item_no.lower() == "null" or qty is None:
+                continue
+            new_items.append(it)
+
+        if not new_items:
+            print(
+                f"[SUNTOUR_INDEX_RECONCILE] round={round_no} tidak menemukan "
+                f"item baru, stop (items={len(index_items)})"
+            )
+            return index_items
+
+        candidate = index_items + new_items
+
+        if _is_overshoot(candidate):
+            print(
+                f"[SUNTOUR_INDEX_RECONCILE] round={round_no} ROLLBACK: "
+                f"sum melewati total tercetak (kemungkinan ghost fill). "
+                f"Buang {len(new_items)} item round ini."
+            )
+            return index_items
+
+        # normalisasi idx supaya kontigu 1..N (downstream pakai posisi list)
+        for offset, it in enumerate(new_items, start=1):
+            it["idx"] = last_idx + offset
+
+        index_items = candidate
+        print(
+            f"[SUNTOUR_INDEX_RECONCILE] round={round_no} tambah "
+            f"{len(new_items)} item -> total {len(index_items)}"
+        )
+
+    if _is_short(index_items):
+        print(
+            f"[SUNTOUR_INDEX_RECONCILE] max_rounds tercapai, sum masih di bawah "
+            f"total tercetak (items={len(index_items)}). Lanjut dengan hasil terbaik."
+        )
+    return index_items
 
 
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
@@ -13511,8 +13795,18 @@ def run_ocr(
             print("[ROW_COUNT] Menggunakan prompt custom KARET_DELI_ROW_SYSTEM_INSTRUCTION")
         else:
             prompt_to_use = ROW_SYSTEM_INSTRUCTION
-            
-        data_row = _call_gemini_json_uri(file_uri_detail, prompt_to_use, expect_array=False, retries=3, vendor_id=vendor_id)
+
+        # SUNTOUR VIETNAM: hitung total_row dari invoice-only one-page PDF.
+        # Pada merged INV+PL, model murah menghitung campur baris PL / berhenti
+        # di awal dokumen -> undercount (6 dari 14). total_row yang salah lalu
+        # MENULAR ke index extraction karena build_index_prompt menyuruh index
+        # berisi tepat {total_row} item.
+        row_count_uri = file_uri_detail
+        if normalize_vendor_id(vendor_id) == "suntour_vietnam":
+            row_count_uri = file_uri_inv_index
+            print("[ROW_COUNT] suntour_vietnam: hitung total_row dari invoice-only one-page PDF")
+
+        data_row = _call_gemini_json_uri(row_count_uri, prompt_to_use, expect_array=False, retries=3, vendor_id=vendor_id)
 
         if isinstance(data_row, dict) and "total_row" in data_row:
             total_row = int(data_row["total_row"])
@@ -13632,11 +13926,42 @@ def run_ocr(
                     f"dropped={before_ghost - after_ghost}"
                 )
 
+        # SUNTOUR VIETNAM: RECONCILIATION index vs TOTAL TERCETAK.
+        # total_row (row count Gemini) bisa undercount dan index akan patuh
+        # berhenti di angka itu. Anchor yang benar adalah baris TOTAL yang
+        # tercetak pada invoice: kalau sum(qty/amount) index masih di bawah
+        # total tercetak, minta Gemini melanjutkan index dari item terakhir
+        # (append-only, bounded, rollback kalau overshoot).
+        suntour_printed_inv_totals = {}
+        if normalize_vendor_id(vendor_id) == "suntour_vietnam":
+            suntour_printed_inv_totals = _suntour_vietnam_extract_printed_invoice_totals(
+                file_uri=file_uri_inv_index,
+                vendor_id=vendor_id,
+            )
+            index_items = _suntour_vietnam_extend_index_until_totals_match(
+                file_uri=file_uri_inv_index,
+                index_items=index_items,
+                printed_totals=suntour_printed_inv_totals,
+                vendor_id=vendor_id,
+            )
+
+            # Header inv_total_* harus nilai TERCETAK, bukan hasil model
+            # menjumlah item yang kebetulan dia lihat. Override hanya kalau
+            # nilai tercetak berhasil dibaca.
+            printed_qty = suntour_printed_inv_totals.get("total_quantity")
+            printed_amount = suntour_printed_inv_totals.get("total_amount")
+            if printed_qty and printed_qty > 0:
+                base_header_obj["inv_total_quantity"] = printed_qty
+                header_obj["inv_total_quantity"] = printed_qty
+            if printed_amount and printed_amount > 0:
+                base_header_obj["inv_total_amount"] = printed_amount
+                header_obj["inv_total_amount"] = printed_amount
+
         # kalau panjang index beda, lebih aman pakai panjang index sebagai total_row aktual.
         # Batch detail digerakkan oleh index_items (index_items[first-1:last]), jadi
         # total_row WAJIB == len(index_items); menahan total_row lebih besar dari index
         # justru memicu "Index slice mismatch". Berlaku untuk semua vendor termasuk
-        # suntour_vietnam (target deterministic sudah dipakai saat index extraction).
+        # suntour_vietnam (reconciliation di atas sudah memperpanjang index-nya).
         if len(index_items) != total_row:
             print(f"[WARN] total_row={total_row} tapi index_items={len(index_items)}. Pakai len(index_items) sebagai total_row.")
             total_row = len(index_items)
@@ -13914,6 +14239,30 @@ def run_ocr(
         _fill_forward(all_rows, "inv_customer_po_no")
         _postprocess_customer_po_no(all_rows)
         _fill_inv_price_unit_from_amount_unit(all_rows)
+
+        # SUNTOUR VIETNAM: backfill currency dari baris TOTAL yang TERCETAK
+        # di invoice (mis. "TOTAL: 3,982.000 USD ..." / "SAY TOTAL : US DOLLARS").
+        # BUKAN hardcode — nilai berasal dari dokumen run ini sendiri. Hanya
+        # mengisi row yang masih null; row yang sudah terisi tidak disentuh.
+        if (
+            normalize_vendor_id(vendor_id) == "suntour_vietnam"
+            and suntour_printed_inv_totals.get("currency")
+        ):
+            printed_currency = suntour_printed_inv_totals["currency"]
+            backfilled = 0
+            for r in all_rows:
+                if not isinstance(r, dict):
+                    continue
+                if _is_null(r.get("inv_price_unit")):
+                    r["inv_price_unit"] = printed_currency
+                    backfilled += 1
+                if _is_null(r.get("inv_amount_unit")):
+                    r["inv_amount_unit"] = printed_currency
+            if backfilled:
+                print(
+                    f"[SUNTOUR_CURRENCY_BACKFILL] isi currency '{printed_currency}' "
+                    f"dari baris TOTAL invoice ke {backfilled} row yang null"
+                )
 
         po_numbers = {
             str(r.get("inv_customer_po_no")).strip()
