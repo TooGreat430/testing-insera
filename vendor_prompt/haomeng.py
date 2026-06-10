@@ -164,16 +164,41 @@ Struktur umum packing list HAOMENG:
 
 6. pl_package_count
    - Hitung jumlah package fisik line item.
-   - Untuk vendor HAOMENG, sumber utama adalah rentang pada kolom Mark & Nos.
-   - Aturan:
+   - Untuk vendor HAOMENG, SATU-SATUNYA sumber yang valid adalah rentang pada kolom
+     Mark & Nos MILIK BARIS INI (kolom paling kiri pada baris item ini).
+
+   LANGKAH MEKANIS (ikuti persis, jangan ada langkah yang dilewati):
+     LANGKAH 1: Baca rentang Mark & Nos milik baris ini. Contoh: "6-11".
+     LANGKAH 2: Hitung dengan rumus inklusif: akhir - awal + 1. Contoh: 11 - 6 + 1 = 6.
+     LANGKAH 3 (VERIFIKASI WAJIB): Cross-check dengan isi-per-karton (angka setelah "@"):
+       pl_package_count x isi_per_karton harus = pl_quantity (atau sedikit lebih besar,
+       karena karton terakhir boleh tidak penuh).
+       Syarat: (pl_package_count - 1) x isi_per_karton < pl_quantity <= pl_package_count x isi_per_karton.
+     LANGKAH 4: Jika verifikasi GAGAL, ulangi LANGKAH 1 — kemungkinan Anda salah baca
+       rentang baris ini atau tertukar dengan angka "@".
+
+   CONTOH LENGKAP (BENAR):
+     Baris item: Mark & Nos = "6-11", rasio "@10SET", total "60SET"
+     -> LANGKAH 2: 11 - 6 + 1 = 6
+     -> LANGKAH 3: 6 x 10 = 60 = pl_quantity (60) -> LULUS
+     -> pl_package_count = 6
+
+   CONTOH KESALAHAN YANG WAJIB DIHINDARI (kasus nyata):
+     Baris item: Mark & Nos = "6-11", rasio "@10SET", total "60SET"
+     -> SALAH: pl_package_count = 10 (mengambil angka dari "@10SET")
+     -> Verifikasi membongkar kesalahan ini: 10 x 10 = 100 != 60 -> GAGAL
+     -> Yang benar tetap 6 (dari rentang 6-11).
+
+   - Aturan rentang lain:
      - "1-3" -> 3
      - "31-54" -> 24
      - "147-396" -> 250
      - "149-149" -> 1
-   - Rumus rentang inklusif:
-     akhir - awal + 1
+   - DILARANG KERAS mengambil angka setelah "@" ("@10SET", "@40PCS", "@20SET") sebagai
+     pl_package_count — angka itu adalah ISI PER KARTON, bukan jumlah karton.
+   - DILARANG mengambil rentang Mark & Nos milik baris tetangga (di atas/bawah baris ini).
    - Jika ada lebih dari satu range untuk satu item yang sama, jumlahkan semuanya.
-   - Jangan ambil dari total summary seluruh dokumen.
+   - Jangan ambil dari total summary seluruh dokumen (mis. "TOTAL= 1,381.00 cartons").
 
 7. pl_nw
    - Ambil dari kolom N.W (KGS) line item.
