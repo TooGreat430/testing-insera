@@ -12279,120 +12279,6 @@ def _run_shimano_po_subtotal_reconcile_pass(file_uri: str, rows: list, vendor_id
     return rows
 
 
-# Model & DPI khusus re-read printed-total. SENGAJA lebih kuat + resolusi tinggi
-# dari ekstraksi normal: penyebab rollback adalah halaman scan kualitas rendah
-# yang dibaca model lite + render DPI rendah, sehingga digit kecil (NW/GW + sel
-# TOTAL) tidak presisi. Konstanta ini HANYA dipakai oleh reconcile (gated
-# PRINTED_TOTAL_RECONCILE_VENDORS), jadi TIDAK mengubah routing vendor lain.
-_PRINTED_TOTAL_RECONCILE_MODEL = "gemini-2.5-flash"
-_PRINTED_TOTAL_RECONCILE_DPI = 200
-_PRINTED_TOTAL_RECONCILE_MAX_PAGES = 15
-
-
-def _call_gemini_json_highres_local_pdf(
-    local_pdf_path: str,
-    prompt: str,
-    model_name: str = _PRINTED_TOTAL_RECONCILE_MODEL,
-    dpi: int = _PRINTED_TOTAL_RECONCILE_DPI,
-    max_pages: int = _PRINTED_TOTAL_RECONCILE_MAX_PAGES,
-    expect_array: bool = False,
-    retries: int = 2,
-):
-    """
-    Panggil Gemini dengan GAMBAR halaman PDF resolusi tinggi (bukan PDF mentah),
-    memakai model_name yang ditentukan.
-
-    SELF-CONTAINED: TIDAK lewat _call_gemini_uri / routing vendor, sehingga jalur
-    model vendor lain TIDAK tersentuh. Hanya dipakai oleh reconcile printed-total
-    (gated PRINTED_TOTAL_RECONCILE_VENDORS).
-
-    Alasan high-DPI: kalau PDF dikirim apa adanya, Gemini me-render internal di DPI
-    rendah -> digit kecil pada scan buram (mis. NW/GW & sel TOTAL halaman terakhir)
-    jadi blur. Render sendiri ke PNG resolusi tinggi mempertahankan detail.
-
-    Return parsed JSON (dict/list) atau None kalau gagal (caller fallback).
-    """
-    if not local_pdf_path:
-        return None
-
-    try:
-        doc = fitz.open(local_pdf_path)
-    except Exception as e:
-        print(f"[PRINTED_TOTAL_RECONCILE] gagal open pdf high-res: {e}")
-        return None
-
-    image_parts = []
-    try:
-        page_count = doc.page_count
-        if page_count == 0 or page_count > max_pages:
-            print(
-                f"[PRINTED_TOTAL_RECONCILE] skip high-res "
-                f"(page_count={page_count}, max={max_pages})"
-            )
-            return None
-        zoom = dpi / 72.0
-        mat = fitz.Matrix(zoom, zoom)
-        for page in doc:
-            pix = page.get_pixmap(matrix=mat)
-            image_parts.append(
-                types.Part.from_bytes(data=pix.tobytes("png"), mime_type="image/png")
-            )
-    except Exception as e:
-        print(f"[PRINTED_TOTAL_RECONCILE] gagal render high-res: {e}")
-        return None
-    finally:
-        try:
-            doc.close()
-        except Exception:
-            pass
-
-    if not image_parts:
-        return None
-
-    config_kwargs = {
-        "temperature": 0,
-        "top_p": 0,
-        "seed": 42,
-        "candidate_count": 1,
-        "max_output_tokens": 65535,
-    }
-
-    print(
-        f"[PRINTED_TOTAL_RECONCILE] high-res re-read: model={model_name} "
-        f"dpi={dpi} pages={len(image_parts)}"
-    )
-
-    for attempt in range(1, retries + 1):
-        try:
-            parts = image_parts + [types.Part.from_text(text=prompt)]
-            response = genai_client.models.generate_content(
-                model=model_name,
-                contents=[types.Content(role="user", parts=parts)],
-                config=types.GenerateContentConfig(**config_kwargs),
-            )
-            if not response:
-                raise Exception("Empty response from Gemini")
-            raw = _extract_text_from_gemini_response(response)
-            if not raw:
-                raise Exception("Gemini response tidak mengandung text")
-            obj = _parse_json_safe(raw)
-            if expect_array and isinstance(obj, dict):
-                obj = [obj]
-            return obj
-        except Exception as e:
-            msg = str(e).lower()
-            if ("429" in msg) or ("resource_exhausted" in msg) or ("rate" in msg) or ("quota" in msg):
-                time.sleep((2 ** attempt) + random.random())
-                continue
-            if attempt < retries:
-                time.sleep(0.5 * attempt)
-                continue
-            print(f"[PRINTED_TOTAL_RECONCILE] high-res call gagal: {e}")
-            return None
-
-    return None
-
-
 # =========================================================================
 # PRINTED-TOTAL RECONCILE (generic, additive)
 #
@@ -12460,7 +12346,6 @@ def _extract_printed_total_reconcile_column(
     spec: dict,
     payload_rows: list,
     vendor_id: str = "default",
-    local_pdf_path: str = None,
 ):
     """
     Baca ULANG SATU kolom (spec["col"]) per baris pada dokumen terkait,
@@ -12505,29 +12390,17 @@ def _extract_printed_total_reconcile_column(
         f"{rows_json}"
     )
 
-    # PRIMARY: gambar high-DPI + model kuat (self-contained, gated liow_ko).
-    obj = None
-    if local_pdf_path:
-        obj = _call_gemini_json_highres_local_pdf(
-            local_pdf_path,
+    try:
+        obj = _call_gemini_json_uri(
+            file_uri,
             prompt,
             expect_array=False,
             retries=2,
+            vendor_id=vendor_id,
         )
-
-    # FALLBACK: PDF URI lewat jalur normal (model vendor) kalau high-res gagal/skip.
-    if obj is None:
-        try:
-            obj = _call_gemini_json_uri(
-                file_uri,
-                prompt,
-                expect_array=False,
-                retries=2,
-                vendor_id=vendor_id,
-            )
-        except Exception as e:
-            print(f"[PRINTED_TOTAL_RECONCILE] gagal extract {spec['row']}: {e}")
-            return {}
+    except Exception as e:
+        print(f"[PRINTED_TOTAL_RECONCILE] gagal extract {spec['row']}: {e}")
+        return {}
 
     if not isinstance(obj, dict):
         return {}
@@ -12540,7 +12413,6 @@ def _reconcile_printed_totals(
     header_obj: dict,
     base_header_obj: dict,
     vendor_id: str = "default",
-    local_pdf_path: str = None,
 ):
     """
     Untuk SETIAP pasangan total<->row (_PRINTED_TOTAL_RECONCILE_SPECS) yang
@@ -12599,7 +12471,7 @@ def _reconcile_printed_totals(
         )
 
         reread = _extract_printed_total_reconcile_column(
-            file_uri, spec, payload, vendor_id=vendor_id, local_pdf_path=local_pdf_path
+            file_uri, spec, payload, vendor_id=vendor_id
         )
         if not isinstance(reread, dict) or not reread:
             continue
@@ -12680,7 +12552,6 @@ def _run_printed_total_reconcile_pass(
     header_obj: dict,
     base_header_obj: dict,
     vendor_id: str = "default",
-    local_pdf_path: str = None,
 ):
     if not _should_reconcile_printed_totals(vendor_id):
         return rows
@@ -12691,7 +12562,6 @@ def _run_printed_total_reconcile_pass(
             header_obj=header_obj,
             base_header_obj=base_header_obj,
             vendor_id=vendor_id,
-            local_pdf_path=local_pdf_path,
         )
     except Exception as e:
         # Jangan gagalkan OCR utama hanya karena pass tambahan gagal.
@@ -14746,7 +14616,6 @@ def run_ocr(
             header_obj=header_obj,
             base_header_obj=base_header_obj,
             vendor_id=vendor_id,
-            local_pdf_path=merged_pdf_detail,
         )
 
         # =========================================
