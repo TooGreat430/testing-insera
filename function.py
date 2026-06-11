@@ -5095,6 +5095,45 @@ def _liow_ko_header_col_centers(pages_words, labels):
     return centers
 
 
+def _liow_ko_merge_numeric_fragments(tokens):
+    """
+    Gabungkan token numerik yang pecah di text layer. Kasus produksi
+    (LK-A20260522001 PL hal-4, baris ter-strikethrough): "0.87" teremisi
+    sebagai dua kata "0" + "87" dengan gap sangat kecil -> dua token nyangkut
+    di kolom yang sama -> band invalid -> seluruh parse gagal gate.
+
+    Aturan merge (konservatif; salah merge tertangkap gate sum==TOTAL):
+    - hanya token bersebelahan horizontal dengan gap < 5pt dan sejajar y,
+      (nilai sel antar kolom asli berjarak puluhan pt);
+    - kiri tanpa "." dan kanan murni 1-2 digit -> join desimal "A.B"
+      (sel uang/berat liow_ko selalu 2 desimal);
+    - selain itu join polos kalau hasilnya masih token numerik valid.
+    """
+    tokens = sorted(tokens, key=lambda w: w["x0"])
+    merged = []
+    for w in tokens:
+        if merged:
+            prev = merged[-1]
+            gap = w["x0"] - prev["x1"]
+            if 0 <= gap < 5.0 and abs(w["yc"] - prev["yc"]) < 3.0:
+                joined = None
+                if "." not in prev["text"] and re.fullmatch(r"\d{1,2}", w["text"]):
+                    joined = prev["text"] + "." + w["text"]
+                elif _LIOW_KO_NUM_TOKEN_RE.match(prev["text"] + w["text"]):
+                    joined = prev["text"] + w["text"]
+                if joined and _LIOW_KO_NUM_TOKEN_RE.match(joined):
+                    merged[-1] = {
+                        "text": joined,
+                        "x0": prev["x0"],
+                        "x1": w["x1"],
+                        "xc": (prev["x0"] + w["x1"]) / 2.0,
+                        "yc": (prev["yc"] + w["yc"]) / 2.0,
+                    }
+                    continue
+        merged.append(dict(w))
+    return merged
+
+
 def _liow_ko_assign_numeric_to_columns(band_words, col_centers, part_band_hi, anchor_yc):
     # Tugaskan token numerik band ke kolom terdekat. >1 token per kolom =
     # band invalid (return None). Dua filter anti angka nyasar dari kalimat
@@ -5103,7 +5142,8 @@ def _liow_ko_assign_numeric_to_columns(band_words, col_centers, part_band_hi, an
     #   2) angka deskripsi menempel kata di kirinya ("ALLOY 6061"); nilai sel
     #      berdiri sendiri dengan gap antar kolom yang lebar
     cols = sorted(col_centers.items(), key=lambda kv: kv[1])
-    assigned = {}
+
+    candidates = []
     for w in band_words:
         if w["xc"] <= part_band_hi:
             continue
@@ -5120,6 +5160,14 @@ def _liow_ko_assign_numeric_to_columns(band_words, col_centers, part_band_hi, an
         )
         if attached_left:
             continue
+        candidates.append(w)
+
+    # Sel desimal yang pecah ("0" + "87") digabung dulu; tanpa ini dua token
+    # jatuh ke kolom yang sama dan band dianggap invalid.
+    candidates = _liow_ko_merge_numeric_fragments(candidates)
+
+    assigned = {}
+    for w in candidates:
         best_name, best_dist = None, None
         for name, cx in cols:
             d = abs(w["xc"] - cx)
@@ -5136,9 +5184,15 @@ def _liow_ko_assign_numeric_to_columns(band_words, col_centers, part_band_hi, an
                 dists.append(cols[i + 1][1] - cx)
             tol = (min(dists) / 2.0 + 8.0) if dists else 60.0
         if best_dist is not None and tol is not None and best_dist <= tol:
+            value = _liow_ko_num(w["text"])
             if best_name in assigned:
+                # Emisi ganda nilai yang sama (artefak strikethrough/overprint)
+                # ditoleransi; nilai BERBEDA di kolom sama tetap invalid.
+                existing = assigned[best_name]
+                if existing is not None and value is not None and abs(existing - value) < 0.005:
+                    continue
                 return None
-            assigned[best_name] = _liow_ko_num(w["text"])
+            assigned[best_name] = value
     return assigned
 
 
@@ -5300,12 +5354,19 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
             for x in _LIOW_KO_SPACED_NUM_RE.finditer(joined)
         ]
         nums = [n for n in nums if n is not None]
-        if len(nums) != 4:
+        # Baris TOTAL PL bisa mencetak 4 angka (qty/ctn/nw/gw) ATAU hanya 3
+        # (qty/nw/gw, sel TOTAL CTN kosong — kasus PL A20260206001). Dengan 3
+        # angka, gate sigma CTN di-skip dan total_package tidak di-override.
+        if len(nums) == 4:
+            total_qty, total_pkg, total_nw, total_gw = nums
+        elif len(nums) == 3:
+            total_qty, total_nw, total_gw = nums
+            total_pkg = None
+        else:
             return {}
-        total_qty, total_pkg, total_nw, total_gw = nums
         if abs(sum(r["qty"] for r in rows) - total_qty) > 0.01:
             return {}
-        if abs(sum(r["count"] for r in rows) - total_pkg) > 0.01:
+        if total_pkg is not None and abs(sum(r["count"] for r in rows) - total_pkg) > 0.01:
             return {}
         if abs(sum(r["nw"] for r in rows) - total_nw) > 0.011:
             return {}
