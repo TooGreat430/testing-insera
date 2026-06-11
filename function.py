@@ -4216,12 +4216,12 @@ def _get_index_chunk_size_for_total_row(total_row: int, vendor_id: str = "defaul
     return 0
 
 
-def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int) -> str:
+def _build_index_chunk_prompt(total_row: int, first_index: int, last_index: int, vendor_id: str = "default") -> str:
     """
     Bungkus build_index_prompt dengan kontrak chunk eksplisit
     supaya Gemini hanya mengembalikan idx {first_index}..{last_index}.
     """
-    base = build_index_prompt(total_row)
+    base = build_index_prompt(total_row, vendor_id=vendor_id)
     expected_count = last_index - first_index + 1
     expected_indices = list(range(first_index, last_index + 1))
 
@@ -4352,10 +4352,11 @@ def _build_index_chunk_retry_prompt(
     first_index: int,
     last_index: int,
     issues: list,
+    vendor_id: str = "default",
 ) -> str:
     # Prompt retry yang feedback issue terdeteksi ke Gemini supaya
     # dia tahu apa yang harus diperbaiki.
-    base = _build_index_chunk_prompt(total_row, first_index, last_index)
+    base = _build_index_chunk_prompt(total_row, first_index, last_index, vendor_id=vendor_id)
     issues_text = "\n".join(f"  - {it}" for it in issues[:20])
     feedback = f"""
 
@@ -4400,6 +4401,7 @@ def _call_gemini_index_chunked(
             total_row=total_row,
             first_index=first_index,
             last_index=last_index,
+            vendor_id=vendor_id,
         )
 
         chunk_items = _call_gemini_json_uri(
@@ -4429,6 +4431,7 @@ def _call_gemini_index_chunked(
                 first_index=first_index,
                 last_index=last_index,
                 issues=issues,
+                vendor_id=vendor_id,
             )
             retry_items = _call_gemini_json_uri(
                 file_uri,
@@ -13965,7 +13968,7 @@ def run_ocr(
         else:
             index_items = _call_gemini_json_uri(
                 file_uri_inv_index,
-                build_index_prompt(total_row),
+                build_index_prompt(total_row, vendor_id=vendor_id),
                 expect_array=True,
                 retries=3,
                 vendor_id=vendor_id

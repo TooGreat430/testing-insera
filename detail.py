@@ -263,7 +263,35 @@ DETAIL_LINE_NUM_FIELDS = {
     "coo_seq","coo_quantity","coo_package_count","coo_gw","coo_amount",
 }
 
-def build_index_prompt(total_row: int) -> str:
+def build_index_prompt(total_row: int, vendor_id: str = "default") -> str:
+    # Aturan index khusus shimano_inc: format BLOK (bukan tabular) sering
+    # membuat model memecah satu blok multi-carton menjadi beberapa object
+    # index (carton sub-row dianggap item). Gated by vendor — vendor lain
+    # mendapat prompt yang sama persis seperti sebelumnya.
+    shimano_index_rule = ""
+    if _is_shimano_inc_vendor_id(vendor_id):
+        shimano_index_rule = """
+
+ATURAN KHUSUS VENDOR shimano_inc — DEFINISI 1 LINE ITEM (KRITIS):
+- 1 line item = 1 BLOK yang ditandai header PART# / PRODUCT CD / S.PART# / SEQ#
+  dan DIAKHIRI baris "TOTAL <qty> <unit>   JPY<amount>   @JPY<unit_price>".
+- Baris "CTN NO. ..." / "PLT NO. ..." adalah RINCIAN KARTON DI DALAM blok — BUKAN item.
+  Satu blok bisa punya BEBERAPA baris carton (contoh: "CTN NO. 6 → 50 PCS" lalu
+  "CTN NO. 7 → 5 PCS" → itu SATU item dengan TOTAL 55 PCS).
+  DILARANG KERAS mengeluarkan baris carton sebagai object index terpisah.
+- inv_quantity = angka pada baris TOTAL blok itu (55), BUKAN qty carton pertama (50).
+- inv_amount = angka "JPY..." pada baris TOTAL blok; inv_unit_price = angka "@JPY...".
+  Setiap blok SELALU mencetak TOTAL + amount + unit price. DILARANG mengisi
+  inv_amount = 0 / inv_unit_price = 0 untuk blok yang quantity-nya terbaca.
+- DILARANG memecah satu blok menjadi 2 object (satu berisi qty saja, satu berisi
+  price saja). qty, unit_price, dan amount WAJIB berada di SATU object yang sama.
+- SELF-CHECK WAJIB per object: inv_quantity x inv_unit_price = inv_amount
+  (contoh: 55 x 1492 = 82060; 400 x 4543 = 1817200). Kalau tidak cocok, Anda salah
+  baca salah satunya — perbaiki dari baris TOTAL blok yang sama.
+- Jumlah object index = jumlah blok PART#/SEQ#. Memecah 1 blok jadi 2 object akan
+  MENGGUSUR item lain keluar dari index (array dibatasi {total_row}) — KESALAHAN FATAL.
+""".replace("{total_row}", str(total_row))
+
     return f"""
 ROLE:
 Anda adalah AI IDP professional yang fokus membuat INDEX line items berbasis DUA SUMBER:
@@ -353,7 +381,7 @@ ANTI-DUPLIKASI & RECALL TAIL ITEM (SANGAT PENTING):
 - Telusuri SEMUA halaman invoice sampai baris TOTAL/grand total. Baris item terakhir
   yang nyata (tepat sebelum TOTAL) WAJIB ikut sebagai object index terakhir.
 - Baris TOTAL/grand total BUKAN line item — jangan diindeks.
-"""
+{shimano_index_rule}"""
 
 def build_header_prompt(vendor_id: str = "default") -> str:
     shimano_header_rule = ""

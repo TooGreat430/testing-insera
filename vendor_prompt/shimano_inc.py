@@ -38,8 +38,28 @@ INVOICE (INV):
    - Menjumlahkan TOTAL lintas line item (mis. 386 + 42 untuk dua FRONT CHAINWHEEL berbeda).
    - Membiarkan inv_quantity di-set sama dengan po_quantity tanpa verifikasi visual ke dokumen.
    - Mengambil qty parsial (hanya carton di halaman pertama) untuk item yang terpotong page break.
+
+   ATURAN ANTI-SPLIT BLOK (KRITIS — KESALAHAN FATAL JIKA DILANGGAR):
+   - 1 blok PART#/SEQ# = TEPAT 1 row output. Baris "CTN NO. ..." / "PLT NO. ..."
+     adalah rincian karton DI DALAM blok, BUKAN item terpisah.
+   - DILARANG memecah satu blok menjadi 2 row (mis. satu row berisi qty carton pertama
+     dengan price 0, lalu satu row lagi berisi sisanya). qty, unit_price, dan amount
+     WAJIB berada di SATU row yang sama.
+   - Contoh KESALAHAN NYATA yang dilarang:
+     * Blok KCSHG50010134 (CTN 6 → 50 PCS, CTN 7 → 5 PCS, TOTAL 55 PCS JPY82,060
+       @JPY1,492) dipecah jadi row qty=50 (price 0, amount 0) + row qty=55.
+       SALAH — output HANYA 1 row: qty=55, unit_price=1492, amount=82060.
+     * Blok KSMBCC16 (CTN 17-21 → 500, CTN 22 → 20, TOTAL 520 PCS JPY147,680)
+       dipecah jadi row qty=500 (price 0) + row qty=20 (amount 5680).
+       SALAH — output HANYA 1 row: qty=520, unit_price=284, amount=147680.
+     * Blok KCSM620012051 (TOTAL 400 PCS JPY1,817,200 @JPY4,543) dipecah jadi
+       row qty=400 (price 0, amount 0) + row qty=0 (price 4543, amount 0).
+       SALAH — output HANYA 1 row: qty=400, unit_price=4543, amount=1817200.
+   - Memecah blok membuat jumlah row MELEBIHI jumlah item asli sehingga item lain
+     ikut TERGUSUR/HILANG dari output. Jumlah row output = jumlah blok PART#/SEQ#.
 6. `inv_quantity_unit`: Ekstrak unit dari kolom "Quantity Unit" (misalnya "PCS").
 7. `inv_unit_price`: Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris bawah yang diawali dengan simbol "@" (misalnya dari "@JPY75", ekstrak 75).
+   - WAJIB terisi (bukan 0) untuk SETIAP row yang inv_quantity-nya terbaca — setiap blok Shimano SELALU mencetak "@JPY..." di baris TOTAL-nya. inv_unit_price = 0 padahal qty > 0 berarti Anda memecah blok / berhenti membaca sebelum baris TOTAL — perbaiki.
 8. `inv_amount`:
 - Ekstrak nilai angka dari kolom "Amount Unit Price" pada baris atas yang tidak memiliki simbol "@" (misalnya dari "JPY69,600", ekstrak 69600).
 - inv_amount WAJIB nilai yang TERCETAK pada baris TOTAL milik item ini. DILARANG KERAS menghitung sendiri inv_amount dari inv_quantity x inv_unit_price.
