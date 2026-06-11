@@ -33,6 +33,26 @@ INVOICE (INV):
    - Jika di awal halaman ada baris carton/pallet TANPA blok header item baru (tanpa PART# baru dan tanpa blok "P/O No. ..." baru) sebelum baris TOTAL, maka baris itu adalah LANJUTAN item dari halaman sebelumnya dan qty-nya WAJIB ikut dijumlahkan ke inv_quantity item tersebut.
    - JANGAN menutup item lebih awal hanya karena berganti halaman; telusuri sampai ketemu baris TOTAL item itu, baru ambil inv_quantity dari baris TOTAL tersebut.
 
+   PAGE BREAK + UNIT PRICE/AMOUNT (KRITIS — SERING SALAH, WAJIB DITURUTI):
+   - Baris TOTAL item (yang berisi "<qty> <unit>  JPY<amount>  @JPY<unit_price>") bisa
+     muncul SENDIRIAN di BAGIAN ATAS halaman berikutnya, terpisah dari baris carton item
+     itu yang berada di BAGIAN BAWAH halaman sebelumnya.
+   - Saat ini terjadi, inv_unit_price dan inv_amount HANYA tercetak di baris TOTAL halaman
+     berikutnya itu — TIDAK ada di baris carton. Anda WAJIB melanjutkan membaca ke baris
+     TOTAL di halaman berikutnya untuk mengambil unit_price (@JPY) dan amount (JPY).
+   - DILARANG KERAS mengisi inv_unit_price = 0 / inv_amount = 0 hanya karena baris carton
+     item itu di akhir halaman dan baris TOTAL-nya belum terlihat di halaman yang sama —
+     baris TOTAL pasti ada di awal halaman berikutnya (sebelum blok PART# item baru).
+   - Contoh KESALAHAN NYATA (qty benar, tapi price/amount salah ke-0):
+     * KEWSD300IL080: CTN 84 (63 PCS) di bawah halaman, baris TOTAL "63 PCS JPY74,529
+       @JPY1,183" di atas halaman berikutnya. BENAR: unit_price=1183, amount=74529. SALAH: 0/0.
+     * KR71202DLF6SX095: carton di bawah halaman, TOTAL "152 PCS JPY1,951,680 @JPY12,840"
+       di halaman berikutnya. BENAR: unit_price=12840, amount=1951680. SALAH: 0/0.
+     * KRX6005DRRDRX170: TOTAL "120 PCS JPY1,504,080 @JPY12,534" di halaman berikutnya.
+       BENAR: unit_price=12534, amount=1504080.
+     * KRX6005DLF6RX100: TOTAL "49 PCS JPY612,010 @JPY12,490" di halaman berikutnya.
+       BENAR: unit_price=12490, amount=612010.
+
    DILARANG KERAS:
    - Mengambil nilai dari baris "@..." (per-carton rate) — itu BUKAN TOTAL.
    - Menjumlahkan TOTAL lintas line item (mis. 386 + 42 untuk dua FRONT CHAINWHEEL berbeda).

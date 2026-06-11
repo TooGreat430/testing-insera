@@ -590,6 +590,147 @@ def _karet_deli_refocus_pl_total_quantity(
     return True
 
 
+def _build_shimano_unit_price_refocus_prompt(targets: list) -> str:
+    """Prompt fokus: baca unit_price (@JPY) + amount (JPY) dari baris TOTAL blok
+    item Shimano tertentu, di-identify lewat PART# + quantity."""
+    lines = []
+    for t in targets:
+        lines.append(
+            f'  - ref={t["ref"]}: PART#="{t["part_no"]}" quantity={t["quantity"]} unit={t.get("unit", "")}'
+        )
+    targets_text = "\n".join(lines)
+    return f"""
+ROLE:
+Anda mengekstrak unit price dan amount untuk BEBERAPA line item spesifik dari Invoice Shimano.
+
+KONTEKS FORMAT SHIMANO:
+- Tiap line item adalah BLOK dengan header PART# / PRODUCT CD / S.PART# / SEQ#.
+- Tiap blok diakhiri baris TOTAL: "<qty> <unit>   JPY<amount>   @JPY<unit_price>".
+- Contoh baris TOTAL: "152 PCS JPY1,951,680 @JPY12,840" -> unit_price=12840, amount=1951680.
+- Baris TOTAL bisa berada di HALAMAN BERIKUTNYA, terpisah dari baris carton (CTN NO.) item itu.
+
+TARGET (cari tiap item lewat PART# + quantity, lalu baca baris TOTAL-nya):
+{targets_text}
+
+ATURAN:
+1. Untuk tiap ref, temukan blok dengan PART# dan quantity yang cocok, ambil dari baris TOTAL:
+   - unit_price: angka setelah "@JPY"
+   - amount: angka setelah "JPY" yang TIDAK punya "@"
+2. amount HARUS = quantity x unit_price (verifikasi sebelum output).
+3. Hanya output ref yang benar-benar ditemukan. Angka murni tanpa "JPY"/koma.
+4. Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown.
+
+OUTPUT SCHEMA:
+[
+  {{ "ref": number, "unit_price": number, "amount": number }}
+]
+""".strip()
+
+
+def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id: str) -> int:
+    """Detect-then-refocus untuk shimano_inc: baris dengan inv_quantity > 0 tapi
+    inv_unit_price / inv_amount = 0.
+
+    Penyebab umum: baris TOTAL item Shimano (yang memuat @JPY unit price + JPY
+    amount) jatuh di HALAMAN BERIKUTNYA setelah page break, terpisah dari baris
+    carton, sehingga qty terbaca benar tapi price/amount ke-skip jadi 0.
+
+    Tindakan: panggil Gemini 1x (batched) untuk membaca unit_price + amount
+    TERCETAK dari baris TOTAL tiap blok, lalu isi. Hanya menerima nilai yang
+    lolos sanity `amount == quantity x unit_price` — jadi membaca nilai ASLI
+    dokumen, BUKAN menyalin po_price (tidak memvalidasi terhadap dirinya sendiri).
+
+    Strict vendor gate: hanya shimano_inc. Return jumlah row yang ter-isi.
+    """
+    if normalize_vendor_id(vendor_id) != "shimano_inc":
+        return 0
+    if not isinstance(all_rows, list) or not all_rows or not file_uri:
+        return 0
+
+    targets = []
+    ref_to_row = {}
+    for r in all_rows:
+        if not isinstance(r, dict):
+            continue
+        qty = _to_float(r.get("inv_quantity")) or 0
+        price = _to_float(r.get("inv_unit_price")) or 0
+        amount = _to_float(r.get("inv_amount")) or 0
+        part_no = str(r.get("inv_spart_item_no") or "").strip()
+        if qty > 0 and (price <= 0 or amount <= 0) and part_no:
+            ref = len(targets) + 1
+            targets.append({
+                "ref": ref,
+                "part_no": part_no,
+                "quantity": qty,
+                "unit": str(r.get("inv_quantity_unit") or "").strip(),
+            })
+            ref_to_row[ref] = r
+
+    if not targets:
+        return 0
+
+    print(f"[SHIMANO_UNIT_PRICE_REFOCUS][TRIGGER] missing_price_rows={len(targets)}")
+
+    try:
+        result = _call_gemini_json_uri(
+            file_uri,
+            _build_shimano_unit_price_refocus_prompt(targets),
+            expect_array=True,
+            retries=2,
+            vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] gemini error: {repr(e)}")
+        return 0
+
+    if not isinstance(result, list):
+        print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] result bukan list: {result}")
+        return 0
+
+    filled = 0
+    for entry in result:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            ref = int(entry.get("ref"))
+        except (TypeError, ValueError):
+            continue
+        row = ref_to_row.get(ref)
+        if row is None:
+            continue
+
+        new_price = _to_float(entry.get("unit_price"))
+        new_amount = _to_float(entry.get("amount"))
+        if not new_price or new_price <= 0 or not new_amount or new_amount <= 0:
+            continue
+
+        qty = _to_float(row.get("inv_quantity")) or 0
+        # Sanity ketat: amount tercetak HARUS = qty x unit_price (toleransi rounding).
+        if qty <= 0 or abs(new_amount - qty * new_price) > 1.0:
+            print(
+                f"[SHIMANO_UNIT_PRICE_REFOCUS][REJECT] ref={ref} "
+                f"qty={qty} price={new_price} amount={new_amount} (sanity gagal)"
+            )
+            continue
+
+        old_price = row.get("inv_unit_price")
+        old_amount = row.get("inv_amount")
+        # Isi hanya kalau masih kosong/0 — jangan override nilai valid yang sudah ada.
+        if (_to_float(old_price) or 0) <= 0:
+            row["inv_unit_price"] = int(new_price) if float(new_price).is_integer() else new_price
+        if (_to_float(old_amount) or 0) <= 0:
+            row["inv_amount"] = int(new_amount) if float(new_amount).is_integer() else new_amount
+        filled += 1
+        print(
+            f"[SHIMANO_UNIT_PRICE_REFOCUS][FILL] ref={ref} part={row.get('inv_spart_item_no')} "
+            f"price {old_price}->{row.get('inv_unit_price')} amount {old_amount}->{row.get('inv_amount')}"
+        )
+
+    if filled:
+        print(f"[SHIMANO_UNIT_PRICE_REFOCUS] total filled={filled}")
+    return filled
+
+
 # Field total yang per-rule HARUS sama untuk semua row dalam 1 invoice_no.
 # Multi-pass extraction (karet_deli multi-section PL, LLM non-determinism)
 # kadang menghasilkan nilai berbeda per baris untuk field-field ini —
@@ -14229,6 +14370,20 @@ def run_ocr(
             # jadi header_obj juga harus disinkronkan manual.
             if base_header_obj.get("pl_total_quantity") != header_obj.get("pl_total_quantity"):
                 header_obj["pl_total_quantity"] = base_header_obj.get("pl_total_quantity")
+
+        # =========================================
+        # SHIMANO INC: DETECT-THEN-REFOCUS untuk inv_unit_price / inv_amount.
+        # Baris TOTAL item Shimano (memuat @JPY unit price + JPY amount) bisa jatuh
+        # di HALAMAN BERIKUTNYA setelah page break, terpisah dari baris carton —
+        # akibatnya qty terbaca benar tapi unit_price/amount = 0. Refocus membaca
+        # nilai TERCETAK (lolos sanity amount == qty x unit_price), bukan po_price.
+        # Strict gate ke shimano_inc; vendor lain tidak ter-sentuh.
+        # =========================================
+        _shimano_refocus_missing_unit_price(
+            file_uri=base_detail_input_uri,
+            all_rows=all_rows,
+            vendor_id=vendor_id,
+        )
 
         # =========================================
         # PRECHECK PYTHON
