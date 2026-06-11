@@ -4228,11 +4228,7 @@ def _call_gemini_uri(file_uri: str, prompt: str, extra_config: dict = None, retu
     # DYNAMIC MODEL ROUTING
     # =====================================================================
     norm_vendor = normalize_vendor_id(vendor_id)
-    # liow_ko: packing list halaman padat (NW/GW + sel TOTAL) sering salah baca
-    # oleh flash-lite (mis. baris ke-copy dari baris tetangga, digit total .24->.21).
-    # Naikkan ke 2.5-flash supaya akurasi baca tabel padat lebih baik dari awal,
-    # bukan ditambal post-hoc. Scoped per-vendor; vendor lain tidak berubah.
-    if norm_vendor in {"shimano_singapore", "suntour_vietnam", "shimano_inc", "liow_ko"}:
+    if norm_vendor in {"shimano_singapore", "suntour_vietnam", "shimano_inc"}:
         model_name = "gemini-2.5-flash"
     else:
         model_name = "gemini-3.1-flash-lite"
