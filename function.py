@@ -590,40 +590,46 @@ def _karet_deli_refocus_pl_total_quantity(
     return True
 
 
-def _build_shimano_unit_price_refocus_prompt(targets: list) -> str:
-    """Prompt fokus: baca unit_price (@JPY) + amount (JPY) dari baris TOTAL blok
-    item Shimano tertentu, di-identify lewat PART# + quantity."""
-    lines = []
-    for t in targets:
-        lines.append(
-            f'  - ref={t["ref"]}: PART#="{t["part_no"]}" quantity={t["quantity"]} unit={t.get("unit", "")}'
-        )
-    targets_text = "\n".join(lines)
+def _build_shimano_unit_price_refocus_prompt(part_no: str, quantity, unit: str, description: str) -> str:
+    """Prompt fokus SATU item: baca unit_price (@JPY) + amount (JPY) dari baris
+    TOTAL blok item Shimano yang dicocokkan lewat PART# + deskripsi + quantity.
+
+    Sengaja SINGLE-ITEM (bukan batched): item Shimano sering near-duplicate (qty
+    sama, part# beda suffix saja, deskripsi mirip). Batched membuat model
+    menukar / menjumlahkan harga antar item. Satu item per call = tidak ada
+    konteks item lain untuk ditukar.
+    """
+    desc = (str(description or "").strip())[:200]
     return f"""
 ROLE:
-Anda mengekstrak unit price dan amount untuk BEBERAPA line item spesifik dari Invoice Shimano.
+Anda mencari SATU line item spesifik di Invoice Shimano dan membaca unit price + amount-nya saja.
+
+ITEM TARGET (cocokkan KETIGANYA: part number, deskripsi, dan quantity):
+- PART# / S.PART#: "{part_no}"
+- DESKRIPSI mengandung: "{desc}"
+- QUANTITY: {quantity} {unit}
 
 KONTEKS FORMAT SHIMANO:
-- Tiap line item adalah BLOK dengan header PART# / PRODUCT CD / S.PART# / SEQ#.
-- Tiap blok diakhiri baris TOTAL: "<qty> <unit>   JPY<amount>   @JPY<unit_price>".
+- Tiap line item = BLOK dengan header PART# / PRODUCT CD / S.PART# / SEQ#, diakhiri baris TOTAL:
+  "<qty> <unit>   JPY<amount>   @JPY<unit_price>".
 - Contoh baris TOTAL: "152 PCS JPY1,951,680 @JPY12,840" -> unit_price=12840, amount=1951680.
 - Baris TOTAL bisa berada di HALAMAN BERIKUTNYA, terpisah dari baris carton (CTN NO.) item itu.
 
-TARGET (cari tiap item lewat PART# + quantity, lalu baca baris TOTAL-nya):
-{targets_text}
-
-ATURAN:
-1. Untuk tiap ref, temukan blok dengan PART# dan quantity yang cocok, ambil dari baris TOTAL:
+ATURAN KETAT:
+1. Cocokkan PART# PERSIS — termasuk digit/suffix di belakang. Item dengan part# yang HANYA
+   beda suffix adalah item BERBEDA (mis. ...IL080 [800MM] BERBEDA dari ...IL140 [1400MM]).
+   Pakai DESKRIPSI (mis. "800MM" vs "1400MM") untuk memastikan Anda di blok yang BENAR.
+2. Dari baris TOTAL blok itu, ambil:
    - unit_price: angka setelah "@JPY"
    - amount: angka setelah "JPY" yang TIDAK punya "@"
-2. amount HARUS = quantity x unit_price (verifikasi sebelum output).
-3. Hanya output ref yang benar-benar ditemukan. Angka murni tanpa "JPY"/koma.
-4. Output HANYA JSON ARRAY, tanpa teks lain, tanpa markdown.
+3. DILARANG KERAS menjumlahkan, merata-rata, menukar, atau mencampur harga dari blok item lain.
+   Kalau ragu / tidak menemukan blok yang BENAR-BENAR cocok, kembalikan unit_price=0 dan
+   amount=0 (lebih baik kosong daripada salah).
+4. amount HARUS = {quantity} x unit_price. Verifikasi sebelum output.
+5. Output HANYA JSON object, tanpa teks lain, tanpa markdown.
 
 OUTPUT SCHEMA:
-[
-  {{ "ref": number, "unit_price": number, "amount": number }}
-]
+{{ "unit_price": number, "amount": number }}
 """.strip()
 
 
@@ -635,10 +641,12 @@ def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id
     amount) jatuh di HALAMAN BERIKUTNYA setelah page break, terpisah dari baris
     carton, sehingga qty terbaca benar tapi price/amount ke-skip jadi 0.
 
-    Tindakan: panggil Gemini 1x (batched) untuk membaca unit_price + amount
-    TERCETAK dari baris TOTAL tiap blok, lalu isi. Hanya menerima nilai yang
-    lolos sanity `amount == quantity x unit_price` — jadi membaca nilai ASLI
-    dokumen, BUKAN menyalin po_price (tidak memvalidasi terhadap dirinya sendiri).
+    Tindakan: untuk TIAP baris yang kurang, panggil Gemini SATU kali (single-item)
+    membaca unit_price + amount TERCETAK dari baris TOTAL blok itu, lalu isi.
+    Single-item dipilih supaya model tidak menukar/menjumlahkan harga antar item
+    near-duplicate (qty sama + part# beda suffix). Hanya menerima nilai yang lolos
+    sanity `amount == quantity x unit_price` — jadi membaca nilai ASLI dokumen,
+    BUKAN menyalin po_price (tidak memvalidasi terhadap dirinya sendiri).
 
     Strict vendor gate: hanya shimano_inc. Return jumlah row yang ter-isi.
     """
@@ -648,7 +656,6 @@ def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id
         return 0
 
     targets = []
-    ref_to_row = {}
     for r in all_rows:
         if not isinstance(r, dict):
             continue
@@ -657,58 +664,50 @@ def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id
         amount = _to_float(r.get("inv_amount")) or 0
         part_no = str(r.get("inv_spart_item_no") or "").strip()
         if qty > 0 and (price <= 0 or amount <= 0) and part_no:
-            ref = len(targets) + 1
-            targets.append({
-                "ref": ref,
-                "part_no": part_no,
-                "quantity": qty,
-                "unit": str(r.get("inv_quantity_unit") or "").strip(),
-            })
-            ref_to_row[ref] = r
+            targets.append(r)
 
     if not targets:
         return 0
 
     print(f"[SHIMANO_UNIT_PRICE_REFOCUS][TRIGGER] missing_price_rows={len(targets)}")
 
-    try:
-        result = _call_gemini_json_uri(
-            file_uri,
-            _build_shimano_unit_price_refocus_prompt(targets),
-            expect_array=True,
-            retries=2,
-            vendor_id=vendor_id,
-        )
-    except Exception as e:
-        print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] gemini error: {repr(e)}")
-        return 0
-
-    if not isinstance(result, list):
-        print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] result bukan list: {result}")
-        return 0
-
     filled = 0
-    for entry in result:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            ref = int(entry.get("ref"))
-        except (TypeError, ValueError):
-            continue
-        row = ref_to_row.get(ref)
-        if row is None:
-            continue
-
-        new_price = _to_float(entry.get("unit_price"))
-        new_amount = _to_float(entry.get("amount"))
-        if not new_price or new_price <= 0 or not new_amount or new_amount <= 0:
-            continue
-
+    for row in targets:
         qty = _to_float(row.get("inv_quantity")) or 0
+        part_no = str(row.get("inv_spart_item_no") or "").strip()
+        prompt = _build_shimano_unit_price_refocus_prompt(
+            part_no=part_no,
+            quantity=qty,
+            unit=str(row.get("inv_quantity_unit") or "").strip(),
+            description=row.get("inv_description"),
+        )
+
+        try:
+            result = _call_gemini_json_uri(
+                file_uri,
+                prompt,
+                expect_array=False,
+                retries=2,
+                vendor_id=vendor_id,
+            )
+        except Exception as e:
+            print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] part={part_no} gemini error: {repr(e)}")
+            continue
+
+        if not isinstance(result, dict):
+            print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] part={part_no} result bukan dict: {result}")
+            continue
+
+        new_price = _to_float(result.get("unit_price"))
+        new_amount = _to_float(result.get("amount"))
+        if not new_price or new_price <= 0 or not new_amount or new_amount <= 0:
+            # Model mengembalikan 0/0 = "tidak yakin". Biarkan kosong (jujur di-flag).
+            continue
+
         # Sanity ketat: amount tercetak HARUS = qty x unit_price (toleransi rounding).
         if qty <= 0 or abs(new_amount - qty * new_price) > 1.0:
             print(
-                f"[SHIMANO_UNIT_PRICE_REFOCUS][REJECT] ref={ref} "
+                f"[SHIMANO_UNIT_PRICE_REFOCUS][REJECT] part={part_no} "
                 f"qty={qty} price={new_price} amount={new_amount} (sanity gagal)"
             )
             continue
@@ -722,7 +721,7 @@ def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id
             row["inv_amount"] = int(new_amount) if float(new_amount).is_integer() else new_amount
         filled += 1
         print(
-            f"[SHIMANO_UNIT_PRICE_REFOCUS][FILL] ref={ref} part={row.get('inv_spart_item_no')} "
+            f"[SHIMANO_UNIT_PRICE_REFOCUS][FILL] part={part_no} "
             f"price {old_price}->{row.get('inv_unit_price')} amount {old_amount}->{row.get('inv_amount')}"
         )
 
