@@ -27,6 +27,8 @@ from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 from config import *
 from container import CONTAINER_SYSTEM_INSTRUCTION
 from detail import (
+    build_bl_item_list_prompt,
+    build_coo_item_list_prompt,
     build_detail_prompt_from_index,
     build_header_prompt,
     build_index_prompt,
@@ -9668,94 +9670,13 @@ COO_ITEM_LIST_COPY_FIELDS = [
 ]
 
 
-def _build_coo_item_list_prompt() -> str:
-    return """
-ROLE:
-Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Certificate of Origin (COO) saja.
-Rule-based, deterministik, anti-halusinasi.
-
-SUMBER:
-- Baca HANYA dokumen Certificate of Origin / COO (format apapun: form RCEP, e-COO elektronik, dsb.).
-- ABAIKAN dokumen Invoice, Packing List, dan Bill of Lading.
-
-TUGAS:
-- Keluarkan SATU objek JSON untuk SETIAP item barang yang tercantum pada COO (sesuai nomor urut item).
-- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
-- Jika ada Continuation Sheet atau multiple pages, baca seluruh halaman.
-
-IDENTIFIKASI FORMAT COO:
-
-Format A — Form RCEP/ASEAN (field berlabel 6, 7, 8, 9, 10, 11, 12):
-  - Nomor item dari field "6. Item number" (1, 2, 3, ...)
-  - Deskripsi dari field "8. Number and kind of packages; and description of goods"
-    → Abaikan frasa awal kemasan seperti "<N> (<N>) CARTON(S) OF", kata generik "BICYCLE PARTS"
-    → Ambil deskripsi barang setelah frasa kemasan; gabungkan wrap/lanjutan antar baris/halaman
-  - HS Code dari field "9. HS Code of the goods"
-  - Origin Criterion dari field "10. Origin Conferring Criterion"
-  - Country dari field "11. RCEP Country of Origin" / negara asal
-  - Quantity + GW dari field "12. Quantity (Gross weight or other measurement)"
-    → Kolom 12 bisa berisi DUA nilai bertumpuk: GW (mis. "255.6KGS G.W.") dan quantity (mis. "1000SETS")
-  - Package count: angka pada frasa kemasan di field 8 (mis. "TWENTY (20) CARTONS OF" → 20)
-  - Package unit: jenis kemasan pada frasa kemasan (mis. "CARTONS"). BUKAN unit barang (SETS/PCS).
-
-Format B — e-COO tabel elektronik (kolom: Item No. | Marks and Numbers | Description | Quantity Code | Quantity | HS Number | Origin Criterion | Gross weight or Other Quantity | FOB):
-  - Nomor item dari kolom "Item No."
-  - Deskripsi dari kolom "Description" (langsung, tanpa frasa kemasan)
-  - HS Code dari kolom "HS Number"
-  - Setiap item memiliki DUA baris di kolom "Quantity Code" dan "Quantity":
-    → Baris 1: unit utama (mis. "SET") dan quantity utama (mis. "500.0000")
-    → Baris 2: unit kemasan (mis. "CT") dan package count (mis. "50")
-  - GW dari kolom "Gross weight or Other Quantity"
-  - Amount (FOB) dari sub-kolom "Value" pada kolom FOB
-  - Origin Criterion dari kolom "Origin Criterion"
-    → Jika berupa "RVC X%" abaikan angka persentase, ambil hanya "RVC"
-
-FIELD PER ITEM (output selalu menggunakan field ini):
-- "coo_seq": nomor item (numeric)
-- "coo_mark_number": marks & numbers; "null" jika generik ("no", "N/M") atau tidak ada
-- "coo_description": deskripsi barang murni tanpa frasa kemasan, HS code, quantity, GW
-- "coo_hs_code": HS code persis seperti tertulis di COO
-- "coo_package_count": jumlah kemasan (numeric)
-- "coo_package_unit": unit kemasan (mis. "CARTONS", "CT"); BUKAN unit barang
-- "coo_quantity": quantity utama barang (numeric)
-- "coo_unit": unit quantity utama (mis. "SETS", "SET", "PCS"); BUKAN KGS
-- "coo_gw": gross weight (numeric)
-- "coo_amount": nilai FOB/amount jika ada eksplisit; "null" jika tidak ada
-- "coo_criteria": origin criterion (mis. "PE", "RVC")
-- "coo_origin_country": negara asal (mis. "CHINA", "VIETNAM")
-
-ATURAN:
-- EKSTRAK HANYA YANG TERTULIS. Jika field tidak ada -> "null" (string) atau 0 (angka numerik).
-- Tidak boleh JSON literal null -> gunakan "null".
-- Tidak boleh markdown/penjelasan.
-
-SCHEMA OUTPUT:
-[
-  {
-    "coo_seq": number,
-    "coo_mark_number": "string",
-    "coo_description": "string",
-    "coo_hs_code": "string",
-    "coo_package_count": number,
-    "coo_package_unit": "string",
-    "coo_quantity": number,
-    "coo_unit": "string",
-    "coo_gw": number,
-    "coo_amount": "string",
-    "coo_criteria": "string",
-    "coo_origin_country": "string"
-  }
-]
-""".strip()
-
-
 def _extract_coo_item_list(file_uri: str, vendor_id: str = "default") -> list:
     if not file_uri:
         return []
 
     items = _call_gemini_json_uri(
         file_uri,
-        _build_coo_item_list_prompt(),
+        build_coo_item_list_prompt(),
         expect_array=True,
         retries=3,
         vendor_id=vendor_id,
@@ -9931,49 +9852,13 @@ def _map_coo_items_to_rows(
     return rows
 
 
-def _build_bl_item_list_prompt() -> str:
-    return """
-ROLE:
-Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Bill of Lading (BL) saja.
-Rule-based, deterministik, anti-halusinasi.
-
-SUMBER:
-- Baca HANYA dokumen Bill of Lading (BL).
-- ABAIKAN dokumen Invoice, Packing List, dan Certificate of Origin.
-
-TUGAS:
-- Keluarkan SATU objek JSON untuk SETIAP entri item/barang yang tercantum di kolom "Description of Goods" pada BL.
-- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
-
-FIELD PER ITEM:
-- "bl_description": deskripsi barang persis seperti tertulis di BL. Jangan tambahkan informasi dari dokumen lain.
-- "bl_hs_code": HS code item tersebut dari kolom HS Code / Harmonized Code. Ambil persis seperti tertulis.
-- "bl_mark_number": marks & numbers / nomor container atau seal jika tercantum pada item ini. Isi "null" jika tidak ada.
-
-ATURAN:
-- EKSTRAK HANYA YANG TERTULIS. Tidak boleh mengarang atau menyimpulkan dari dokumen lain.
-- Jika HS code tidak ada pada item tersebut, isi "null".
-- Tidak boleh JSON literal null -> gunakan "null" (string).
-- Tidak boleh markdown/penjelasan.
-
-SCHEMA OUTPUT:
-[
-  {
-    "bl_description": "string",
-    "bl_hs_code": "string",
-    "bl_mark_number": "string"
-  }
-]
-""".strip()
-
-
 def _extract_bl_item_list(file_uri: str, vendor_id: str = "default") -> list:
     if not file_uri:
         return []
 
     items = _call_gemini_json_uri(
         file_uri,
-        _build_bl_item_list_prompt(),
+        build_bl_item_list_prompt(),
         expect_array=True,
         retries=3,
         vendor_id=vendor_id,

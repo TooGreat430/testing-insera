@@ -35,15 +35,6 @@ UNNULLABLE_FIELD = """
   "pl_nw": "number",
   "pl_gw": "number",
   "pl_volume": "number",
-
-  "bl_description": "string",
-  "bl_hs_code": "string",
-
-  "coo_description": "string",
-  "coo_hs_code": "string",
-  "coo_quantity": "number",
-  "coo_amount": "number",
-  "coo_criteria": "string",
 }
 """
 
@@ -213,24 +204,7 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "pl_package_count": "number",
   "pl_nw": "number",
   "pl_gw": "number",
-  "pl_volume": "number",
-
-  "bl_description": "string",
-  "bl_hs_code": "string",
-  "bl_mark_number": "string",
-
-  "coo_seq": "number",
-  "coo_mark_number": "string",
-  "coo_description": "string",
-  "coo_hs_code": "string",
-  "coo_quantity": "number",
-  "coo_unit": "string",
-  "coo_package_count": "number",
-  "coo_package_unit": "string",
-  "coo_gw": "number",
-  "coo_amount": "number",
-  "coo_criteria": "string",
-  "coo_customer_po_no": "string"
+  "pl_volume": "number"
 }"""
 
 # dipakai Python untuk "ensure semua kolom ada"
@@ -856,24 +830,6 @@ ATURAN KHUSUS VENDOR:
 {vendor_prompt_text}
 """
 
-    bl_mark_number_detail_rule = """
-
-ATURAN bl_mark_number:
-- Untuk vendor selain shimano_inc, bl_mark_number diekstrak pada header pass.
-- Pada content/detail pass vendor selain shimano_inc, isi bl_mark_number dengan "null".
-"""
-    if _is_shimano_inc_vendor_id(vendor_id):
-        bl_mark_number_detail_rule = """
-
-ATURAN KHUSUS SHIMANO_INC UNTUK bl_mark_number:
-- bl_mark_number WAJIB diekstrak pada content/detail pass, BUKAN pada header pass.
-- Gunakan dokumen Bill of Lading saja.
-- Ambil dari kolom/area "Marks and Numbers".
-- Karena output detail berbasis line item, isikan bl_mark_number pada row yang paling relevan dengan mark/PO/item tersebut.
-- Jika mark berlaku global untuk seluruh BL dan tidak bisa dipetakan ke item tertentu, isi nilai yang sama pada semua row output batch yang relevan.
-- Jika tidak ditemukan pada BL, isi "null".
-"""
-
     return f"""
 ROLE:
 Anda adalah AI IDP professional yang fokus pada DATA DETAIL PER LINE ITEM.
@@ -911,9 +867,7 @@ ATURAN:
 - Field hanya boleh diisi dari dokumen sesuai prefix-nya, TIDAK BOLEH dari dokumen lain:
   inv_* → Invoice, tidak boleh dari dokumen lain
   pl_* → Packing List, tidak boleh dari dokumen lain
-  bl_* → Bill of Lading, tidak boleh dari dokumen lain
-  coo_* → Certificate of Origin, tidak boleh dari dokumen lain
-- Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
+- Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
 - Jika terdapat merged cell vertikal yang mencakup beberapa line item / beberapa row, maka nilai pada merged cell tersebut HANYA boleh diassign ke line item paling atas dalam merge group.
 - Semua line item lain yang berada di bawah merged cell yang sama WAJIB diisi 0 untuk field numerik yang berasal dari merged cell tersebut.
 - Jangan melakukan pembagian proporsional, jangan melakukan averaging, dan jangan menduplikasi nilai merged cell ke semua row.
@@ -979,7 +933,7 @@ ATURAN:
 - Untuk field pl_quantity dan pl_package_count, pahami makna header kolom terlebih dahulu sebelum mengekstrak value.
 - Jangan menukar quantity dengan package_count.
 - Jika tabel menggunakan format quantity-per-package dan package-count, maka pl_quantity dan pl_package_count harus dipetakan sesuai fungsi masing-masing, bukan sekadar berdasarkan posisi angka.
-  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
+  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
 - Contoh:
   Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut seperti:
 - Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
@@ -996,7 +950,6 @@ ATURAN:
 - Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
 - Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
-{bl_mark_number_detail_rule}
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
 
@@ -1013,3 +966,126 @@ OUTPUT RESTRICTION:
 - Jumlah object harus = {last_index - first_index + 1}
 - Urutan object harus sama persis dengan ANCHOR INDEX.
 """
+
+
+# =========================================================
+# BL / COO ITEM-LIST PROMPTS (pass terpisah, dokumen tunggal)
+# =========================================================
+# Prompt khusus untuk PASS 2 (BL-only) dan PASS 3 (COO-only).
+# Berbeda dari build_detail_prompt_from_index yang khusus INV + PL.
+
+def build_bl_item_list_prompt() -> str:
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Bill of Lading (BL) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Bill of Lading (BL).
+- ABAIKAN dokumen Invoice, Packing List, dan Certificate of Origin.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP entri item/barang yang tercantum di kolom "Description of Goods" pada BL.
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+
+FIELD PER ITEM:
+- "bl_description": deskripsi barang persis seperti tertulis di BL. Jangan tambahkan informasi dari dokumen lain.
+- "bl_hs_code": HS code item tersebut dari kolom HS Code / Harmonized Code. Ambil persis seperti tertulis.
+- "bl_mark_number": marks & numbers / nomor container atau seal jika tercantum pada item ini. Isi "null" jika tidak ada.
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. Tidak boleh mengarang atau menyimpulkan dari dokumen lain.
+- Jika HS code tidak ada pada item tersebut, isi "null".
+- Tidak boleh JSON literal null -> gunakan "null" (string).
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  {
+    "bl_description": "string",
+    "bl_hs_code": "string",
+    "bl_mark_number": "string"
+  }
+]
+""".strip()
+
+
+def build_coo_item_list_prompt() -> str:
+    return """
+ROLE:
+Anda AI IDP yang fokus mengekstrak DAFTAR ITEM dari dokumen Certificate of Origin (COO) saja.
+Rule-based, deterministik, anti-halusinasi.
+
+SUMBER:
+- Baca HANYA dokumen Certificate of Origin / COO (format apapun: form RCEP, e-COO elektronik, dsb.).
+- ABAIKAN dokumen Invoice, Packing List, dan Bill of Lading.
+
+TUGAS:
+- Keluarkan SATU objek JSON untuk SETIAP item barang yang tercantum pada COO (sesuai nomor urut item).
+- Output HANYA JSON ARRAY, tanpa teks lain. Mulai '[' diakhiri ']'.
+- Jika ada Continuation Sheet atau multiple pages, baca seluruh halaman.
+
+IDENTIFIKASI FORMAT COO:
+
+Format A — Form RCEP/ASEAN (field berlabel 6, 7, 8, 9, 10, 11, 12):
+  - Nomor item dari field "6. Item number" (1, 2, 3, ...)
+  - Deskripsi dari field "8. Number and kind of packages; and description of goods"
+    → Abaikan frasa awal kemasan seperti "<N> (<N>) CARTON(S) OF", kata generik "BICYCLE PARTS"
+    → Ambil deskripsi barang setelah frasa kemasan; gabungkan wrap/lanjutan antar baris/halaman
+  - HS Code dari field "9. HS Code of the goods"
+  - Origin Criterion dari field "10. Origin Conferring Criterion"
+  - Country dari field "11. RCEP Country of Origin" / negara asal
+  - Quantity + GW dari field "12. Quantity (Gross weight or other measurement)"
+    → Kolom 12 bisa berisi DUA nilai bertumpuk: GW (mis. "255.6KGS G.W.") dan quantity (mis. "1000SETS")
+  - Package count: angka pada frasa kemasan di field 8 (mis. "TWENTY (20) CARTONS OF" → 20)
+  - Package unit: jenis kemasan pada frasa kemasan (mis. "CARTONS"). BUKAN unit barang (SETS/PCS).
+
+Format B — e-COO tabel elektronik (kolom: Item No. | Marks and Numbers | Description | Quantity Code | Quantity | HS Number | Origin Criterion | Gross weight or Other Quantity | FOB):
+  - Nomor item dari kolom "Item No."
+  - Deskripsi dari kolom "Description" (langsung, tanpa frasa kemasan)
+  - HS Code dari kolom "HS Number"
+  - Setiap item memiliki DUA baris di kolom "Quantity Code" dan "Quantity":
+    → Baris 1: unit utama (mis. "SET") dan quantity utama (mis. "500.0000")
+    → Baris 2: unit kemasan (mis. "CT") dan package count (mis. "50")
+  - GW dari kolom "Gross weight or Other Quantity"
+  - Amount (FOB) dari sub-kolom "Value" pada kolom FOB
+  - Origin Criterion dari kolom "Origin Criterion"
+    → Jika berupa "RVC X%" abaikan angka persentase, ambil hanya "RVC"
+
+FIELD PER ITEM (output selalu menggunakan field ini):
+- "coo_seq": nomor item (numeric)
+- "coo_mark_number": marks & numbers; "null" jika generik ("no", "N/M") atau tidak ada
+- "coo_description": deskripsi barang murni tanpa frasa kemasan, HS code, quantity, GW
+- "coo_hs_code": HS code persis seperti tertulis di COO
+- "coo_package_count": jumlah kemasan (numeric)
+- "coo_package_unit": unit kemasan (mis. "CARTONS", "CT"); BUKAN unit barang
+- "coo_quantity": quantity utama barang (numeric)
+- "coo_unit": unit quantity utama (mis. "SETS", "SET", "PCS"); BUKAN KGS
+- "coo_gw": gross weight (numeric)
+- "coo_amount": nilai FOB/amount jika ada eksplisit; "null" jika tidak ada
+- "coo_criteria": origin criterion (mis. "PE", "RVC")
+- "coo_origin_country": negara asal (mis. "CHINA", "VIETNAM")
+
+ATURAN:
+- EKSTRAK HANYA YANG TERTULIS. Jika field tidak ada -> "null" (string) atau 0 (angka numerik).
+- Tidak boleh JSON literal null -> gunakan "null".
+- Tidak boleh markdown/penjelasan.
+
+SCHEMA OUTPUT:
+[
+  {
+    "coo_seq": number,
+    "coo_mark_number": "string",
+    "coo_description": "string",
+    "coo_hs_code": "string",
+    "coo_package_count": number,
+    "coo_package_unit": "string",
+    "coo_quantity": number,
+    "coo_unit": "string",
+    "coo_gw": number,
+    "coo_amount": "string",
+    "coo_criteria": "string",
+    "coo_origin_country": "string"
+  }
+]
+""".strip()
