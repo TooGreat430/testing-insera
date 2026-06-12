@@ -8065,6 +8065,62 @@ def _generate_inv_amount_before_validation(rows: list):
 
     return rows
 
+
+def _shimano_fill_zero_inv_amount_from_qty_price(rows: list, vendor_id: str = "default"):
+    """
+    SHIMANO_INC SAJA: setiap line item Shimano SELALU mencetak amount pada baris
+    TOTAL blok — tidak pernah FOC (Free Of Charge). Jadi kalau inv_amount terbaca
+    0/null PADAHAL inv_quantity > 0 DAN inv_unit_price > 0, itu pasti salah baca
+    amount. Isi inv_amount = inv_quantity x inv_unit_price.
+
+    Ini jaring DETERMINISTIK yang melengkapi _shimano_inc_reconcile_inv_lines_with_
+    printed_subtotals (yang bergantung pada keberhasilan membaca halaman rekap —
+    bisa gagal). Fungsi ini tidak butuh dokumen rekap.
+
+    Gated KETAT ke shimano_inc. Vendor lain BISA punya baris FOC sah dengan
+    inv_amount = 0 (qty > 0, harga referensi tercetak tapi barang gratis); untuk
+    vendor itu inv_amount = 0 sengaja DIPERTAHANKAN oleh
+    _generate_inv_amount_before_validation dan TIDAK boleh diisi di sini.
+
+    Hanya mengisi baris yang inv_amount-nya 0/null; baris dengan amount non-zero
+    tidak disentuh (kalau qty yang salah, itu ranah reconcile PO-subtotal).
+    """
+    if not _is_shimano_inc_vendor(vendor_id):
+        return rows
+
+    fixed = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        if not (_is_null(row.get("inv_amount")) or _is_zero_like(row.get("inv_amount"))):
+            continue
+
+        qty = _to_decimal_or_zero(row.get("inv_quantity"))
+        unit_price = _to_decimal_or_zero(row.get("inv_unit_price"))
+        if qty <= 0 or unit_price <= 0:
+            continue
+
+        amount = qty * unit_price
+        new_amount = int(amount) if amount == amount.to_integral_value() else float(amount)
+        old_amount = row.get("inv_amount")
+        row["inv_amount"] = new_amount
+        fixed += 1
+        print(
+            f"[SHIMANO_AMOUNT_FILL] row_no={row.get('_detail_row_no')} "
+            f"PO={row.get('inv_customer_po_no')} item={row.get('inv_spart_item_no')} "
+            f"inv_amount {old_amount} -> {new_amount} "
+            f"(= qty {row.get('inv_quantity')} x unit_price {row.get('inv_unit_price')})"
+        )
+
+    if fixed:
+        print(
+            f"[SHIMANO_AMOUNT_FILL] selesai: {fixed} baris inv_amount=0 diisi "
+            f"dari qty x unit_price"
+        )
+
+    return rows
+
 def _recompute_seq_by_key(rows: list, group_key: str, seq_key: str):
     """Hitung ulang seq global berdasarkan group_key (misal inv_customer_po_no)."""
     counter = {}
@@ -15400,6 +15456,11 @@ def run_ocr(
             all_rows = _deduplicate_pl_numeric_fields_for_vendors(all_rows, vendor_id=vendor_id)
 
         all_rows = _generate_inv_amount_before_validation(all_rows)
+
+        # SHIMANO_INC: isi inv_amount yang ke-0 (salah baca) dari qty x unit_price.
+        # Deterministik, melengkapi reconcile PO-subtotal yang bergantung baca rekap.
+        # Vendor FOC (amount 0 sah) tidak tersentuh — gated shimano_inc.
+        all_rows = _shimano_fill_zero_inv_amount_from_qty_price(all_rows, vendor_id=vendor_id)
 
         _postprocess_bl_coo_zero_to_null(all_rows)
         _postprocess_invoice_no_consensus(all_rows)
