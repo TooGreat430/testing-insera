@@ -293,6 +293,31 @@ ATURAN KHUSUS VENDOR shimano_inc — DEFINISI 1 LINE ITEM (KRITIS):
   baca salah satunya — perbaiki dari baris TOTAL blok yang sama.
 - Jumlah object index = jumlah blok PART#/SEQ#. Memecah 1 blok jadi 2 object akan
   MENGGUSUR item lain keluar dari index (array dibatasi {total_row}) — KESALAHAN FATAL.
+
+ANTI-MERGE BLOK KEMBAR BERURUTAN (KRITIS — SERING MENGHILANGKAN ITEM):
+- DUA BLOK BERURUTAN yang PART# / PRODUCT CD / S.PART# / SEQ#-nya SAMA, tetapi
+  "P/O No." (di kolom MARKS kiri) BERBEDA, adalah DUA line item TERPISAH. WAJIB
+  keluarkan KEDUANYA sebagai object index berbeda.
+- PEMBEDA UTAMA line item Shimano adalah P/O No. (+ qty/amount pada baris TOTAL),
+  BUKAN PART# atau deskripsi atau @unit price. DILARANG menggabungkan / membuang
+  salah satu blok hanya karena PART#, deskripsi, atau @JPY-nya identik dengan blok
+  tetangga.
+- Contoh KESALAHAN NYATA yang dilarang (item ke-2 ke-skip):
+  * Blok A: "P/O No.45331325 ... KRDM7200SGS SEQ#002 ... TOTAL 110 PCS JPY319,330 @JPY2,903"
+  * Blok B: "P/O No.45331330 ... KRDM7200SGS SEQ#002 ... TOTAL 205 PCS JPY595,115 @JPY2,903"
+  PART#/SEQ#/@price sama, TAPI P/O No. beda (45331325 vs 45331330) dan qty beda
+  (110 vs 205) → WAJIB 2 object index, BUKAN 1.
+
+PAGE BREAK PADA BARIS TOTAL (jangan jatuhkan blok halaman sebelumnya):
+- Sebuah blok bisa berakhir dengan baris carton (CTN NO./PLT NO.) di BAGIAN BAWAH
+  sebuah halaman, lalu baris TOTAL-nya ("<qty> <unit> JPY<amount> @JPY<price>")
+  muncul SENDIRIAN di BAGIAN ATAS halaman BERIKUTNYA — sebelum blok PART#/P/O baru.
+- Baris TOTAL yatim itu MILIK blok di halaman SEBELUMNYA. WAJIB tetap keluarkan blok
+  halaman sebelumnya sebagai 1 object index dengan qty/amount dari baris TOTAL yatim itu.
+- DILARANG (a) membuang blok halaman sebelumnya hanya karena TOTAL-nya tak terlihat di
+  halaman yang sama, dan (b) menempelkan TOTAL yatim itu ke blok yang ada DI BAWAHNYA.
+- Telusuri batas tiap halaman: kalau halaman berikutnya diawali baris angka TOTAL tanpa
+  header blok, itu lanjutan TOTAL milik blok terakhir halaman sebelumnya.
 """.replace("{total_row}", str(total_row))
 
     liow_ko_index_rule = ""
