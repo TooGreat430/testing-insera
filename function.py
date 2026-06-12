@@ -4641,6 +4641,82 @@ def _shimano_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
         return 0
 
 
+def _shimano_extract_printed_total_quantity_from_invoice_pdf(invoice_pdf_path: str):
+    """
+    SHIMANO_INC: baca GRAND TOTAL QUANTITY tercetak secara DETERMINISTIK via pymupdf.
+
+    Invoice Shimano mencetak grand total quantity dalam BEBERAPA baris unit terpisah
+    (mis. "14576 PCS" lalu "558 SETS") pada halaman rekap "Invoice & Packing List By".
+    Header pass Gemini kadang hanya membaca baris unit pertama (14576) dan lupa
+    menambah baris unit lain (558) -> inv_total_quantity undercount.
+
+    Strategi anti-salah:
+    - Ambil teks HANYA dari halaman rekap (memuat penanda "Invoice & Packing List By").
+      Pada halaman itu, satu-satunya token "<angka> <UNIT_QTY>" adalah komponen grand
+      total — baris per-PO hanya memuat berat (Kg) / volume (M3) / amount (JPY) /
+      Packages (C/T, P/T), TIDAK ada quantity (PCS/SETS/...). Jadi tidak mungkin
+      tercampur quantity line item.
+    - Jumlahkan semua komponen unit -> grand total quantity.
+
+    Return None kalau halaman rekap / token tidak ditemukan (caller fallback ke nilai
+    Gemini header + aturan prompt). TIDAK memakai fallback "halaman terakhir" karena
+    halaman tabel line item memuat banyak "<angka> PCS" yang akan double count.
+    """
+    try:
+        doc = fitz.open(invoice_pdf_path)
+        try:
+            recap_texts = [
+                t for t in (page.get_text() for page in doc)
+                if "invoice & packing list by" in t.lower()
+            ]
+        finally:
+            doc.close()
+
+        if not recap_texts:
+            print("[SHIMANO_TOTAL_QTY] halaman rekap 'Invoice & Packing List By' tidak ditemukan, skip")
+            return None
+
+        recap_text = "\n".join(recap_texts)
+
+        # Unit quantity Shimano: PCS/PC/SET(S)/PRS/PAIR(S). BUKAN Kg/M3/C/T/P/T/JPY.
+        matches = re.findall(
+            r'(\d[\d,]*)\s*(PCS|PC|SETS|SET|PRS|PAIRS|PAIR)\b',
+            recap_text,
+            flags=re.IGNORECASE,
+        )
+        if not matches:
+            print("[SHIMANO_TOTAL_QTY] token quantity grand total tidak ditemukan di rekap, skip")
+            return None
+
+        # Dedup nilai identik (angka+unit sama) supaya kemunculan ganda akibat
+        # quirk text-layer tidak double count. Tiap unit grand total unik.
+        seen = set()
+        total = 0
+        comps = []
+        for num_str, unit in matches:
+            num_str = num_str.replace(",", "")
+            unit = unit.upper()
+            key = (num_str, unit)
+            if key in seen:
+                continue
+            seen.add(key)
+            val = int(num_str)
+            total += val
+            comps.append(f"{val} {unit}")
+
+        if total <= 0:
+            return None
+
+        print(
+            f"[SHIMANO_TOTAL_QTY] grand total quantity (text-layer rekap): "
+            f"{' + '.join(comps)} = {total}"
+        )
+        return total
+    except Exception as e:
+        print(f"[SHIMANO_TOTAL_QTY] error: {e}")
+        return None
+
+
 def _suntour_vietnam_count_line_items_from_invoice_pdf(invoice_pdf_path: str) -> int:
     # Hitung jumlah line item SUNTOUR VIETNAM secara deterministik via pymupdf.
     # Dua sinyal independen, ambil MAX:
@@ -14861,6 +14937,26 @@ def run_ocr(
                     )
                 base_header_obj[_field] = _printed
                 header_obj[_field] = _printed
+
+        # SHIMANO_INC: override inv_total_quantity header dengan grand total TERCETAK
+        # yang dibaca DETERMINISTIK dari halaman rekap (jumlah semua baris unit:
+        # PCS + SETS + ...). Header pass Gemini kadang hanya membaca baris unit pertama
+        # (mis. 14576) dan lupa menambah baris unit lain (mis. 558 SETS) -> undercount.
+        # Kalau text layer rekap tidak terbaca, fungsi return None dan nilai Gemini
+        # (+ aturan prompt shimano_header_rule) dipertahankan.
+        if normalize_vendor_id(vendor_id) == "shimano_inc":
+            shimano_printed_total_qty = _shimano_extract_printed_total_quantity_from_invoice_pdf(
+                normalized_pdf_paths[invoice_idx]
+            )
+            if shimano_printed_total_qty and shimano_printed_total_qty > 0:
+                if _to_float(base_header_obj.get("inv_total_quantity")) != _to_float(shimano_printed_total_qty):
+                    print(
+                        f"[SHIMANO_TOTAL_QTY] override inv_total_quantity: "
+                        f"gemini={base_header_obj.get('inv_total_quantity')} -> "
+                        f"text_layer={shimano_printed_total_qty}"
+                    )
+                base_header_obj["inv_total_quantity"] = shimano_printed_total_qty
+                header_obj["inv_total_quantity"] = shimano_printed_total_qty
 
         # GET TOTAL ROW FROM GEMINI
         if normalize_vendor_id(vendor_id) == "karet_deli":
