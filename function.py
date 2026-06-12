@@ -5715,6 +5715,91 @@ def _liow_ko_backfill_pl_rows_from_text_layer(rows: list, pl_parse: dict) -> int
     return touched_cells
 
 
+def _liow_ko_reconcile_pl_gw_residual(rows: list) -> int:
+    """
+    Koreksi SATU sel pl_gw yang OVER-READ di halaman PL yang berupa GAMBAR
+    (tanpa text layer), dengan jangkar pada baris TOTAL G.W tercetak.
+
+    Latar belakang (LK-A20260522001): halaman PL terakhir bukan teks Excel
+    melainkan tiles gambar (page.get_text("words") == [] -> 0 anchor), jadi
+    _liow_ko_parse_doc_text_layer GAGAL gate dan SELURUH koreksi text-layer
+    di-skip. Nilai di halaman gambar itu hanya terbaca lewat OCR model, yang
+    sesekali salah baca satu sel G.W (mis. 35.60 -> 36.8). N.W terbaca benar.
+
+    Reconciliation deterministik & swa-validasi (BUKAN model):
+      - Jalan HANYA untuk liow_ko.
+      - Σ pl_nw HARUS == pl_total_nw tercetak (toleransi 0.02). Ini bukti data
+        per-baris bersih dan satu-satunya inkonsistensi ada di G.W.
+      - residual = Σ pl_gw - pl_total_gw tercetak; hanya tangani over-read
+        kecil (0.02 < residual < 5.0).
+      - Kandidat = baris dengan G.W>0 & N.W>0. Pilih baris dengan selisih
+        (gw - nw) MAKSIMUM dan UNIK (tidak ada baris lain dalam 0.05).
+      - Terapkan HANYA bila: gw_terkoreksi = gw - residual tetap >= nw, dan
+        selisih (gw-nw) baris itu setelah dikoreksi turun di BAWAH selisih
+        terbesar ke-2 -> membuktikan residual memang milik baris over-read
+        itu, bukan baris yang memang berat kemasannya.
+    Dokumen yang benar punya residual ~0 -> tidak pernah trigger. Bila syarat
+    tak terpenuhi (ambigu / dua baris salah / N.W juga meleset) -> diam,
+    mismatch tetap jadi flag jujur untuk reviewer.
+    """
+    if not isinstance(rows, list):
+        return 0
+    detail = [r for r in rows if isinstance(r, dict)]
+    declared_nw = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
+    declared_gw = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
+    if declared_nw is None or declared_gw is None or declared_gw <= 0:
+        return 0
+
+    sum_nw = sum(_to_float(r.get("pl_nw")) or 0.0 for r in detail)
+    sum_gw = sum(_to_float(r.get("pl_gw")) or 0.0 for r in detail)
+
+    # N.W harus sudah konsisten — kalau tidak, jangan sentuh apa pun.
+    if abs(sum_nw - declared_nw) > 0.02:
+        return 0
+    residual = round(sum_gw - declared_gw, 2)
+    if not (0.02 < residual < 5.0):
+        return 0
+
+    def _off(r):
+        gw = _to_float(r.get("pl_gw")) or 0.0
+        nw = _to_float(r.get("pl_nw")) or 0.0
+        return round(gw - nw, 2)
+
+    cand = [
+        r for r in detail
+        if (_to_float(r.get("pl_gw")) or 0.0) > 0 and (_to_float(r.get("pl_nw")) or 0.0) > 0
+    ]
+    if len(cand) < 2:
+        return 0
+
+    ranked = sorted(cand, key=_off, reverse=True)
+    top, second_off = ranked[0], _off(ranked[1])
+    # selisih maksimum harus unik (tidak ada kembar dalam 0.05)
+    if any(r is not top and abs(_off(r) - _off(top)) < 0.05 for r in cand):
+        return 0
+    if _off(top) <= second_off:
+        return 0
+
+    top_gw = _to_float(top.get("pl_gw")) or 0.0
+    top_nw = _to_float(top.get("pl_nw")) or 0.0
+    corrected = round(top_gw - residual, 2)
+    if corrected <= 0 or corrected + 1e-9 < top_nw:
+        return 0
+    # residual harus benar-benar "milik" baris ini: setelah dikoreksi,
+    # selisih (gw-nw)-nya turun di bawah selisih terbesar ke-2.
+    if (corrected - top_nw) >= second_off - 0.001:
+        return 0
+
+    item = top.get("pl_item_no") or top.get("inv_spart_item_no") or "?"
+    print(
+        f"[LIOW_KO_PL_GW_RECONCILE] pl_gw (item={item}): {top_gw} -> {corrected} "
+        f"(residual Σgw {round(sum_gw, 2)} - TOTAL {declared_gw} = {residual}; "
+        f"N.W konsisten; baris selisih-gw-nw outlier unik)"
+    )
+    top["pl_gw"] = corrected
+    return 1
+
+
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
     # Drop duplicate anchor rows. Dua sumber duplikat yang ditangani:
     #   1) chunk boundary overlap (shimano): block sama diulang di akhir chunk N
@@ -15124,6 +15209,18 @@ def run_ocr(
         # =========================================
         if normalize_vendor_id(vendor_id) == "liow_ko" and liow_ko_pl_parse.get("rows"):
             _liow_ko_backfill_pl_rows_from_text_layer(all_rows, liow_ko_pl_parse)
+
+        # =========================================
+        # LIOW_KO: halaman PL terakhir kadang berupa GAMBAR (tanpa text layer),
+        # jadi koreksi text-layer di atas tidak bisa menjangkaunya dan OCR model
+        # sesekali salah-baca SATU sel pl_gw (mis. 35.60 -> 36.8). Reconcile
+        # deterministik terhadap TOTAL G.W tercetak: kalau Σ pl_nw sudah persis
+        # sama dengan total (data per-baris bersih) dan ada residual G.W kecil
+        # yang jatuh UNIK pada satu baris outlier, kembalikan sel itu ke nilai
+        # yang membuat Σ pl_gw == TOTAL. Dokumen benar (residual ~0) tak tersentuh.
+        # =========================================
+        if normalize_vendor_id(vendor_id) == "liow_ko":
+            _liow_ko_reconcile_pl_gw_residual(all_rows)
 
         # =========================================
         # PRECHECK PYTHON
