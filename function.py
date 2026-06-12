@@ -5791,6 +5791,234 @@ def _liow_ko_backfill_pl_rows_from_text_layer(rows: list, pl_parse: dict) -> int
     return touched_cells
 
 
+# =========================================================
+# LIOW_KO OPSI A — RE-OCR HALAMAN PL YANG BERUPA TEMPELAN GAMBAR
+# =========================================================
+# Sebagian PL liow_ko punya halaman (mis. halaman terakhir) yang BUKAN PDF
+# text, melainkan tempelan gambar/scan tanpa text layer. Akibatnya:
+#  (1) parser deterministik _liow_ko_parse_doc_text_layer GAGAL gate (baris
+#      halaman itu hilang -> sum per-baris != TOTAL tercetak -> return {}),
+#  (2) nilai NW/GW baris di halaman itu hanya dari Gemini visual pass utama
+#      yang membaca PDF multi-halaman ter-merge & terkompres, rawan salah baca
+#      digit (kasus produksi LK-A20260522001: pl_gw 35.60 terbaca 36.8).
+# Solusi: render HALAMAN GAMBAR itu saja ke PNG DPI tinggi lalu re-OCR FOKUS
+# per baris, dan koreksi pl_nw/pl_gw — DENGAN gate anti-regresi (sanity gw>=nw
+# dan rekonsiliasi ke TOTAL tercetak). Gated ke liow_ko.
+
+def _liow_ko_page_is_image_only(page, min_chars: int = 25) -> bool:
+    """
+    True kalau halaman praktis TANPA text layer (tempelan gambar/scan), sehingga
+    parser text-layer tidak bisa membacanya. Konservatif: error baca -> False
+    (anggap ada teks) supaya tidak salah me-re-OCR halaman normal.
+    """
+    try:
+        return len((page.get_text() or "").strip()) < min_chars
+    except Exception:
+        return False
+
+
+def _liow_ko_reocr_image_page_pl(png_bytes: bytes, page_label: str, vendor_id: str = "default") -> list:
+    """
+    Re-OCR FOKUS satu halaman tabel PACKING LIST liow_ko dari PNG resolusi tinggi.
+    Return list [{"po","item","qty","nw","gw","count"}] atau [] kalau gagal.
+    Best-effort: tidak melempar exception.
+    """
+    prompt = """
+ROLE:
+Anda OCR presisi untuk SATU halaman tabel PACKING LIST vendor LIOW KO (berupa gambar).
+
+URUTAN KOLOM (kiri -> kanan):
+Purchase order Number | PART NUMBER | DESCRIPTION | QUANTITY | [unit] | CTN | TOTAL CTN | NW | GW
+
+TUGAS:
+Baca SETIAP baris item, kembalikan JSON ARRAY, satu object per baris fisik:
+[{"po":"string","item":"string","qty":number,"nw":number,"gw":number,"count":number}]
+
+ATURAN BACA (KRITIS):
+- "nw" = angka KEDUA DARI KANAN pada baris; "gw" = angka PALING KANAN. Baca POSISIONAL.
+- Baca DIGIT PER DIGIT termasuk 2 desimal terakhir. DILARANG membulatkan/menebak.
+- "gw" SELALU >= "nw" (gross >= net). Kalau hasil baca melanggar, baca ulang baris itu.
+- "qty" = angka kolom QUANTITY (abaikan unit SET/PCS/PRS).
+- "count" = angka kolom TOTAL CTN (angka ketiga dari kanan); kalau sel kosong isi 0.
+- "po" = angka 8 digit kolom paling kiri (mis. 45331690).
+- Baris yang sel CTN/TOTAL CTN-nya kosong TETAP baris valid; baca NW/GW miliknya sendiri.
+- DILARANG menyalin NW/GW dari baris tetangga. Tiap baris punya angkanya sendiri.
+- Hanya baris item. ABAIKAN baris header kolom dan baris TOTAL/grand total.
+- Output HANYA JSON array valid, tanpa teks lain.
+""".strip()
+
+    try:
+        parts = [
+            types.Part.from_bytes(data=png_bytes, mime_type="image/png"),
+            types.Part.from_text(text=prompt),
+        ]
+        # Pakai model lebih kuat untuk baca gambar sulit. Pass utama liow_ko
+        # memakai flash-lite yang justru salah baca di halaman gambar ini.
+        response = genai_client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(
+                temperature=0, top_p=0, seed=42,
+                candidate_count=1, max_output_tokens=8192,
+            ),
+        )
+        text = _extract_text_from_gemini_response(response)
+        data = _parse_json_safe(text)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[LIOW_KO_REOCR][WARN] {page_label}: gagal re-OCR ({e})")
+        return []
+
+
+def _liow_ko_correct_image_page_pl_rows(
+    rows: list,
+    pl_pdf_path: str,
+    printed_total_nw=None,
+    printed_total_gw=None,
+    vendor_id: str = "default",
+) -> int:
+    """
+    OPSI A (gated liow_ko): koreksi pl_nw/pl_gw baris yang berasal dari HALAMAN
+    PL berupa gambar (tanpa text layer) via re-OCR DPI tinggi yang difokuskan.
+
+    Anti-regresi:
+    - Per-baris: re-OCR gw & nw harus > 0 dan gw >= nw, kalau tidak baris di-skip.
+    - Per-field (nw / gw): koreksi BARU diterapkan kalau membuat Σ(field) lebih
+      dekat ke TOTAL tercetak DAN praktis rekonsiliasi (selisih <= tol). Jadi
+      kalau re-OCR malah memburuk total, koreksi DIBATALKAN (baris dibiarkan apa
+      adanya -> tetap ter-flag oleh validasi, bukan diam-diam salah). Kalau total
+      tercetak tidak tersedia, fallback: terapkan dengan sanity gw>=nw saja.
+
+    Hanya menyentuh baris yang item+qty-nya cocok dengan hasil re-OCR halaman
+    gambar; baris di halaman ber-teks (sudah benar) tidak ikut di-re-OCR.
+    Return jumlah sel pl_* yang dikoreksi.
+    """
+    if not isinstance(rows, list) or not rows or not pl_pdf_path:
+        return 0
+
+    # 1) Render & re-OCR semua halaman tanpa text layer.
+    reocr_rows = []
+    try:
+        doc = fitz.open(pl_pdf_path)
+    except Exception as e:
+        print(f"[LIOW_KO_REOCR][WARN] gagal buka PL: {e}")
+        return 0
+    try:
+        for pno in range(doc.page_count):
+            page = doc[pno]
+            if not _liow_ko_page_is_image_only(page):
+                continue
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72.0, 300 / 72.0))
+                png = pix.tobytes("png")
+            except Exception as e:
+                print(f"[LIOW_KO_REOCR][WARN] render hal {pno + 1} gagal: {e}")
+                continue
+            items = _liow_ko_reocr_image_page_pl(png, f"PL p{pno + 1}", vendor_id=vendor_id)
+            if items:
+                print(f"[LIOW_KO_REOCR] PL hal {pno + 1} (gambar): {len(items)} baris di-re-OCR")
+                reocr_rows.extend(items)
+    finally:
+        doc.close()
+
+    if not reocr_rows:
+        return 0
+
+    # 2) Pool kandidat re-OCR by (item, qty).
+    pool = {}
+    for pr in reocr_rows:
+        if not isinstance(pr, dict):
+            continue
+        item = pr.get("item")
+        qty = _to_float(pr.get("qty"))
+        if _is_null(item) or qty is None:
+            continue
+        pool.setdefault((_norm_item_compare_key(item), round(qty, 2)), []).append(pr)
+
+    # 3) Kumpulkan USULAN koreksi per baris (belum diterapkan).
+    proposals = []  # (row, field, new_val)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not _is_null(row.get("pl_item_no")):
+            item_key = _norm_item_compare_key(row.get("pl_item_no"))
+        elif not _is_null(row.get("inv_spart_item_no")):
+            item_key = _norm_item_compare_key(row.get("inv_spart_item_no"))
+        else:
+            continue
+        if not item_key:
+            continue
+
+        q = _to_float(row.get("pl_quantity"))
+        if q is None or q <= 0:
+            q = _to_float(row.get("inv_quantity"))
+        if q is None or q <= 0:
+            continue
+
+        bucket = pool.get((item_key, round(q, 2)))
+        if not bucket:
+            continue
+        pr = bucket.pop(0)
+
+        new_nw = _to_float(pr.get("nw"))
+        new_gw = _to_float(pr.get("gw"))
+        if new_nw is None or new_gw is None or new_nw <= 0 or new_gw <= 0:
+            continue
+        if new_gw + 0.001 < new_nw:
+            print(
+                f"[LIOW_KO_REOCR][SKIP] item={item_key} qty={round(q, 2)}: "
+                f"gw<nw ({new_gw}<{new_nw}) — abaikan baris"
+            )
+            continue
+
+        for field, new_val in (("pl_nw", new_nw), ("pl_gw", new_gw)):
+            cur = _to_float(row.get(field))
+            if cur is None or abs(cur - new_val) > 0.005:
+                proposals.append((row, field, new_val))
+
+    if not proposals:
+        return 0
+
+    # 4) Terapkan per-field dengan gate rekonsiliasi total tercetak.
+    TOL = 0.05
+    touched_cells = 0
+    for field, printed_total in (("pl_nw", printed_total_nw), ("pl_gw", printed_total_gw)):
+        field_props = [(r, v) for (r, f, v) in proposals if f == field]
+        if not field_props:
+            continue
+
+        printed_total = _to_float(printed_total)
+        if printed_total is not None and printed_total > 0:
+            cur_sum = sum((_to_float(r.get(field)) or 0.0) for r in rows if isinstance(r, dict))
+            delta = sum((v - (_to_float(r.get(field)) or 0.0)) for (r, v) in field_props)
+            new_sum = cur_sum + delta
+            improves = abs(new_sum - printed_total) < abs(cur_sum - printed_total) - 1e-9
+            reconciles = abs(new_sum - printed_total) <= TOL
+            if not (improves and reconciles):
+                print(
+                    f"[LIOW_KO_REOCR][SKIP-FIELD] {field}: koreksi dibatalkan "
+                    f"(Σ {round(cur_sum, 2)} -> {round(new_sum, 2)} vs total {printed_total}; "
+                    f"improves={improves} reconciles={reconciles})"
+                )
+                continue
+
+        for (r, v) in field_props:
+            cur = _to_float(r.get(field))
+            print(
+                f"[LIOW_KO_REOCR_CORRECT] {field}: {cur} -> {v} "
+                f"(re-OCR halaman gambar DPI tinggi)"
+            )
+            r[field] = v
+            touched_cells += 1
+
+    if touched_cells:
+        print(
+            f"[LIOW_KO_REOCR] selesai: {touched_cells} sel pl_* dikoreksi dari "
+            f"re-OCR halaman gambar"
+        )
+    return touched_cells
+
+
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
     # Drop duplicate anchor rows. Dua sumber duplikat yang ditangani:
     #   1) chunk boundary overlap (shimano): block sama diulang di akhir chunk N
@@ -15276,6 +15504,22 @@ def run_ocr(
         # =========================================
         if normalize_vendor_id(vendor_id) == "liow_ko" and liow_ko_pl_parse.get("rows"):
             _liow_ko_backfill_pl_rows_from_text_layer(all_rows, liow_ko_pl_parse)
+
+        # =========================================
+        # LIOW_KO (OPSI A): koreksi NW/GW baris dari HALAMAN PL berupa GAMBAR
+        # (tanpa text layer) — parser text-layer gagal gate di kasus ini, dan
+        # Gemini visual pass utama rawan salah baca digit (35.60 -> 36.8). Render
+        # halaman gambar ke PNG DPI tinggi lalu re-OCR fokus, dengan gate
+        # anti-regresi (sanity gw>=nw + rekonsiliasi ke TOTAL tercetak).
+        # =========================================
+        if normalize_vendor_id(vendor_id) == "liow_ko" and packing_idx is not None:
+            _liow_ko_correct_image_page_pl_rows(
+                all_rows,
+                normalized_pdf_paths[packing_idx],
+                printed_total_nw=_to_float(base_header_obj.get("pl_total_nw")),
+                printed_total_gw=_to_float(base_header_obj.get("pl_total_gw")),
+                vendor_id=vendor_id,
+            )
 
         # =========================================
         # PRECHECK PYTHON
