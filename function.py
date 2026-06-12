@@ -5791,89 +5791,249 @@ def _liow_ko_backfill_pl_rows_from_text_layer(rows: list, pl_parse: dict) -> int
     return touched_cells
 
 
-def _liow_ko_reconcile_pl_gw_residual(rows: list) -> int:
+# =====================================================================
+# LIOW_KO: PREPROCESSING HALAMAN PL BERUPA GAMBAR (tanpa text layer)
+# =====================================================================
+# Halaman PL terakhir sebagian dokumen liow_ko (mis. LK-A20260522001) bukan
+# teks Excel melainkan tiles GAMBAR. Saat dokumen dikirim ke Gemini sebagai
+# application/pdf, Gemini me-rasterisasi PDF pada DPI rendah sehingga sel angka
+# di halaman gambar sesekali salah-baca (mis. G.W 35.60 -> 36.8); halaman teks
+# (punya text layer) tidak terpengaruh.
+#
+# Solusi: render SENDIRI halaman gambar itu pada DPI tinggi (mem-bypass
+# downscale internal Gemini), baca ulang via image part, lalu TIMPA pl_nw/pl_gw
+# baris yang cocok (part + qty) — HANYA bila hasilnya membuat Σ pl_nw & Σ pl_gw
+# == TOTAL tercetak. Kalau tidak reconcile -> rollback penuh (no-op), mismatch
+# tetap jadi flag jujur. Ini menggantikan reconcile residual lama yang menebak
+# baris outlier secara aritmatika (rapuh; GW-saja; butuh N.W sudah bersih).
+LIOW_KO_IMAGE_PAGE_RENDER_ZOOM = float(os.getenv("LIOW_KO_IMAGE_PAGE_RENDER_ZOOM", "5.0"))
+LIOW_KO_IMAGE_REREAD_MODEL = os.getenv("LIOW_KO_IMAGE_REREAD_MODEL", "gemini-2.5-flash")
+LIOW_KO_IMAGE_REREAD_TOTAL_TOL = 0.02
+
+
+def _liow_ko_norm_part(value) -> str:
+    return re.sub(r"\s+", "", str(value or "")).upper()
+
+
+def _liow_ko_clean_num(value):
+    if value is None:
+        return None
+    s = str(value).strip().replace(",", "")
+    if s == "" or s.lower() == "null":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _liow_ko_render_image_only_pl_pages(pl_pdf_path, zoom=None):
     """
-    Koreksi SATU sel pl_gw yang OVER-READ di halaman PL yang berupa GAMBAR
-    (tanpa text layer), dengan jangkar pada baris TOTAL G.W tercetak.
-
-    Latar belakang (LK-A20260522001): halaman PL terakhir bukan teks Excel
-    melainkan tiles gambar (page.get_text("words") == [] -> 0 anchor), jadi
-    _liow_ko_parse_doc_text_layer GAGAL gate dan SELURUH koreksi text-layer
-    di-skip. Nilai di halaman gambar itu hanya terbaca lewat OCR model, yang
-    sesekali salah baca satu sel G.W (mis. 35.60 -> 36.8). N.W terbaca benar.
-
-    Reconciliation deterministik & swa-validasi (BUKAN model):
-      - Jalan HANYA untuk liow_ko.
-      - Σ pl_nw HARUS == pl_total_nw tercetak (toleransi 0.02). Ini bukti data
-        per-baris bersih dan satu-satunya inkonsistensi ada di G.W.
-      - residual = Σ pl_gw - pl_total_gw tercetak; hanya tangani over-read
-        kecil (0.02 < residual < 5.0).
-      - Kandidat = baris dengan G.W>0 & N.W>0. Pilih baris dengan selisih
-        (gw - nw) MAKSIMUM dan UNIK (tidak ada baris lain dalam 0.05).
-      - Terapkan HANYA bila: gw_terkoreksi = gw - residual tetap >= nw, dan
-        selisih (gw-nw) baris itu setelah dikoreksi turun di BAWAH selisih
-        terbesar ke-2 -> membuktikan residual memang milik baris over-read
-        itu, bukan baris yang memang berat kemasannya.
-    Dokumen yang benar punya residual ~0 -> tidak pernah trigger. Bila syarat
-    tak terpenuhi (ambigu / dua baris salah / N.W juga meleset) -> diam,
-    mismatch tetap jadi flag jujur untuk reviewer.
+    Render tiap halaman PL yang TANPA text layer tapi berisi gambar ke PNG
+    grayscale high-DPI. Halaman ber-text-layer di-skip (extraction sudah benar).
+    Return list[(page_index_0based, png_bytes)].
     """
-    if not isinstance(rows, list):
-        return 0
-    detail = [r for r in rows if isinstance(r, dict)]
-    declared_nw = _to_float(_first_non_null_nonzero(rows, "pl_total_nw"))
-    declared_gw = _to_float(_first_non_null_nonzero(rows, "pl_total_gw"))
-    if declared_nw is None or declared_gw is None or declared_gw <= 0:
-        return 0
+    if not pl_pdf_path:
+        return []
+    z = float(zoom or LIOW_KO_IMAGE_PAGE_RENDER_ZOOM)
+    out = []
+    try:
+        doc = fitz.open(pl_pdf_path)
+    except Exception as e:
+        print(f"[LIOW_KO_PL_IMAGE_REREAD] gagal buka PL pdf: {e}")
+        return []
+    try:
+        for i in range(doc.page_count):
+            page = doc[i]
+            try:
+                has_text = bool(page.get_text("words"))
+            except Exception:
+                has_text = True  # ragu -> anggap teks, jangan disentuh
+            if has_text:
+                continue
+            try:
+                has_image = bool(page.get_images(full=True))
+            except Exception:
+                has_image = False
+            if not has_image:
+                continue  # halaman benar-benar kosong, bukan gambar
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(z, z), colorspace=fitz.csGRAY)
+                out.append((i, pix.tobytes("png")))
+            except Exception as e:
+                print(f"[LIOW_KO_PL_IMAGE_REREAD] gagal render halaman {i + 1}: {e}")
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    return out
 
-    sum_nw = sum(_to_float(r.get("pl_nw")) or 0.0 for r in detail)
-    sum_gw = sum(_to_float(r.get("pl_gw")) or 0.0 for r in detail)
 
-    # N.W harus sudah konsisten — kalau tidak, jangan sentuh apa pun.
-    if abs(sum_nw - declared_nw) > 0.02:
-        return 0
-    residual = round(sum_gw - declared_gw, 2)
-    if not (0.02 < residual < 5.0):
-        return 0
+def _upload_temp_png_to_gcs(png_bytes: bytes, run_prefix: str, name: str) -> str:
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob_path = f"{run_prefix}/inputs/{name}.png"
+    bucket.blob(blob_path).upload_from_string(png_bytes, content_type="image/png")
+    return f"gs://{BUCKET_NAME}/{blob_path}"
 
-    def _off(r):
-        gw = _to_float(r.get("pl_gw")) or 0.0
-        nw = _to_float(r.get("pl_nw")) or 0.0
-        return round(gw - nw, 2)
 
-    cand = [
-        r for r in detail
-        if (_to_float(r.get("pl_gw")) or 0.0) > 0 and (_to_float(r.get("pl_nw")) or 0.0) > 0
-    ]
-    if len(cand) < 2:
-        return 0
+def _liow_ko_reread_pl_image(png_bytes, run_prefix, name, vendor_id="liow_ko"):
+    """
+    Kirim render high-DPI satu halaman PL ke Gemini sebagai image part, minta
+    baca grid baris. Return list[dict] {part_number, quantity, nw, gw} atau [].
+    """
+    if not png_bytes:
+        return []
+    try:
+        img_uri = _upload_temp_png_to_gcs(png_bytes, run_prefix, name)
+    except Exception as e:
+        print(f"[LIOW_KO_PL_IMAGE_REREAD] upload png gagal: {e}")
+        return []
 
-    ranked = sorted(cand, key=_off, reverse=True)
-    top, second_off = ranked[0], _off(ranked[1])
-    # selisih maksimum harus unik (tidak ada kembar dalam 0.05)
-    if any(r is not top and abs(_off(r) - _off(top)) < 0.05 for r in cand):
-        return 0
-    if _off(top) <= second_off:
-        return 0
-
-    top_gw = _to_float(top.get("pl_gw")) or 0.0
-    top_nw = _to_float(top.get("pl_nw")) or 0.0
-    corrected = round(top_gw - residual, 2)
-    if corrected <= 0 or corrected + 1e-9 < top_nw:
-        return 0
-    # residual harus benar-benar "milik" baris ini: setelah dikoreksi,
-    # selisih (gw-nw)-nya turun di bawah selisih terbesar ke-2.
-    if (corrected - top_nw) >= second_off - 0.001:
-        return 0
-
-    item = top.get("pl_item_no") or top.get("inv_spart_item_no") or "?"
-    print(
-        f"[LIOW_KO_PL_GW_RECONCILE] pl_gw (item={item}): {top_gw} -> {corrected} "
-        f"(residual Σgw {round(sum_gw, 2)} - TOTAL {declared_gw} = {residual}; "
-        f"N.W konsisten; baris selisih-gw-nw outlier unik)"
+    prompt = (
+        "Gambar ini adalah SATU halaman Packing List berbentuk tabel.\n"
+        "Baca SETIAP baris data dari atas ke bawah. Untuk tiap baris kembalikan "
+        "objek JSON dengan field PERSIS:\n"
+        '  {"part_number": <isi kolom PART NUMBER>, "quantity": <angka QUANTITY>, '
+        '"nw": <angka N.W>, "gw": <angka G.W>}\n'
+        "Aturan:\n"
+        "- Kembalikan HANYA JSON array, tanpa teks/penjelasan lain.\n"
+        "- Baca angka PERSIS seperti tercetak; desimal pakai titik; jangan mengarang.\n"
+        "- ABAIKAN baris TOTAL / grand total.\n"
+        "- Kalau sebuah sel kosong, isi null.\n"
     )
-    top["pl_gw"] = corrected
-    return 1
+    try:
+        parts = [
+            types.Part.from_uri(file_uri=img_uri, mime_type="image/png"),
+            types.Part.from_text(text=prompt),
+        ]
+        response = genai_client.models.generate_content(
+            model=LIOW_KO_IMAGE_REREAD_MODEL,
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(
+                temperature=0,
+                top_p=0,
+                seed=42,
+                candidate_count=1,
+                max_output_tokens=8192,
+            ),
+        )
+        raw = _extract_text_from_gemini_response(response)
+        if not raw:
+            return []
+        obj = _parse_json_safe(raw)
+        if isinstance(obj, dict):
+            obj = [obj]
+        return obj if isinstance(obj, list) else []
+    except Exception as e:
+        print(f"[LIOW_KO_PL_IMAGE_REREAD] gemini reread gagal: {e}")
+        return []
+
+
+def _liow_ko_correct_pl_from_image_reread(
+    rows, pl_pdf_path, header_obj, run_prefix, vendor_id="liow_ko"
+) -> int:
+    """
+    Koreksi pl_nw/pl_gw untuk baris yang ada di halaman PL berupa GAMBAR, dengan
+    membaca ulang halaman itu dari render high-DPI (bukan menebak aritmatika).
+
+    Aman & swa-validasi:
+      - Jalan HANYA untuk liow_ko, dan HANYA kalau ada halaman PL image-only.
+      - Cocokkan hasil baca-ulang ke baris via (part_number + quantity). qty
+        diambil dari inv_quantity (stabil dari invoice) -> tahan walau pl_nw/gw
+        ter-nol-kan extraction. Key (part,qty) bentrok-nilai -> di-drop (ambigu).
+      - TIMPA pl_nw/pl_gw baris yang cocok, lalu cek: Σ pl_nw & Σ pl_gw seluruh
+        baris == pl_total_nw/gw tercetak (toleransi). YA -> commit. TIDAK ->
+        ROLLBACK penuh, mismatch tetap jadi flag jujur untuk reviewer.
+    """
+    if normalize_vendor_id(vendor_id) != "liow_ko":
+        return 0
+    if not isinstance(rows, list) or not pl_pdf_path:
+        return 0
+
+    declared_nw = _to_float(header_obj.get("pl_total_nw")) if isinstance(header_obj, dict) else None
+    declared_gw = _to_float(header_obj.get("pl_total_gw")) if isinstance(header_obj, dict) else None
+    if not declared_nw or not declared_gw or declared_nw <= 0 or declared_gw <= 0:
+        return 0
+
+    rendered = _liow_ko_render_image_only_pl_pages(pl_pdf_path)
+    if not rendered:
+        return 0  # tidak ada halaman gambar -> tak ada yang perlu dikoreksi
+
+    # Peta otoritatif (part, qty) -> (nw, gw) dari pembacaan ulang high-DPI.
+    auth = {}
+    ambiguous = set()
+    for page_idx, png in rendered:
+        items = _liow_ko_reread_pl_image(
+            png, run_prefix, name=f"liow_ko_pl_image_p{page_idx + 1}", vendor_id=vendor_id
+        )
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            part = _liow_ko_norm_part(it.get("part_number"))
+            qty = _liow_ko_clean_num(it.get("quantity"))
+            nw = _liow_ko_clean_num(it.get("nw"))
+            gw = _liow_ko_clean_num(it.get("gw"))
+            if not part or qty is None or nw is None or gw is None:
+                continue
+            key = (part, int(round(qty)))
+            if key in auth and auth[key] != (nw, gw):
+                ambiguous.add(key)
+                continue
+            auth[key] = (nw, gw)
+    for k in ambiguous:
+        auth.pop(k, None)
+    if not auth:
+        return 0
+
+    # Terapkan in-place + simpan nilai lama untuk kemungkinan rollback.
+    changed = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        part = _liow_ko_norm_part(
+            r.get("inv_vendor_article_no") or r.get("pl_vendor_article_no")
+        )
+        qty = _to_float(r.get("inv_quantity"))
+        if qty is None:
+            qty = _to_float(r.get("pl_quantity"))
+        if not part or qty is None:
+            continue
+        key = (part, int(round(qty)))
+        if key not in auth:
+            continue
+        new_nw, new_gw = auth[key]
+        if _to_float(r.get("pl_nw")) == new_nw and _to_float(r.get("pl_gw")) == new_gw:
+            continue
+        changed.append((r, r.get("pl_nw"), r.get("pl_gw")))
+        r["pl_nw"] = new_nw
+        r["pl_gw"] = new_gw
+
+    if not changed:
+        return 0
+
+    sum_nw = sum(_to_float(r.get("pl_nw")) or 0.0 for r in rows if isinstance(r, dict))
+    sum_gw = sum(_to_float(r.get("pl_gw")) or 0.0 for r in rows if isinstance(r, dict))
+    tol = LIOW_KO_IMAGE_REREAD_TOTAL_TOL
+
+    if abs(sum_nw - declared_nw) <= tol and abs(sum_gw - declared_gw) <= tol:
+        print(
+            f"[LIOW_KO_PL_IMAGE_REREAD] {len(changed)} sel pl_nw/pl_gw dikoreksi dari "
+            f"render high-DPI halaman gambar; Σnw={round(sum_nw, 2)}=={declared_nw}, "
+            f"Σgw={round(sum_gw, 2)}=={declared_gw}"
+        )
+        return len(changed)
+
+    # Tidak reconcile -> rollback penuh; jangan menulis tebakan parsial.
+    for r, old_nw, old_gw in changed:
+        r["pl_nw"] = old_nw
+        r["pl_gw"] = old_gw
+    print(
+        f"[LIOW_KO_PL_IMAGE_REREAD] rollback: koreksi tidak reconcile "
+        f"(Σnw={round(sum_nw, 2)}/{declared_nw}, Σgw={round(sum_gw, 2)}/{declared_gw}); "
+        f"{len(changed)} perubahan dibatalkan"
+    )
+    return 0
 
 
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
@@ -15364,15 +15524,22 @@ def run_ocr(
 
         # =========================================
         # LIOW_KO: halaman PL terakhir kadang berupa GAMBAR (tanpa text layer),
-        # jadi koreksi text-layer di atas tidak bisa menjangkaunya dan OCR model
-        # sesekali salah-baca SATU sel pl_gw (mis. 35.60 -> 36.8). Reconcile
-        # deterministik terhadap TOTAL G.W tercetak: kalau Σ pl_nw sudah persis
-        # sama dengan total (data per-baris bersih) dan ada residual G.W kecil
-        # yang jatuh UNIK pada satu baris outlier, kembalikan sel itu ke nilai
-        # yang membuat Σ pl_gw == TOTAL. Dokumen benar (residual ~0) tak tersentuh.
+        # sehingga Gemini (yang me-rasterisasi PDF pada DPI rendah) sesekali
+        # salah-baca sel pl_nw/pl_gw (mis. G.W 35.60 -> 36.8). Render SENDIRI
+        # halaman gambar itu pada DPI tinggi, baca ulang, lalu TIMPA sel terkait
+        # — HANYA bila Σ pl_nw & Σ pl_gw jadi sama dengan TOTAL tercetak
+        # (swa-validasi; kalau tidak, rollback -> mismatch tetap flag jujur).
+        # Dijalankan SEBELUM precheck supaya flag total dihitung atas nilai yang
+        # sudah dikoreksi (tidak ada flag basi / salah-tuduh baris lain).
         # =========================================
         if normalize_vendor_id(vendor_id) == "liow_ko":
-            _liow_ko_reconcile_pl_gw_residual(all_rows)
+            _liow_ko_correct_pl_from_image_reread(
+                all_rows,
+                normalized_pdf_paths[packing_idx] if packing_idx is not None else None,
+                base_header_obj,
+                run_prefix,
+                vendor_id=vendor_id,
+            )
 
         # =========================================
         # PRECHECK PYTHON
