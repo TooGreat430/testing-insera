@@ -12,6 +12,9 @@ def _is_karet_deli_vendor_id(vendor_id: str = "default") -> bool:
 def _is_fox_vendor_id(vendor_id: str = "default") -> bool:
     return str(vendor_id or "default").strip().lower() == "fox"
 
+def _is_liow_ko_vendor_id(vendor_id: str = "default") -> bool:
+    return str(vendor_id or "default").strip().lower() == "liow_ko"
+
 # =========================
 # HEADER FIELDS (doc-level)
 # =========================
@@ -292,6 +295,31 @@ ATURAN KHUSUS VENDOR shimano_inc — DEFINISI 1 LINE ITEM (KRITIS):
   MENGGUSUR item lain keluar dari index (array dibatasi {total_row}) — KESALAHAN FATAL.
 """.replace("{total_row}", str(total_row))
 
+    liow_ko_index_rule = ""
+    if _is_liow_ko_vendor_id(vendor_id):
+        liow_ko_index_rule = """
+
+ATURAN KHUSUS VENDOR liow_ko — ANTI GHOST ROW (KRITIS):
+- 1 object index = 1 BARIS FISIK pada tabel invoice yang MENCETAK kelima nilai ini:
+  PO (numeric 8 digit, kolom pertama) + PART NUMBER + QUANTITY + UNIT PRICE + AMOUNT.
+- DILARANG KERAS menambahkan object placeholder/kosong (semua field "null"/0) hanya
+  untuk memenuhi panjang array {total_row}. Angka {total_row} adalah PERKIRAAN —
+  kalau baris fisik yang benar-benar tercetak LEBIH SEDIKIT, kembalikan array yang
+  LEBIH PENDEK. Object kosong akan menjadi GHOST ROW di output final — KESALAHAN FATAL.
+- Tabel line item berakhir TEPAT pada baris "TOTAL:" (contoh:
+  "TOTAL:  17,805   46,213.61"). Tidak ada line item setelah baris TOTAL —
+  JANGAN membuat object untuk apa pun setelahnya.
+- SELF-CHECK WAJIB sebelum selesai: jumlahkan inv_quantity dan inv_amount semua
+  object index. Keduanya HARUS sama dengan angka pada baris TOTAL invoice.
+  Kalau jumlah Anda MELEBIHI angka TOTAL, ada object yang bukan baris nyata — buang.
+  Kalau KURANG, ada baris tercetak yang belum diindeks — telusuri ulang semua halaman.
+- CATATAN DUPLIKAT ASLI: invoice liow_ko bisa mencetak dua baris IDENTIK
+  (PO + PART NUMBER + QUANTITY sama) di posisi BERBEDA dan KEDUANYA VALID
+  (contoh nyata: "45330617  PIVLK16PFP1900  100 SET  810.00" tercetak di dua
+  halaman berbeda). JANGAN menghapus duplikat asli seperti itu — tapi JANGAN pula
+  menyalin ulang baris yang sudah diindeks untuk menambah jumlah object.
+""".replace("{total_row}", str(total_row))
+
     return f"""
 ROLE:
 Anda adalah AI IDP professional yang fokus membuat INDEX line items berbasis DUA SUMBER:
@@ -381,7 +409,7 @@ ANTI-DUPLIKASI & RECALL TAIL ITEM (SANGAT PENTING):
 - Telusuri SEMUA halaman invoice sampai baris TOTAL/grand total. Baris item terakhir
   yang nyata (tepat sebelum TOTAL) WAJIB ikut sebagai object index terakhir.
 - Baris TOTAL/grand total BUKAN line item — jangan diindeks.
-{shimano_index_rule}"""
+{shimano_index_rule}{liow_ko_index_rule}"""
 
 def build_header_prompt(vendor_id: str = "default") -> str:
     shimano_header_rule = ""
@@ -495,6 +523,31 @@ Untuk dokumen Packing List ambil dari "Delivery:" (Contoh: Delivery: 91609521).
 maka inv_invoice_no = 91609521 dan pl_invoice_no = 91609521.
         """
 
+    liow_ko_header_rule = ""
+    if _is_liow_ko_vendor_id(vendor_id):
+        liow_ko_header_rule = """
+
+ATURAN KHUSUS VENDOR liow_ko — BARIS TOTAL DOKUMEN (BACA DIGIT PER DIGIT):
+- INVOICE: baris total di akhir tabel berformat "TOTAL: <qty>  <amount>"
+  (contoh: "TOTAL:  17,805   46,213.61")
+  → inv_total_quantity = 17805, inv_total_amount = 46213.61.
+- PACKING LIST: baris total di akhir tabel memuat EMPAT angka dengan urutan kolom
+  QUANTITY | TOTAL CTN | NW | GW (contoh: "17,805   88   1,111.24   1,137.04")
+  → pl_total_quantity = 17805, pl_total_package = 88,
+    pl_total_nw = 1111.24, pl_total_gw = 1137.04.
+  (Sel TOTAL CTN bisa kosong pada sebagian dokumen — saat hanya ada TIGA angka,
+   urutannya QUANTITY | NW | GW dan pl_total_package = "null".)
+- Angka total bisa teremisi OCR dengan spasi/pecahan di tengah (mis. "1, 111. 24") —
+  gabungkan menjadi SATU angka utuh sebelum diisi.
+- SALIN DIGIT PER DIGIT, terutama 2 digit desimal terakhir. DILARANG membulatkan
+  atau menebak digit (contoh KESALAHAN NYATA: 1,111.24 terbaca 1111.21;
+  1,137.04 terbaca 1137.18). Verifikasi ulang dua digit terakhir sebelum commit.
+- Sanity check: pl_total_nw HARUS lebih kecil dari pl_total_gw. Kalau hasil baca
+  melanggar ini, baca ulang baris total-nya.
+- Packing list liow_ko TIDAK punya kolom volume dan total amount
+  → pl_total_volume = "null", pl_total_amount = "null".
+"""
+
     template = """
 ROLE:
 Anda adalah AI IDP professional yang fokus mengambil HEADER dokumen (bukan line item).
@@ -584,7 +637,7 @@ OUTPUT SCHEMA (HEADER ONLY):
   "coo_origin_country": "string",
 }
 
-{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}
+{shimano_header_rule}{kunshan_landon_header_rule}{karet_deli_header_rule}{liow_ko_header_rule}
 GENERAL KNOWLEDGE:
 
 INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
@@ -833,6 +886,7 @@ INVOICE NUMBER EXTRACTION RULES (SANGAT PENTING):
         .replace("{shimano_header_rule}", shimano_header_rule)
         .replace("{kunshan_landon_header_rule}", kunshan_landon_header_rule)
         .replace("{karet_deli_header_rule}", karet_deli_header_rule)
+        .replace("{liow_ko_header_rule}", liow_ko_header_rule)
     )
 
 def build_detail_prompt_from_index(

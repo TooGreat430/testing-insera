@@ -232,9 +232,19 @@ ATURAN IDENTITAS BARIS PL (PURCHASE ORDER NUMBER = ANCHOR UTAMA):
 - JANGAN MENYALIN NW/GW dari baris tetangga. Tiap baris punya angka NW/GW-nya SENDIRI
   di dua posisi paling kanan. Kalau baris di atasnya bernilai 6.00/6.20 lalu baris
   berikut (PO beda) tercetak 0.87/1.07, AMBIL 0.87/1.07 — jangan ikut 6.00/6.20.
+  Larangan menyalin berlaku DUA ARAH: dari baris di ATAS maupun dari baris di BAWAH.
+- BARIS TERCORET (STRIKETHROUGH) TETAP BARIS VALID: kalau sebuah baris PL tampak
+  dicoret garis horizontal (artefak cetak/revisi), baris itu TETAP diekstrak dengan
+  angka TERCETAK MILIKNYA SENDIRI — coretan TIDAK mengubah nilai dan TIDAK membuat
+  baris boleh mengambil angka baris tetangga.
+  Contoh KESALAHAN NYATA yang dilarang:
+    baris tercoret "45331690  FRXLKIS16PFK02  300 PCS  0.87  1.07" diisi
+    pl_nw = 4.44 / pl_gw = 4.84 (disalin dari baris DI BAWAHNYA, FRXLKIS15PH600).
+    Yang BENAR: pl_nw = 0.87, pl_gw = 1.07 (angka tercetak baris itu sendiri).
 - BACA ANGKA NW/GW PERSIS SEPERTI TERCETAK, digit per digit (umumnya 2 desimal).
   DILARANG membulatkan atau menebak: kalau tercetak 35.60 tulis 35.60 (bukan 36.0);
-  kalau tercetak 6.00 tulis 6.00 (bukan 8.00). Kalau baris terlihat terpotong/
+  kalau tercetak 6.00 tulis 6.00 (bukan 8.00); kalau tercetak 6.20 tulis 6.20
+  (bukan 6.28). Kalau baris terlihat terpotong/
   ter-clip secara visual, tetap baca dua angka paling kanan baris itu apa adanya.
 - Carton mark (mis. "LK-1", "LK-29-32") = anchor SEKUNDER saja. Baris lanjutan yang
   BERBAGI carton range dengan baris di atasnya TETAP baris fisik sendiri jika PO beda.
