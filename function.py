@@ -5250,7 +5250,7 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
 
     last_page_idx = max(i for i, a in enumerate(pages_anchors) if a)
 
-    def _parse_rows(bottom_cut_factor):
+    def _parse_rows(bottom_cut_factor, fail):
         rows = []
         total_region_words = []
         for page_idx, (words, anchors) in enumerate(zip(pages_words, pages_anchors)):
@@ -5280,6 +5280,17 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
                     band_words, col_centers, part_band[1], a["yc"]
                 )
                 if assigned is None:
+                    numerics = " ".join(
+                        w["text"]
+                        for w in sorted(band_words, key=lambda w: w["x0"])
+                        if w["xc"] > part_band[1]
+                        and _LIOW_KO_NUM_TOKEN_RE.match(w["text"])
+                        and abs(w["yc"] - a["yc"]) <= 4.5
+                    )
+                    fail(
+                        f"band invalid p{page_idx + 1}#{i + 1} item={a['text']} "
+                        f"numerik=[{numerics[:100]}]"
+                    )
                     return None, None
 
                 unit_tokens = [
@@ -5315,39 +5326,59 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
                 )
         return rows, total_region_words
 
-    def _validate_and_pack(rows, total_region_words):
+    def _validate_and_pack(rows, total_region_words, fail):
         if not rows:
-            return {}
+            return fail("rows kosong")
         if doc_kind == "inv":
             for r in rows:
                 if "qty" not in r or "price" not in r or "amount" not in r:
-                    return {}
+                    missing = [k for k in ("qty", "price", "amount") if k not in r]
+                    return fail(
+                        f"kolom kurang p{r['page']}#{r['page_index']} "
+                        f"item={r['item']} missing={missing}"
+                    )
                 if abs(r["qty"] * r["price"] - r["amount"]) > 0.011:
-                    return {}
+                    return fail(
+                        f"qty*price!=amount p{r['page']}#{r['page_index']} "
+                        f"item={r['item']} ({r['qty']}*{r['price']} != {r['amount']})"
+                    )
             joined = " ".join(w["text"] for w in total_region_words)
             m = re.search(r"TOTAL", joined, flags=re.IGNORECASE)
             if not m:
-                return {}
+                return fail(f"label TOTAL tidak ada di region: '{joined[:120]}'")
             nums = [
                 _liow_ko_num(x.group(0))
                 for x in _LIOW_KO_SPACED_NUM_RE.finditer(joined[m.end():])
             ]
             nums = [n for n in nums if n is not None]
             if len(nums) < 2:
-                return {}
+                return fail(f"angka total kurang ({nums}) region='{joined[:120]}'")
             total_qty, total_amount = nums[0], nums[1]
             if abs(sum(r["qty"] for r in rows) - total_qty) > 0.01:
-                return {}
+                return fail(
+                    f"sigma qty {round(sum(r['qty'] for r in rows), 2)} "
+                    f"!= printed {total_qty}"
+                )
             if abs(sum(r["amount"] for r in rows) - total_amount) > 0.01:
-                return {}
+                return fail(
+                    f"sigma amount {round(sum(r['amount'] for r in rows), 2)} "
+                    f"!= printed {total_amount}"
+                )
             return {"rows": rows, "total_quantity": total_qty, "total_amount": total_amount}
 
         for r in rows:
             if "qty" not in r or "nw" not in r or "gw" not in r:
-                return {}
+                missing = [k for k in ("qty", "nw", "gw") if k not in r]
+                return fail(
+                    f"kolom kurang p{r['page']}#{r['page_index']} "
+                    f"item={r['item']} missing={missing}"
+                )
             r.setdefault("count", 0.0)
             if r["gw"] + 0.001 < r["nw"]:
-                return {}
+                return fail(
+                    f"gw<nw p{r['page']}#{r['page_index']} item={r['item']} "
+                    f"({r['gw']} < {r['nw']})"
+                )
         joined = " ".join(w["text"] for w in total_region_words)
         nums = [
             _liow_ko_num(x.group(0))
@@ -5363,15 +5394,23 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
             total_qty, total_nw, total_gw = nums
             total_pkg = None
         else:
-            return {}
+            return fail(f"angka total={len(nums)} ({nums}) region='{joined[:120]}'")
         if abs(sum(r["qty"] for r in rows) - total_qty) > 0.01:
-            return {}
+            return fail(
+                f"sigma qty {round(sum(r['qty'] for r in rows), 2)} != printed {total_qty}"
+            )
         if total_pkg is not None and abs(sum(r["count"] for r in rows) - total_pkg) > 0.01:
-            return {}
+            return fail(
+                f"sigma ctn {round(sum(r['count'] for r in rows), 2)} != printed {total_pkg}"
+            )
         if abs(sum(r["nw"] for r in rows) - total_nw) > 0.011:
-            return {}
+            return fail(
+                f"sigma nw {round(sum(r['nw'] for r in rows), 2)} != printed {total_nw}"
+            )
         if abs(sum(r["gw"] for r in rows) - total_gw) > 0.011:
-            return {}
+            return fail(
+                f"sigma gw {round(sum(r['gw'] for r in rows), 2)} != printed {total_gw}"
+            )
         return {
             "rows": rows,
             "total_quantity": total_qty,
@@ -5382,11 +5421,18 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
 
     # Batas bawah band terakhir (pemisah baris item terakhir vs baris TOTAL
     # tanpa label di PL) dicoba beberapa faktor; gate menentukan yang benar.
+    # Alasan gagal per cut dikumpulkan supaya log produksi cukup untuk
+    # mendiagnosis dokumen yang gagal gate tanpa harus punya PDF-nya.
+    reject_reasons = []
     for cut_factor in (0.55, 0.4, 0.75):
-        rows, total_region_words = _parse_rows(cut_factor)
+        def _fail(msg, _cf=cut_factor):
+            reject_reasons.append(f"cut={_cf}: {msg}")
+            return {}
+
+        rows, total_region_words = _parse_rows(cut_factor, _fail)
         if rows is None:
             continue
-        packed = _validate_and_pack(rows, total_region_words)
+        packed = _validate_and_pack(rows, total_region_words, _fail)
         if packed:
             printed = {k: v for k, v in packed.items() if k != "rows"}
             print(
@@ -5397,7 +5443,8 @@ def _liow_ko_parse_doc_text_layer(pdf_path: str, doc_kind: str) -> dict:
 
     print(
         f"[LIOW_KO_TEXT_LAYER][{doc_kind}] parse tidak lolos gate "
-        f"self-consistency, skip (fallback perilaku lama)"
+        f"self-consistency, skip (fallback perilaku lama); alasan: "
+        + " | ".join(reject_reasons)
     )
     return {}
 
