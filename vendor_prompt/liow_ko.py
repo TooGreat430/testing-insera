@@ -408,6 +408,29 @@ KAPAN BARU BOLEH NOL (anti-duplikasi nilai PL):
    maka pl_gw = 26.23 (kolom PALING KIRI = Purchase order Number -> pl_customer_po_no)
    - Jangan memakai data invoice, BL, atau COO untuk mengisi pl_gw.
 
+SELF-CHECK WAJIB SEBELUM SELESAI (PL — cocokkan dengan baris TOTAL dokumen):
+- Baris TOTAL di akhir packing list mencetak TOTAL CTN, total NW, dan total GW
+  (urutan kolom: QUANTITY | TOTAL CTN | NW | GW). Pakai ketiga angka itu sebagai
+  TARGET verifikasi setelah semua baris terisi. JANGAN menyelesaikan output sebelum
+  ketiga jumlah di bawah cocok dengan baris TOTAL.
+- CEK 1 — Σ pl_package_count semua baris HARUS == angka TOTAL CTN tercetak.
+  - Kalau Σ Anda MELEBIHI target: ada baris BERBAGI-carton (sel TOTAL CTN-nya kosong
+    karena merge dengan baris pemilik "LK-xx" di atasnya) yang salah diisi 1 — nol-kan
+    baris-baris itu (pl_package_count = 0) sampai Σ == TOTAL CTN. Hanya baris PEMILIK
+    carton range (yang benar-benar mencetak angka di kolom TOTAL CTN) yang boleh > 0.
+  - Kalau Σ Anda KURANG: ada baris pemilik carton range yang ke-nol-kan / salah baca —
+    perbaiki sesuai VERIFIKASI MEKANIS (akhir - awal + 1).
+- CEK 2 — Σ pl_nw semua baris HARUS == total NW tercetak (toleransi 0.01).
+- CEK 3 — Σ pl_gw semua baris HARUS == total GW tercetak (toleransi 0.01).
+  - Kalau Σ pl_gw Anda LEBIH BESAR dari target: ada baris yang kelebihan baca digit
+    (mis. 35.60 terbaca 36.80, atau 6.20 terbaca 6.28). Telusuri baris PADAT/TERCORET
+    di halaman terakhir, baca ulang dua angka paling kanan baris itu digit-per-digit,
+    dan koreksi ke angka tercetak sampai Σ pl_gw == total GW.
+  - Kalau Σ pl_gw Anda LEBIH KECIL: ada baris yang ke-nol-kan / kurang baca — isi sesuai
+    angka tercetak baris itu.
+- Catatan: target verifikasi adalah angka pada baris TOTAL dokumen yang sedang diproses,
+  BUKAN angka contoh mana pun. Baca baris TOTAL dokumen ini, lalu cocokkan.
+
 
 9. pl_volume
    - HANYA boleh diambil dari packing list.
