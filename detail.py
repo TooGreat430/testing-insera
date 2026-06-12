@@ -35,6 +35,15 @@ UNNULLABLE_FIELD = """
   "pl_nw": "number",
   "pl_gw": "number",
   "pl_volume": "number",
+
+  "bl_description": "string",
+  "bl_hs_code": "string",
+
+  "coo_description": "string",
+  "coo_hs_code": "string",
+  "coo_quantity": "number",
+  "coo_amount": "number",
+  "coo_criteria": "string",
 }
 """
 
@@ -204,7 +213,24 @@ DETAIL_LINE_SCHEMA_TEXT = """{
   "pl_package_count": "number",
   "pl_nw": "number",
   "pl_gw": "number",
-  "pl_volume": "number"
+  "pl_volume": "number",
+
+  "bl_description": "string",
+  "bl_hs_code": "string",
+  "bl_mark_number": "string",
+
+  "coo_seq": "number",
+  "coo_mark_number": "string",
+  "coo_description": "string",
+  "coo_hs_code": "string",
+  "coo_quantity": "number",
+  "coo_unit": "string",
+  "coo_package_count": "number",
+  "coo_package_unit": "string",
+  "coo_gw": "number",
+  "coo_amount": "number",
+  "coo_criteria": "string",
+  "coo_customer_po_no": "string"
 }"""
 
 # dipakai Python untuk "ensure semua kolom ada"
@@ -830,6 +856,24 @@ ATURAN KHUSUS VENDOR:
 {vendor_prompt_text}
 """
 
+    bl_mark_number_detail_rule = """
+
+ATURAN bl_mark_number:
+- Untuk vendor selain shimano_inc, bl_mark_number diekstrak pada header pass.
+- Pada content/detail pass vendor selain shimano_inc, isi bl_mark_number dengan "null".
+"""
+    if _is_shimano_inc_vendor_id(vendor_id):
+        bl_mark_number_detail_rule = """
+
+ATURAN KHUSUS SHIMANO_INC UNTUK bl_mark_number:
+- bl_mark_number WAJIB diekstrak pada content/detail pass, BUKAN pada header pass.
+- Gunakan dokumen Bill of Lading saja.
+- Ambil dari kolom/area "Marks and Numbers".
+- Karena output detail berbasis line item, isikan bl_mark_number pada row yang paling relevan dengan mark/PO/item tersebut.
+- Jika mark berlaku global untuk seluruh BL dan tidak bisa dipetakan ke item tertentu, isi nilai yang sama pada semua row output batch yang relevan.
+- Jika tidak ditemukan pada BL, isi "null".
+"""
+
     return f"""
 ROLE:
 Anda adalah AI IDP professional yang fokus pada DATA DETAIL PER LINE ITEM.
@@ -867,7 +911,9 @@ ATURAN:
 - Field hanya boleh diisi dari dokumen sesuai prefix-nya, TIDAK BOLEH dari dokumen lain:
   inv_* → Invoice, tidak boleh dari dokumen lain
   pl_* → Packing List, tidak boleh dari dokumen lain
-- Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
+  bl_* → Bill of Lading, tidak boleh dari dokumen lain
+  coo_* → Certificate of Origin, tidak boleh dari dokumen lain
+- Jika dokumen tidak tersedia → semua field dengan prefix dokumen tersebut (contoh: inv_*, pl_*, bl_*, coo_*) WAJIB diisi dengan "null" / 0 sesuai tipe.
 - Jika terdapat merged cell vertikal yang mencakup beberapa line item / beberapa row, maka nilai pada merged cell tersebut HANYA boleh diassign ke line item paling atas dalam merge group.
 - Semua line item lain yang berada di bawah merged cell yang sama WAJIB diisi 0 untuk field numerik yang berasal dari merged cell tersebut.
 - Jangan melakukan pembagian proporsional, jangan melakukan averaging, dan jangan menduplikasi nilai merged cell ke semua row.
@@ -933,7 +979,7 @@ ATURAN:
 - Untuk field pl_quantity dan pl_package_count, pahami makna header kolom terlebih dahulu sebelum mengekstrak value.
 - Jangan menukar quantity dengan package_count.
 - Jika tabel menggunakan format quantity-per-package dan package-count, maka pl_quantity dan pl_package_count harus dipetakan sesuai fungsi masing-masing, bukan sekadar berdasarkan posisi angka.
-  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
+  pl_volume, pl_gw, pl_nw, pl_package_count, inv_gw, coo_gw, coo_amount, atau field numerik lain yang secara visual ditulis sebagai 1 merged cell untuk beberapa row.
 - Contoh:
   Jika ada 3 row item dan kolom volume ditampilkan sebagai 1 merged cell bernilai 13.5 yang mencakup ketiga row tersebut seperti:
 - Jika 1 item invoice cocok dengan beberapa sub-row PL yang masih item yang sama
@@ -950,6 +996,7 @@ ATURAN:
 - Jangan hanya ambil sub-row pertama jika masih ada sub-row lain yang jelas merupakan pecahan item yang sama.
 - Row TOTAL/SUBTOTAL hanya untuk validasi, jangan dijumlahkan lagi jika detail sub-row sudah ada.
 
+{bl_mark_number_detail_rule}
 OUTPUT SCHEMA (CONTENT ONLY, TANPA HEADER):
 {DETAIL_LINE_SCHEMA_TEXT}
 
