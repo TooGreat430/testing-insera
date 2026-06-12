@@ -635,6 +635,49 @@ OUTPUT SCHEMA:
 """.strip()
 
 
+# Maksimum tanya-ulang Gemini untuk SATU baris unit_price=0. Gemini single-item
+# read non-deterministik: 4/5 run benar, 1/5 return 0/0 ("ragu") -> baris tetap 0.
+# Tanya-ulang sampai dapat SATU read yang lolos sanity (amount==qty*price), lalu
+# pakai. Bounded -> tidak ada loop tak-hingga kalau dokumen benar-benar tak terbaca.
+_SHIMANO_UNIT_PRICE_REFOCUS_MAX_ATTEMPTS = 3
+
+
+def _shimano_refocus_read_unit_price_once(file_uri, prompt, qty, vendor_id, part_no):
+    """Satu kali baca single-item via Gemini. Return (price, amount) yang LOLOS
+    sanity (price>0, amount>0, amount==qty*price ±1.0), atau None kalau gagal/ragu.
+
+    Sanity ketat = membaca nilai TERCETAK asli dokumen (bukan menyalin po_price),
+    jadi validasi po_price downstream tetap meaningful.
+    """
+    try:
+        result = _call_gemini_json_uri(
+            file_uri, prompt, expect_array=False, retries=2, vendor_id=vendor_id,
+        )
+    except Exception as e:
+        print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] part={part_no} gemini error: {repr(e)}")
+        return None
+
+    if not isinstance(result, dict):
+        print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] part={part_no} result bukan dict: {result}")
+        return None
+
+    new_price = _to_float(result.get("unit_price"))
+    new_amount = _to_float(result.get("amount"))
+    if not new_price or new_price <= 0 or not new_amount or new_amount <= 0:
+        # 0/0 = model "tidak yakin". Bukan kandidat -> caller akan tanya-ulang.
+        return None
+
+    # Sanity ketat: amount tercetak HARUS = qty x unit_price (toleransi rounding).
+    if qty <= 0 or abs(new_amount - qty * new_price) > 1.0:
+        print(
+            f"[SHIMANO_UNIT_PRICE_REFOCUS][REJECT] part={part_no} "
+            f"qty={qty} price={new_price} amount={new_amount} (sanity gagal)"
+        )
+        return None
+
+    return (new_price, new_amount)
+
+
 def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id: str) -> int:
     """Detect-then-refocus untuk shimano_inc: baris dengan inv_quantity > 0 tapi
     inv_unit_price / inv_amount = 0.
@@ -643,12 +686,15 @@ def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id
     amount) jatuh di HALAMAN BERIKUTNYA setelah page break, terpisah dari baris
     carton, sehingga qty terbaca benar tapi price/amount ke-skip jadi 0.
 
-    Tindakan: untuk TIAP baris yang kurang, panggil Gemini SATU kali (single-item)
-    membaca unit_price + amount TERCETAK dari baris TOTAL blok itu, lalu isi.
-    Single-item dipilih supaya model tidak menukar/menjumlahkan harga antar item
-    near-duplicate (qty sama + part# beda suffix). Hanya menerima nilai yang lolos
-    sanity `amount == quantity x unit_price` — jadi membaca nilai ASLI dokumen,
-    BUKAN menyalin po_price (tidak memvalidasi terhadap dirinya sendiri).
+    Tindakan: untuk TIAP baris yang kurang, panggil Gemini single-item membaca
+    unit_price + amount TERCETAK dari baris TOTAL blok itu, lalu isi. Read di-ULANG
+    sampai _SHIMANO_UNIT_PRICE_REFOCUS_MAX_ATTEMPTS kali kalau hasilnya 0/0 ("ragu")
+    atau gagal sanity — supaya non-determinisme run-to-run (mis. 1/5 run baris ke-skip
+    jadi 0) tidak menyisakan baris kosong. Single-item dipilih supaya model tidak
+    menukar/menjumlahkan harga antar item near-duplicate (qty sama + part# beda
+    suffix). Hanya menerima nilai yang lolos sanity `amount == quantity x unit_price`
+    — jadi membaca nilai ASLI dokumen, BUKAN menyalin po_price (tidak memvalidasi
+    terhadap dirinya sendiri).
 
     Strict vendor gate: hanya shimano_inc. Return jumlah row yang ter-isi.
     """
@@ -684,36 +730,39 @@ def _shimano_refocus_missing_unit_price(file_uri: str, all_rows: list, vendor_id
             description=row.get("inv_description"),
         )
 
-        try:
-            result = _call_gemini_json_uri(
-                file_uri,
-                prompt,
-                expect_array=False,
-                retries=2,
-                vendor_id=vendor_id,
+        # TANYA-ULANG sampai dapat read yang lolos sanity. Inilah inti penguatan:
+        # dulu HANYA 1 call -> kalau Gemini kebetulan return 0/0 ("ragu") / gagal
+        # sanity di run itu, baris dibiarkan 0 (kasus 1/5 yang gagal). Sekarang
+        # baris yang sama di-baca-ulang sampai _SHIMANO_UNIT_PRICE_REFOCUS_MAX_ATTEMPTS.
+        # Read sukses langsung dipakai -> run yang sudah benar (4/5) TIDAK berubah:
+        # terima di attempt pertama, tanpa call tambahan.
+        accepted = None
+        for attempt in range(1, _SHIMANO_UNIT_PRICE_REFOCUS_MAX_ATTEMPTS + 1):
+            accepted = _shimano_refocus_read_unit_price_once(
+                file_uri, prompt, qty, vendor_id, part_no
             )
-        except Exception as e:
-            print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] part={part_no} gemini error: {repr(e)}")
-            continue
-
-        if not isinstance(result, dict):
-            print(f"[SHIMANO_UNIT_PRICE_REFOCUS][FAIL] part={part_no} result bukan dict: {result}")
-            continue
-
-        new_price = _to_float(result.get("unit_price"))
-        new_amount = _to_float(result.get("amount"))
-        if not new_price or new_price <= 0 or not new_amount or new_amount <= 0:
-            # Model mengembalikan 0/0 = "tidak yakin". Biarkan kosong (jujur di-flag).
-            continue
-
-        # Sanity ketat: amount tercetak HARUS = qty x unit_price (toleransi rounding).
-        if qty <= 0 or abs(new_amount - qty * new_price) > 1.0:
+            if accepted is not None:
+                if attempt > 1:
+                    print(
+                        f"[SHIMANO_UNIT_PRICE_REFOCUS][RETRY_OK] part={part_no} "
+                        f"berhasil pada attempt#{attempt}"
+                    )
+                break
             print(
-                f"[SHIMANO_UNIT_PRICE_REFOCUS][REJECT] part={part_no} "
-                f"qty={qty} price={new_price} amount={new_amount} (sanity gagal)"
+                f"[SHIMANO_UNIT_PRICE_REFOCUS][RETRY] part={part_no} "
+                f"attempt#{attempt} gagal/ragu, ulang"
+            )
+
+        if accepted is None:
+            # Sudah MAX kali tetap 0/0 / gagal sanity. Dokumen benar-benar tak terbaca
+            # untuk baris ini -> biarkan 0 (jujur di-flag, tidak menebak/menyalin po).
+            print(
+                f"[SHIMANO_UNIT_PRICE_REFOCUS][GIVEUP] part={part_no} setelah "
+                f"{_SHIMANO_UNIT_PRICE_REFOCUS_MAX_ATTEMPTS} attempt -> biarkan 0"
             )
             continue
 
+        new_price, new_amount = accepted
         old_price = row.get("inv_unit_price")
         old_amount = row.get("inv_amount")
         # Isi hanya kalau masih kosong/0 — jangan override nilai valid yang sudah ada.
