@@ -6019,6 +6019,294 @@ def _liow_ko_correct_image_page_pl_rows(
     return touched_cells
 
 
+# =========================================================
+# INFRA OCR-IMAGE GENERIK (dipakai ulang lintas vendor image-page)
+# =========================================================
+# Komponen bersama untuk pola "halaman dokumen berupa GAMBAR (tanpa text layer)
+# -> render DPI tinggi -> (opsional) preprocess -> re-OCR fokus via Gemini ->
+# koreksi field numerik dengan gate rekonsiliasi TOTAL tercetak (anti-regresi)".
+# Liow Ko memakai versi inline-nya sendiri (sudah teruji, tidak diubah); vendor
+# baru (mis. suntour_shenzhen) memakai helper generik di bawah ini.
+
+def _page_is_image_only(page, min_chars: int = 25) -> bool:
+    """True kalau halaman praktis TANPA text layer (foto/scan). Error -> False."""
+    try:
+        return len((page.get_text() or "").strip()) < min_chars
+    except Exception:
+        return False
+
+
+def _ocr_preprocess_png_bytes(png_bytes: bytes) -> bytes:
+    """
+    Bersihkan PNG render halaman (khusus FOTO KAMERA: noise + pencahayaan tidak
+    rata + blur) agar lebih layak OCR:
+      EXIF-orient -> grayscale -> autocontrast (ratakan exposure) ->
+      median filter (buang noise bintik) -> unsharp mask (pertegas teks).
+    Best-effort: gagal -> kembalikan bytes asli (tidak melempar).
+    """
+    try:
+        import io
+        from PIL import Image, ImageOps, ImageFilter
+
+        im = Image.open(io.BytesIO(png_bytes))
+        try:
+            im = ImageOps.exif_transpose(im)
+        except Exception:
+            pass
+        im = im.convert("L")
+        im = ImageOps.autocontrast(im, cutoff=1)
+        im = im.filter(ImageFilter.MedianFilter(size=3))
+        im = im.filter(ImageFilter.UnsharpMask(radius=1.5, percent=150, threshold=3))
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as e:
+        print(f"[OCR_PREPROCESS][WARN] gagal preprocess, pakai PNG asli: {e}")
+        return png_bytes
+
+
+def _ocr_render_page_png(page, dpi: int = 300, preprocess: bool = False) -> bytes:
+    """Render halaman PDF ke PNG (DPI tinggi); opsional preprocess foto kamera."""
+    pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0))
+    png = pix.tobytes("png")
+    if preprocess:
+        png = _ocr_preprocess_png_bytes(png)
+    return png
+
+
+def _gemini_ocr_image_json(png_bytes: bytes, prompt: str, model: str = "gemini-2.5-flash", label: str = "") -> list:
+    """
+    Re-OCR satu PNG via Gemini (image inline). Return list JSON atau [] kalau gagal.
+    Best-effort: tidak melempar exception.
+    """
+    try:
+        parts = [
+            types.Part.from_bytes(data=png_bytes, mime_type="image/png"),
+            types.Part.from_text(text=prompt),
+        ]
+        response = genai_client.models.generate_content(
+            model=model,
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(
+                temperature=0, top_p=0, seed=42,
+                candidate_count=1, max_output_tokens=8192,
+            ),
+        )
+        text = _extract_text_from_gemini_response(response)
+        data = _parse_json_safe(text)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[GEMINI_OCR_IMAGE][WARN] {label}: gagal ({e})")
+        return []
+
+
+def _ocr_apply_reocr_corrections_with_total_gate(rows: list, reocr_rows: list, field_specs: list, label: str = "OCR_REOCR") -> int:
+    """
+    Terapkan koreksi hasil re-OCR halaman gambar ke baris output, dengan GATE
+    rekonsiliasi total tercetak (anti-regresi). Generik lintas vendor.
+
+    rows         : detail rows (dict) — match by item (pl_item_no / inv_spart_item_no)
+                   + qty (pl_quantity / inv_quantity).
+    reocr_rows   : list dict {"item","qty", + key nilai ("nw","gw","volume",...)}.
+    field_specs  : list (output_field, reocr_key, printed_total). printed_total
+                   WAJIB ada (>0) agar field itu dikoreksi; kalau None -> field
+                   di-skip (koreksi HANYA bila ada jangkar total tercetak).
+
+    Aman:
+    - Per-baris: kalau re-OCR punya "nw" & "gw", wajib gw>=nw & keduanya >0,
+      kalau tidak baris di-skip (foto buram -> jangan dipercaya).
+    - Per-field: koreksi diterapkan HANYA kalau Σ(field) jadi lebih dekat DAN
+      praktis rekonsiliasi (<= tol relatif) ke total tercetak. Kalau tidak,
+      seluruh koreksi field itu dibatalkan -> baris dibiarkan ter-flag (no-op).
+
+    Return jumlah sel dikoreksi.
+    """
+    if not isinstance(rows, list) or not rows or not reocr_rows:
+        return 0
+
+    pool = {}
+    for pr in reocr_rows:
+        if not isinstance(pr, dict):
+            continue
+        item = pr.get("item")
+        qty = _to_float(pr.get("qty"))
+        if _is_null(item) or qty is None:
+            continue
+        pool.setdefault((_norm_item_compare_key(item), round(qty, 2)), []).append(pr)
+
+    proposals = []  # (row, output_field, new_val)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not _is_null(row.get("pl_item_no")):
+            ik = _norm_item_compare_key(row.get("pl_item_no"))
+        elif not _is_null(row.get("inv_spart_item_no")):
+            ik = _norm_item_compare_key(row.get("inv_spart_item_no"))
+        else:
+            continue
+        if not ik:
+            continue
+        q = _to_float(row.get("pl_quantity"))
+        if q is None or q <= 0:
+            q = _to_float(row.get("inv_quantity"))
+        if q is None or q <= 0:
+            continue
+        bucket = pool.get((ik, round(q, 2)))
+        if not bucket:
+            continue
+        pr = bucket.pop(0)
+
+        rnw, rgw = _to_float(pr.get("nw")), _to_float(pr.get("gw"))
+        if rnw is not None and rgw is not None:
+            if rnw <= 0 or rgw <= 0 or rgw + 0.001 < rnw:
+                print(f"[{label}][SKIP] item={ik} qty={round(q, 2)}: gw<nw/invalid ({rgw}/{rnw})")
+                continue
+
+        for output_field, reocr_key, _pt in field_specs:
+            nv = _to_float(pr.get(reocr_key))
+            if nv is None or nv < 0:
+                continue
+            cur = _to_float(row.get(output_field))
+            if cur is None or abs(cur - nv) > 0.005:
+                proposals.append((row, output_field, nv))
+
+    if not proposals:
+        return 0
+
+    touched = 0
+    for output_field, _reocr_key, printed_total in field_specs:
+        fp = [(r, v) for (r, f, v) in proposals if f == output_field]
+        if not fp:
+            continue
+        pt = _to_float(printed_total)
+        if pt is None or pt <= 0:
+            # tanpa jangkar total tercetak -> JANGAN koreksi (paling aman).
+            print(f"[{label}][SKIP-FIELD] {output_field}: total tercetak tidak ada, skip")
+            continue
+
+        cur_sum = sum((_to_float(r.get(output_field)) or 0.0) for r in rows if isinstance(r, dict))
+        delta = sum((v - (_to_float(r.get(output_field)) or 0.0)) for (r, v) in fp)
+        new_sum = cur_sum + delta
+        # tol relatif kecil utk total besar (foto kamera rawan rounding antar sel).
+        tol = max(0.05, 0.0015 * pt)
+        improves = abs(new_sum - pt) < abs(cur_sum - pt) - 1e-9
+        reconciles = abs(new_sum - pt) <= tol
+        if not (improves and reconciles):
+            print(
+                f"[{label}][SKIP-FIELD] {output_field}: Σ {round(cur_sum, 2)} -> "
+                f"{round(new_sum, 2)} vs total {pt} (improves={improves} reconciles={reconciles})"
+            )
+            continue
+
+        for (r, v) in fp:
+            cur = _to_float(r.get(output_field))
+            print(f"[{label}_CORRECT] {output_field}: {cur} -> {v}")
+            r[output_field] = v
+            touched += 1
+
+    if touched:
+        print(f"[{label}] selesai: {touched} sel dikoreksi dari re-OCR halaman gambar")
+    return touched
+
+
+# =========================================================
+# SUNTOUR_SZ (suntour_shenzhen) — RE-OCR DOKUMEN FOTO KAMERA
+# =========================================================
+# Dokumen Suntour SZ (INV/PL/BL/COO) diambil pakai KAMERA: seluruh halaman berupa
+# gambar tanpa text layer, banyak noise + skew + pencahayaan tidak rata. Pass
+# utama (Gemini visual atas PDF ter-merge & terkompres) rawan salah baca NW/GW.
+# Solusi (sejajar Liow Ko Opsi A, tapi format PL Suntour berbeda): render tiap
+# halaman PL ke PNG DPI tinggi + PREPROCESS foto kamera, re-OCR fokus per baris,
+# lalu koreksi pl_nw/pl_gw/pl_volume dengan gate rekonsiliasi TOTAL tercetak.
+
+_SUNTOUR_SZ_PL_REOCR_PROMPT = """
+ROLE:
+Anda OCR presisi untuk SATU halaman tabel PACKING LIST vendor SUNTOUR (foto/scan kamera).
+
+URUTAN KOLOM (kiri -> kanan):
+PTL#/CTN# | Item No. | Description | Unit | Qty | N.W.(KG) | G.W.(KG) | Measurement
+
+NOTASI "@" (SANGAT PENTING):
+- Tiap sel angka memuat DUA nilai bertumpuk: nilai ber-"@" (rate PER KARTON, mis. "28.50@")
+  dan nilai TANPA "@" (TOTAL baris itu, mis. "5073"). AMBIL HANYA nilai TANPA "@".
+
+TUGAS:
+Untuk SETIAP baris item, kembalikan satu object JSON:
+[{"po":"string","item":"string","qty":number,"nw":number,"gw":number,"volume":number}]
+- "item" = Item No. (mis. "GSFXCEDSZ0000533").
+- "qty"  = angka kolom Qty TANPA "@".
+- "nw"   = angka kolom N.W.(KG) TANPA "@".
+- "gw"   = angka kolom G.W.(KG) TANPA "@".
+- "volume" = angka kolom Measurement TANPA "@".
+- "po"   = nomor Customer PO (mis. "45321250") dari baris "CUSTOMER PO:" di atasnya,
+           carry ke baris-baris di bawahnya sampai muncul "CUSTOMER PO:" berikutnya.
+
+ATURAN BACA (KRITIS):
+- Baca DIGIT PER DIGIT termasuk 2 desimal terakhir. DILARANG membulatkan / menebak.
+- "gw" SELALU >= "nw" (gross >= net). Kalau hasil baca melanggar, baca ulang baris itu.
+- ABAIKAN baris header kolom, baris "CUSTOMER PO:", dan baris "Total"/grand total.
+- Output HANYA JSON array valid, tanpa teks lain.
+""".strip()
+
+
+def _suntour_sz_correct_image_pl_rows(
+    rows: list,
+    pl_pdf_path: str,
+    printed_total_nw=None,
+    printed_total_gw=None,
+    printed_total_volume=None,
+    vendor_id: str = "default",
+) -> int:
+    """
+    suntour_shenzhen: render tiap halaman PL (foto kamera) ke PNG DPI tinggi +
+    preprocess, re-OCR fokus per baris, lalu koreksi pl_nw/pl_gw/pl_volume baris
+    yang cocok by (item, qty) — dengan gate rekonsiliasi TOTAL tercetak (anti-regresi).
+    Gated suntour_shenzhen. Return jumlah sel dikoreksi.
+    """
+    if not isinstance(rows, list) or not rows or not pl_pdf_path:
+        return 0
+
+    reocr_rows = []
+    try:
+        doc = fitz.open(pl_pdf_path)
+    except Exception as e:
+        print(f"[SUNTOUR_SZ_REOCR][WARN] gagal buka PL: {e}")
+        return 0
+    try:
+        for pno in range(doc.page_count):
+            page = doc[pno]
+            if not _page_is_image_only(page):
+                continue
+            try:
+                png = _ocr_render_page_png(page, dpi=300, preprocess=True)
+            except Exception as e:
+                print(f"[SUNTOUR_SZ_REOCR][WARN] render hal {pno + 1} gagal: {e}")
+                continue
+            items = _gemini_ocr_image_json(
+                png, _SUNTOUR_SZ_PL_REOCR_PROMPT,
+                model="gemini-2.5-flash", label=f"SUNTOUR_SZ PL p{pno + 1}",
+            )
+            if items:
+                print(f"[SUNTOUR_SZ_REOCR] PL hal {pno + 1} (foto): {len(items)} baris di-re-OCR")
+                reocr_rows.extend(items)
+    finally:
+        doc.close()
+
+    if not reocr_rows:
+        return 0
+
+    return _ocr_apply_reocr_corrections_with_total_gate(
+        rows,
+        reocr_rows,
+        field_specs=[
+            ("pl_nw", "nw", printed_total_nw),
+            ("pl_gw", "gw", printed_total_gw),
+            ("pl_volume", "volume", printed_total_volume),
+        ],
+        label="SUNTOUR_SZ_REOCR",
+    )
+
+
 def _dedupe_index_items(index_items: list, log_tag: str = "INDEX_DEDUPE") -> list:
     # Drop duplicate anchor rows. Dua sumber duplikat yang ditangani:
     #   1) chunk boundary overlap (shimano): block sama diulang di akhir chunk N
@@ -15518,6 +15806,24 @@ def run_ocr(
                 normalized_pdf_paths[packing_idx],
                 printed_total_nw=_to_float(base_header_obj.get("pl_total_nw")),
                 printed_total_gw=_to_float(base_header_obj.get("pl_total_gw")),
+                vendor_id=vendor_id,
+            )
+
+        # =========================================
+        # SUNTOUR_SZ (suntour_shenzhen): seluruh dokumen PL adalah FOTO KAMERA
+        # (tanpa text layer, banyak noise/artefak). Render tiap halaman PL ke PNG
+        # DPI tinggi + PREPROCESS (grayscale/denoise/contrast/sharpen) lalu re-OCR
+        # fokus per baris untuk koreksi pl_nw/pl_gw/pl_volume, dengan gate
+        # rekonsiliasi ke TOTAL tercetak (anti-regresi). Memakai infra OCR-image
+        # generik yang sama dengan Liow Ko.
+        # =========================================
+        if normalize_vendor_id(vendor_id) == "suntour_shenzhen" and packing_idx is not None:
+            _suntour_sz_correct_image_pl_rows(
+                all_rows,
+                normalized_pdf_paths[packing_idx],
+                printed_total_nw=_to_float(base_header_obj.get("pl_total_nw")),
+                printed_total_gw=_to_float(base_header_obj.get("pl_total_gw")),
+                printed_total_volume=_to_float(base_header_obj.get("pl_total_volume")),
                 vendor_id=vendor_id,
             )
 
