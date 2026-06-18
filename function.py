@@ -45,6 +45,12 @@ from vendor_detection import (
 
 BATCH_SIZE = 30
 CHENGS_DETAIL_BATCH_SIZE = 3
+# SHIMANO: invoice berbasis BLOK vertikal (CTN NO./P/O No./PLT NO. sub-rows +
+# baris TOTAL per blok) dan sering 6+ halaman per invoice. Batch besar (30)
+# memaksa model menghitung ulang ratusan baris untuk menemukan "item ke-31",
+# rawan geser/skip 1 baris (DETAIL_BATCH_COUNT_MISMATCH). Batch lebih kecil =
+# lebih sedikit baris per panggilan untuk salah hitung.
+SHIMANO_DETAIL_BATCH_SIZE = int(os.getenv("SHIMANO_DETAIL_BATCH_SIZE", "15"))
 DETAIL_GEMINI_RECHECK_BATCH_SIZE = int(os.getenv("DETAIL_GEMINI_RECHECK_BATCH_SIZE", "30"))
 
 DETAIL_TOTAL_RECHECK_MAX_ZERO_NEGATIVE_RETRIES = int(
@@ -238,6 +244,9 @@ def _get_detail_batch_size_for_vendor(vendor_id: str = "default") -> int:
     """
     if normalize_vendor_id(vendor_id) == "chengs":
         return CHENGS_DETAIL_BATCH_SIZE
+
+    if normalize_vendor_id(vendor_id) in {"shimano_inc", "shimano_singapore"}:
+        return SHIMANO_DETAIL_BATCH_SIZE
 
     return BATCH_SIZE
 
@@ -13973,7 +13982,13 @@ def _call_gemini_detail_line_recheck_once(
         
         # === LOGIC TRIGGER >= 90 LINE ITEMS UNTUK RECHECK ===
         is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
-        if (total_row >= 90 or is_karet_deli) and index_items and local_pdf_path and run_prefix:
+        # SHIMANO: samakan dengan PASS 1 — selalu baca potongan halaman relevan
+        # supaya recheck tidak menghitung ulang seluruh PDF blok multi-halaman.
+        is_shimano = normalize_vendor_id(vendor_id) in {
+            "shimano_inc",
+            "shimano_singapore",
+        }
+        if (total_row >= 90 or is_karet_deli or is_shimano) and index_items and local_pdf_path and run_prefix:
             row_nos = [int(item["_detail_row_no"]) for item in batch if item.get("_detail_row_no")]
             pages = []
             
@@ -15733,7 +15748,15 @@ def run_ocr(
             batch_file_uri = base_detail_input_uri  # Default uri (Full PDF)
             
             is_karet_deli = normalize_vendor_id(vendor_id) == "karet_deli"
-            if total_row >= 90 or is_karet_deli:
+            # SHIMANO selalu pakai page-slicing + guardrail indeks walau item < 90.
+            # Tanpa ini, batch >1 membaca PDF multi-halaman utuh dan harus
+            # menghitung ulang dari awal untuk menemukan "item ke-N", sumber
+            # utama DETAIL_BATCH_COUNT_MISMATCH (geser +/- 1) pada invoice blok.
+            is_shimano = normalize_vendor_id(vendor_id) in {
+                "shimano_inc",
+                "shimano_singapore",
+            }
+            if total_row >= 90 or is_karet_deli or is_shimano:
                 pages = [
                     int(x.get("page_no") or x.get("page", 0)) 
                     for x in index_slice 
